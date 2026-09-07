@@ -335,7 +335,7 @@ The first `digue dictate` invocation stays alive as the recording daemon. Pressi
 
 The recorder runs in its own process group, so it can survive a killed daemon. The daemon normally enforces `max-duration` (default 300s, set `0` for unlimited), stops the recorder, and reports that the limit was reached. A detached watchdog is only a safety killer: if the daemon is killed abruptly, it stops the recorder a few seconds after the limit but does not notify or transcribe. The next `digue dictate` recovers and delivers an orphaned recording, and returns without starting a new one.
 
-The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression; flac/opus require ffmpeg - without it digue keeps the WAV and warns). Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you ever retranscribe it.
+The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression; flac/opus require ffmpeg - without it digue keeps the WAV and warns). Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you run `digue transcribe` on it.
 
 ## Text output
 

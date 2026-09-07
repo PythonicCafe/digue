@@ -1857,7 +1857,7 @@ def _archive_rescued_take_state(take: TakeState, audio_dir: str | Path, timestam
     """Moves the take state JSON next to the rescued recording (state "rescued").
 
     The JSON is metadata of the recording, not a live take state: it is kept
-    beside the audio for a future re-transcribe command, and clean removes it
+    beside the audio, and clean removes it
     together with the recording of the same stem (never on its own)."""
     import json
 
