@@ -81,12 +81,12 @@ class TestContainerExists:
     @patch("digue.container._docker_run")
     def test_true_when_inspect_succeeds(self, mock_docker):
         mock_docker.return_value = MagicMock(returncode=0, stdout="running\n")
-        assert container_mod.container_exists() is True
+        assert container_mod.container_exists(container_mod.CONTAINER_NAME) is True
 
     @patch("digue.container._docker_run")
     def test_false_when_inspect_fails(self, mock_docker):
         mock_docker.return_value = MagicMock(returncode=1, stdout="")
-        assert container_mod.container_exists() is False
+        assert container_mod.container_exists(container_mod.CONTAINER_NAME) is False
 
 
 class TestDockerMissing:
@@ -145,12 +145,12 @@ class TestContainerStatus:
     @patch("digue.container._docker_run")
     def test_returns_status(self, mock_docker):
         mock_docker.return_value = MagicMock(returncode=0, stdout="exited\n")
-        assert container_mod.container_status() == "exited"
+        assert container_mod.container_status(container_mod.CONTAINER_NAME) == "exited"
 
     @patch("digue.container._docker_run")
     def test_returns_none_when_missing(self, mock_docker):
         mock_docker.return_value = MagicMock(returncode=1)
-        assert container_mod.container_status() is None
+        assert container_mod.container_status(container_mod.CONTAINER_NAME) is None
 
 
 class TestCreateContainer:
@@ -531,7 +531,7 @@ class TestContainerFailures:
         mock_docker.return_value = MagicMock(returncode=1, stderr="docker failed\n")
 
         with pytest.raises(RuntimeError, match="docker failed"):
-            function()
+            function(container_mod.CONTAINER_NAME)
 
         assert mock_docker.call_args.args[0] == args
 
@@ -771,7 +771,7 @@ class TestServerStartImage:
     def test_container_image_reads_docker_inspect(self, mock_docker, monkeypatch):
         monkeypatch.setattr(container_mod, "container_image", _real_container_image)
         mock_docker.return_value = MagicMock(returncode=0, stdout="ghcr.io/ggml-org/whisper.cpp:main\n")
-        assert container_mod.container_image() == "ghcr.io/ggml-org/whisper.cpp:main"
+        assert container_mod.container_image("digue-whisper.cpp") == "ghcr.io/ggml-org/whisper.cpp:main"
         assert mock_docker.call_args.args[0] == [
             "inspect",
             "--format",
@@ -779,7 +779,7 @@ class TestServerStartImage:
             container_mod.CONTAINER_NAME,
         ]
         mock_docker.return_value = MagicMock(returncode=1, stdout="")
-        assert container_mod.container_image() is None
+        assert container_mod.container_image("digue-whisper.cpp") is None
 
     @patch("digue.container._wait_for_server", return_value=True)
     @patch("digue.container.create_container")

@@ -104,28 +104,33 @@ def _docker_run(args: list[str], timeout: int | float = 30) -> subprocess.Comple
 
 
 def resolve_container_name(config: dict[str, dict[str, Any]]) -> str:
-    """Docker name for the whisper-server container (`server.container-name`)."""
+    """Docker name for the whisper-server container (`server.container-name`).
+
+    Every docker call takes the name explicitly (no CONTAINER_NAME fallback):
+    a default that silently ignored the config is how the ffmpeg fallback in
+    `audio` kept talking to a container that no longer had that name.
+    """
     name = str(config["server"].get("container_name") or "")
     return name if name else CONTAINER_NAME
 
 
-def container_exists(name: str | None = None) -> bool:
-    """Returns True if the digue container exists (running or stopped)."""
-    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name or CONTAINER_NAME])
+def container_exists(name: str) -> bool:
+    """Returns True if the container exists (running or stopped)."""
+    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name])
     return result.returncode == 0
 
 
-def container_status(name: str | None = None) -> str | None:
+def container_status(name: str) -> str | None:
     """Returns container status string ('running', 'exited', etc.) or None."""
-    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name or CONTAINER_NAME])
+    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name])
     if result.returncode == 0:
         return result.stdout.strip()
     return None
 
 
-def container_image(name: str | None = None) -> str | None:
-    """Returns the image the digue container was created from, or None."""
-    result = _docker_run(["inspect", "--format", "{{.Config.Image}}", name or CONTAINER_NAME])
+def container_image(name: str) -> str | None:
+    """Returns the image the container was created from, or None."""
+    result = _docker_run(["inspect", "--format", "{{.Config.Image}}", name])
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
     return None
@@ -274,22 +279,22 @@ def _raise_for_docker_failure(result: subprocess.CompletedProcess[str], action: 
         raise RuntimeError(f"Failed to {action}: {error}")
 
 
-def remove_container(name: str | None = None) -> None:
-    """Stops and removes the digue container."""
-    result = _docker_run(["rm", "-f", name or CONTAINER_NAME])
+def remove_container(name: str) -> None:
+    """Stops and removes the container."""
+    result = _docker_run(["rm", "-f", name])
     _raise_for_docker_failure(result, "remove container")
 
 
-def start_container(name: str | None = None) -> bool:
+def start_container(name: str) -> bool:
     """Starts an existing stopped container."""
-    result = _docker_run(["start", name or CONTAINER_NAME])
+    result = _docker_run(["start", name])
     _raise_for_docker_failure(result, "start container")
     return True
 
 
-def stop_container(name: str | None = None) -> None:
+def stop_container(name: str) -> None:
     """Stops the running container."""
-    result = _docker_run(["stop", name or CONTAINER_NAME], timeout=15)
+    result = _docker_run(["stop", name], timeout=15)
     _raise_for_docker_failure(result, "stop container")
 
 
@@ -299,9 +304,8 @@ def _rename_container(old_name: str, new_name: str) -> None:
 
 
 @contextlib.contextmanager
-def preserve_container_for_benchmark(name: str | None = None) -> Iterator[None]:
+def preserve_container_for_benchmark(container: str) -> Iterator[None]:
     """Makes room for benchmark containers, then restores the prior container and running state."""
-    container = name or CONTAINER_NAME
     previous_status = container_status(container)
     backup_name = f"{container}-benchmark-backup-{os.getpid()}"
 

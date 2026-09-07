@@ -34,7 +34,9 @@ def _saved_stem(timestamp: str, take_id: str | None) -> str:
     return f"{timestamp}-{take_id}" if take_id else timestamp
 
 
-def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None = None) -> Path:
+def _compress_audio(
+    rec_file: str | Path, audio_format: str, backend: str | None = None, container_name: str | None = None
+) -> Path:
     """Compresses a WAV recording in place. Returns the new path (rec_file swapped).
 
     audio_format: "wav" (no-op), "flac", or "opus".
@@ -43,8 +45,9 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
     - opus: ~7% of WAV at 24 kbit/s (lossy). Speech quality is excellent, but the archive is not identical to the
       input; whisper-server rejects opus, so a retranscription goes through the ffmpeg fallback.
 
-    Tries host ffmpeg first, then falls back to running ffmpeg inside the local container via stdin/stdout pipe when
-    backend is not "remote" (any other value means local; only remote-or-not is looked at).
+    Tries host ffmpeg first, then falls back to running ffmpeg inside the local container (`container_name`, the
+    configured `server.container-name`) via stdin/stdout pipe when backend is not "remote" (any other value means
+    local; only remote-or-not is looked at). Without a container name there is no container fallback.
 
     The final name is reserved up front (exclusive creation): two takes can never overwrite each other's compressed
     file; a collision raises and the caller rescues the WAV. Whatever happens afterwards -- ffmpeg failure, timeout, a
@@ -62,7 +65,7 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
     converted.touch(exist_ok=False)
     published = False
     try:
-        published = _run_compression(rec_file, converted, temp_converted, audio_format, backend)
+        published = _run_compression(rec_file, converted, temp_converted, audio_format, backend, container_name)
     finally:
         if not published:
             temp_converted.unlink(missing_ok=True)
@@ -74,14 +77,19 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
 
 
 def _run_compression(
-    rec_file: Path, converted: Path, temp_converted: Path, audio_format: str, backend: str | None
+    rec_file: Path,
+    converted: Path,
+    temp_converted: Path,
+    audio_format: str,
+    backend: str | None,
+    container_name: str | None,
 ) -> bool:
     """Writes the compressed audio into temp_converted and publishes it as converted. Returns True when published;
     False (after a warning) when compression was not possible. Exceptions propagate to the caller."""
     import shutil
     import subprocess
 
-    from digue.container import CONTAINER_NAME, container_status
+    from digue.container import container_status
 
     codec_args = {
         "flac": ["-c:a", "flac"],
@@ -119,12 +127,12 @@ def _run_compression(
         )
         return False
 
-    if backend != "remote" and container_status() == "running":
+    if backend != "remote" and container_name and container_status(container_name) == "running":
         cmd = [
             "docker",
             "exec",
             "-i",
-            CONTAINER_NAME,
+            container_name,
             "ffmpeg",
             "-loglevel",
             "error",
@@ -166,6 +174,7 @@ def save_audio(
     timestamp: str | None = None,
     backend: str | None = None,
     take_id: str | None = None,
+    container_name: str | None = None,
 ) -> tuple[Path, str]:
     """Copies audio to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>. Returns (saved_path, timestamp).
 
@@ -183,7 +192,7 @@ def save_audio(
     saved = month_dir / f"{_saved_stem(timestamp, take_id)}{source_suffix}"
     _copy_file_exclusive(source, saved)
     if audio_format != "wav" and saved.suffix.lower() != f".{audio_format}":
-        saved = _compress_audio(saved, audio_format, backend=backend)
+        saved = _compress_audio(saved, audio_format, backend=backend, container_name=container_name)
     return saved, timestamp
 
 
@@ -281,7 +290,7 @@ def _archive_recording(
     `rescue_recording` would use, so rescuing again would collide and strand the live file in the runtime dir;
     otherwise the live file is rescued (moved) as is. Either way the user is told.
     """
-    from digue.container import _is_remote
+    from digue.container import _is_remote, resolve_container_name
     from digue.notify import send_notification
 
     audio_dir = Path(config["dictate"]["audio_dir"])
@@ -295,6 +304,7 @@ def _archive_recording(
                 timestamp=timestamp,
                 backend="remote" if _is_remote(config) else "local",
                 take_id=take_id,
+                container_name=resolve_container_name(config),
             )
         rec_file.unlink(missing_ok=True)
         return True, None

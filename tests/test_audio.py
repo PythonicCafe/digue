@@ -395,7 +395,7 @@ class TestCompressAudio:
             patch("subprocess.run", side_effect=OSError("docker gone")),
             pytest.raises(OSError),
         ):
-            audio_mod._compress_audio(rec, "flac", backend="cpu")
+            audio_mod._compress_audio(rec, "flac", backend="cpu", container_name=CONTAINER_NAME)
 
         assert rec.read_bytes() == b"data"
         assert sorted(path.name for path in audio_dir.iterdir()) == ["rec.wav"]
@@ -422,16 +422,56 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = audio_mod._compress_audio(rec, "flac", backend="amd")
+        result = audio_mod._compress_audio(rec, "flac", backend="amd", container_name="whisper-lab")
 
         assert result == tmp_path / "rec.flac"
         assert result.read_bytes() == b"flac-data"
         assert not rec.exists()
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd[:5] == ["docker", "exec", "-i", CONTAINER_NAME, "ffmpeg"]
+        assert cmd[:5] == ["docker", "exec", "-i", "whisper-lab", "ffmpeg"]
+        mock_status.assert_called_once_with("whisper-lab")
         assert "-c:a" in cmd and "flac" in cmd
         assert mock_run.call_args[1]["input"] == b"wav-data"
+
+    @patch("digue.container.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_no_container_name_means_no_container_fallback(self, mock_run, mock_which, mock_status, tmp_path, capsys):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        assert audio_mod._compress_audio(rec, "flac") == rec
+
+        mock_run.assert_not_called()
+        mock_status.assert_not_called()
+        assert "ffmpeg not found" in capsys.readouterr().err
+
+    @patch("digue.container.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_archive_uses_the_configured_container_for_the_fallback(self, mock_run, mock_which, mock_status, tmp_path):
+        """Regression: the fallback asked docker about the default container
+        name while the config named another one, so with a custom
+        server.container-name every dictation stayed as WAV."""
+        import subprocess
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"flac-data", stderr=b"")
+        rec = tmp_path / "digue-rec.wav"
+        rec.write_bytes(b"wav-data")
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["server"]["container_name"] = "whisper-lab"
+
+        with patch("digue.notify.send_notification"):
+            archived, rescued = audio_mod._archive_recording(config, rec, "20260904-120000", "0123456789abcdef")
+
+        assert archived is True and rescued is None
+        mock_status.assert_called_once_with("whisper-lab")
+        assert mock_run.call_args[0][0][:4] == ["docker", "exec", "-i", "whisper-lab"]
+        assert (
+            tmp_path / "audio" / "2026" / "09" / "20260904-120000-0123456789abcdef.flac"
+        ).read_bytes() == b"flac-data"
 
     @patch("digue.container.container_status", return_value="running")
     @patch("shutil.which", return_value=None)
@@ -443,7 +483,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = audio_mod._compress_audio(rec, "opus")
+        result = audio_mod._compress_audio(rec, "opus", container_name=CONTAINER_NAME)
 
         assert result == tmp_path / "rec.opus"
         assert result.read_bytes() == b"opus-data"
