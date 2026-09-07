@@ -280,6 +280,38 @@ class TestTranscribeFfmpegFallback:
         assert not list(tmp_path.glob("digue-*.wav"))  # no temp files on disk
 
 
+class TestMultipartRequest:
+    def capture_body(self, filename):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = request.data
+            response = MagicMock()
+            response.read.return_value = b"ok"
+            return response
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            transcribe_mod._multipart_request("http://x/inference", b"AUDIO", {"language": "pt"}, 5, filename=filename)
+        return captured["body"].decode("utf-8", errors="replace")
+
+    def test_quote_in_filename_does_not_break_the_header(self):
+        """The filename goes into a quoted parameter: an unescaped quote ends
+        the value early and the rest lands in the header (server 400 or a
+        misread name)."""
+        body = self.capture_body('take "final".wav')
+
+        header_line = next(
+            line for line in body.split("\r\n") if line.startswith("Content-Disposition") and "file" in line
+        )
+        assert header_line == 'Content-Disposition: form-data; name="file"; filename="take %22final%22.wav"'
+
+    def test_newline_in_filename_is_stripped(self):
+        body = self.capture_body("a\r\nX-Injected: yes.wav")
+
+        assert "X-Injected" not in body.split("\r\n\r\n")[0]
+        assert 'filename="aX-Injected: yes.wav"' in body
+
+
 class TestSendAudioTokenTimestamps:
     @patch("digue.transcribe._multipart_request", return_value="text")
     def test_always_sends_token_timestamps_false(self, mock_multipart, tmp_path):

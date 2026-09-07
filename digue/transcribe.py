@@ -148,11 +148,17 @@ AUDIO_EXTENSIONS = frozenset(
 def _multipart_request(
     url: str, audio_data: bytes, fields: dict[str, str], timeout: int | float, filename: str = "audio.wav"
 ) -> str:
-    """Sends a multipart/form-data POST request using only stdlib."""
+    """Sends a multipart/form-data POST request using only stdlib.
+
+    The filename is a quoted header parameter: quotes are percent-encoded
+    (RFC 7578, section 4.2) and CR/LF dropped, so a file named with them
+    cannot end the value early or inject a header line.
+    """
     import time
     import urllib.request
 
     boundary = f"----digue{os.getpid()}{time.time_ns()}"
+    filename = filename.replace("\r", "").replace("\n", "").replace('"', "%22")
 
     parts = []
     for field_name, field_value in fields.items():
