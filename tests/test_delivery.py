@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import audio as audio_mod
 from digue import delivery as delivery_mod
 from digue.config import _default_config
 
@@ -265,7 +266,7 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down")),
-            patch("digue.rescue_recording", return_value=None),
+            patch("digue.audio.rescue_recording", return_value=None),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -286,8 +287,8 @@ class TestDeliveryResult:
 
         assert result.outcome == "rescued"
         assert result.exit_code == 1
-        month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
-        assert (month / f"{digue.now_timestamp()}.txt").exists() or list(month.glob("*.txt"))
+        month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
+        assert (month / f"{audio_mod.now_timestamp()}.txt").exists() or list(month.glob("*.txt"))
         assert list(month.glob("*.wav"))
 
     def test_archive_failure_rescues_the_raw_recording(self, tmp_path):
@@ -297,7 +298,7 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
-            patch("digue.save_audio", side_effect=OSError("disk full")),
+            patch("digue.audio.save_audio", side_effect=OSError("disk full")),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -316,8 +317,8 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
-            patch("digue.save_audio", side_effect=OSError("disk full")),
-            patch("digue.rescue_recording", return_value=None),
+            patch("digue.audio.save_audio", side_effect=OSError("disk full")),
+            patch("digue.audio.rescue_recording", return_value=None),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -335,8 +336,8 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
-            patch("digue.save_audio", side_effect=OSError("disk full")),
-            patch("digue.rescue_recording", return_value=None),
+            patch("digue.audio.save_audio", side_effect=OSError("disk full")),
+            patch("digue.audio.rescue_recording", return_value=None),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -351,7 +352,7 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
-            patch("digue.save_audio", side_effect=OSError("disk full")),
+            patch("digue.audio.save_audio", side_effect=OSError("disk full")),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -366,8 +367,8 @@ class TestDeliveryResult:
         with (
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value=""),
-            patch("digue.save_audio", side_effect=OSError("disk full")),
-            patch("digue.rescue_recording", return_value=None),
+            patch("digue.audio.save_audio", side_effect=OSError("disk full")),
+            patch("digue.audio.rescue_recording", return_value=None),
         ):
             result = digue.finish_dictation(config, rec_file)
 
@@ -400,7 +401,7 @@ class TestDeliveryResult:
 class TestFinishDictationBackend:
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_finish_dictation_passes_resolved_backend(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
@@ -417,7 +418,7 @@ class TestFinishDictationBackend:
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_finish_dictation_does_not_detect_hardware_for_a_local_backend(
         self, mock_save, mock_transcribe, mock_send, tmp_path
     ):
@@ -451,7 +452,7 @@ class TestDictateArchivesAfterDelivery:
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_transcribes_and_pastes_before_archiving(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
@@ -509,7 +510,7 @@ class TestDictateArchivesAfterDelivery:
         assert not rec_file.exists()
         assert "Recording kept at" in capsys.readouterr().err
 
-    @patch("digue.save_audio", side_effect=OSError("disk full"))
+    @patch("digue.audio.save_audio", side_effect=OSError("disk full"))
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     def test_save_audio_failure_after_paste_keeps_uncompressed_recording(
@@ -546,7 +547,7 @@ class TestDictateAudioTranscriptPairing:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
-            patch("digue.now_timestamp", side_effect=["20260904-120000", "20260904-120005"]),
+            patch("digue.audio.now_timestamp", side_effect=["20260904-120000", "20260904-120005"]),
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):

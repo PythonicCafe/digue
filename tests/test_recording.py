@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import digue
+from digue import audio as audio_mod
 from digue import recording as recording_mod
 from digue.config import _default_config
 
@@ -1474,7 +1475,7 @@ class TestSurplusOrphanRescue:
         assert finish_take_ids == [oldest.take_id]
         assert surplus_take_a.take_id not in finish_take_ids
         assert surplus_take_b.take_id not in finish_take_ids
-        month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
+        month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
         for take, original_bytes in (
             (surplus_take_a, b"audio a"),
             (surplus_take_b, b"audio b"),
@@ -1531,7 +1532,7 @@ class TestSurplusOrphanRescue:
                 assert digue.dictate_toggle(config) == 0
 
             assert surplus_recorder.poll() is not None
-            month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
+            month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
             rescued = list(month.glob("*-aaaaaaaaaaaaaaaa.wav"))
             assert len(rescued) == 1 and rescued[0].read_bytes() == b"audio surplus"
             assert list(month.glob("*-aaaaaaaaaaaaaaaa.json"))
@@ -1591,7 +1592,7 @@ class TestSurplusOrphanRescue:
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
             patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
-            patch("digue.rescue_recording", return_value=None),
+            patch("digue.audio.rescue_recording", return_value=None),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.notify.send_notification"),

@@ -50,7 +50,7 @@ def _rec_file(suffix: str = ".wav") -> Path:
     """Returns a unique recording path without creating the audio file."""
     import secrets
 
-    from digue import now_timestamp
+    from digue.audio import now_timestamp
 
     if not suffix.startswith("."):
         suffix = f".{suffix}"
@@ -391,7 +391,7 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     writing). Returns the rescued path or None.
     """
 
-    from digue import now_timestamp, rescue_recording
+    from digue.audio import now_timestamp, rescue_recording
     from digue.notify import send_notification
 
     if _pid_alive(take.daemon_pid) and _process_starttime(take.daemon_pid) == str(take.daemon_starttime):
@@ -484,7 +484,8 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
     reclaim a take that no longer has audio. Only a "starting" take, which has
     no recorder identity to trust or stop, gets the age-based expiry rules.
     """
-    from digue import TERMINAL_OUTCOMES, _archive_recovered_take, _delivered_transcript, finish_dictation
+    from digue import TERMINAL_OUTCOMES, finish_dictation
+    from digue.audio import _archive_recovered_take, _delivered_transcript
 
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
@@ -532,7 +533,7 @@ def _archive_rescued_take_state(take: TakeState, audio_dir: str | Path, timestam
     together with the recording of the same stem (never on its own)."""
     import json
 
-    from digue import _saved_stem, month_dir_for
+    from digue.audio import _saved_stem, month_dir_for
 
     state_file = _take_state_file(take.take_id)
     if not state_file.exists():
@@ -551,7 +552,7 @@ def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> 
     JSON is archived next to it. Returns the rescued path, or None when there
     was nothing to rescue (the state is then removed) or the rescue failed
     (the state is kept, so the next toggle retries)."""
-    from digue import now_timestamp, rescue_recording
+    from digue.audio import now_timestamp, rescue_recording
 
     rec_file: Path | None = take.rec_file
     if take.recorder_pid is not None:

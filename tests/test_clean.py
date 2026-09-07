@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-import digue
+from digue import audio as audio_mod
 from digue.config import _default_config
 
 
@@ -28,7 +28,7 @@ class TestCmdClean:
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
-        result = digue.cmd_clean(self._args(), config)
+        result = audio_mod.cmd_clean(self._args(), config)
 
         assert result == 1
         err = capsys.readouterr().err
@@ -44,7 +44,7 @@ class TestCmdClean:
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
-        result = digue.cmd_clean(self._args(), config)
+        result = audio_mod.cmd_clean(self._args(), config)
 
         assert result == 0
         assert list(audio_dir.rglob("*.flac")) == []
@@ -61,7 +61,7 @@ class TestCmdClean:
 
         monkeypatch.setattr("builtins.input", fail_input)
 
-        result = digue.cmd_clean(self._args(force=True), config)
+        result = audio_mod.cmd_clean(self._args(force=True), config)
 
         assert result == 0
         assert list(audio_dir.rglob("*.flac")) == []
@@ -72,7 +72,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True, what="recordings"), config)
+        result = audio_mod.cmd_clean(self._args(force=True, what="recordings"), config)
 
         assert result == 0
         assert list(audio_dir.rglob("*.flac")) == []
@@ -84,7 +84,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
+        result = audio_mod.cmd_clean(self._args(force=True, what="transcripts"), config)
 
         assert result == 0
         assert list(audio_dir.rglob("*.txt")) == []
@@ -96,7 +96,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        digue.cmd_clean(self._args(force=True), config)
+        audio_mod.cmd_clean(self._args(force=True), config)
 
         assert not (audio_dir / "2026" / "09").exists()
 
@@ -120,7 +120,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True), config)
+        result = audio_mod.cmd_clean(self._args(force=True), config)
 
         assert result == 0
         assert all(path.exists() for path in foreign)
@@ -135,7 +135,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True), config)
+        result = audio_mod.cmd_clean(self._args(force=True), config)
 
         assert result == 0
         assert "Removed 3 file(s)" in capsys.readouterr().err
@@ -149,7 +149,7 @@ class TestCmdClean:
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
-        digue.cmd_clean(self._args(), config)
+        audio_mod.cmd_clean(self._args(), config)
 
         err = capsys.readouterr().err
         assert "2026/09/20260901-100000.flac" in err
@@ -169,7 +169,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True), config)
+        result = audio_mod.cmd_clean(self._args(force=True), config)
 
         assert result == 0
         assert not list(month.glob("*0123456789abcdef*"))
@@ -187,7 +187,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True), config)
+        result = audio_mod.cmd_clean(self._args(force=True), config)
 
         assert result == 0
         assert "Nothing to remove" in capsys.readouterr().err
@@ -202,7 +202,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
+        result = audio_mod.cmd_clean(self._args(force=True, what="transcripts"), config)
 
         assert result == 0
         assert "Nothing to remove" in capsys.readouterr().err
@@ -214,7 +214,7 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.cmd_clean(self._args(), config)
+        result = audio_mod.cmd_clean(self._args(), config)
 
         assert result == 0
         assert "Nothing to remove" in capsys.readouterr().err
@@ -223,6 +223,6 @@ class TestCmdClean:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "nonexistent")
 
-        result = digue.cmd_clean(self._args(), config)
+        result = audio_mod.cmd_clean(self._args(), config)
 
         assert result == 0

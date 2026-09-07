@@ -459,7 +459,7 @@ class TestDictateDaemon:
         assert seen == [f"{os.getpid()} starting {recording_mod._process_starttime(os.getpid())}"]
 
     def test_recording_filename_is_unique_within_same_second(self):
-        with patch("digue.now_timestamp", return_value="20260904-120000"):
+        with patch("digue.audio.now_timestamp", return_value="20260904-120000"):
             first = recording_mod._rec_file()
             second = recording_mod._rec_file()
 

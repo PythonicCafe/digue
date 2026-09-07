@@ -72,7 +72,7 @@ class TestNotifyLifecycle:
     @patch("digue.notify.send_notification")
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_pasted(
         self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
@@ -94,7 +94,7 @@ class TestNotifyLifecycle:
     @patch("digue.notify.send_notification")
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_typed(
         self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
@@ -115,7 +115,7 @@ class TestNotifyLifecycle:
 
     @patch("digue.delivery.send_text", side_effect=RuntimeError("no display"))
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_paste_failure_notifies_with_timeout(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
@@ -131,7 +131,7 @@ class TestNotifyLifecycle:
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", side_effect=OSError("disk full"))
+    @patch("digue.audio.save_audio", side_effect=OSError("disk full"))
     def test_save_failure_notifies_and_does_not_crash(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
@@ -147,7 +147,7 @@ class TestNotifyLifecycle:
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_transcript_write_failure_notifies_and_prints_text(
         self, mock_save, mock_transcribe, mock_send, tmp_path, capsys
     ):

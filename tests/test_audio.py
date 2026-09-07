@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import digue
+from digue import audio as audio_mod
 from digue.config import _default_config, load_config
 from digue.container import CONTAINER_NAME
 
@@ -15,7 +16,7 @@ from digue.container import CONTAINER_NAME
 class TestTimestampFormat:
     def test_format_has_no_colon_or_dash_in_date(self):
         """Filenames must be shell-friendly: YYYYMMDD-HHMMSS (no ':' to escape)."""
-        timestamp = digue.now_timestamp()
+        timestamp = audio_mod.now_timestamp()
         assert len(timestamp) == 15
         assert timestamp[8] == "-"
         assert ":" not in timestamp
@@ -23,7 +24,7 @@ class TestTimestampFormat:
 
     def test_month_directory_uses_timestamp_not_wall_clock(self):
         """The YYYY/MM path comes from the timestamp, so audio and .txt land together."""
-        assert digue.month_dir_for("20260904-123456") == Path("2026") / "09"
+        assert audio_mod.month_dir_for("20260904-123456") == Path("2026") / "09"
 
 
 class TestSaveAudio:
@@ -31,7 +32,7 @@ class TestSaveAudio:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"wav data")
         audio_dir = tmp_path / "audio"
-        saved, timestamp = digue.save_audio(rec_file, audio_dir)
+        saved, timestamp = audio_mod.save_audio(rec_file, audio_dir)
         assert saved.exists()
         # <audio_dir>/YYYY/MM/<timestamp>.wav
         assert saved.parent == audio_dir / timestamp[:4] / timestamp[4:6]
@@ -46,11 +47,11 @@ class TestRescueRecording:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"new audio")
         timestamp = "20260905-101500"
-        existing = tmp_path / "audio" / digue.month_dir_for(timestamp) / f"{timestamp}-0123456789abcdef.wav"
+        existing = tmp_path / "audio" / audio_mod.month_dir_for(timestamp) / f"{timestamp}-0123456789abcdef.wav"
         existing.parent.mkdir(parents=True)
         existing.write_bytes(b"old audio")
 
-        rescued = digue.rescue_recording(rec_file, tmp_path / "audio", timestamp, "0123456789abcdef")
+        rescued = audio_mod.rescue_recording(rec_file, tmp_path / "audio", timestamp, "0123456789abcdef")
 
         assert rescued is None
         assert existing.read_bytes() == b"old audio"
@@ -62,7 +63,7 @@ class TestRescueRecording:
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
 
-        rescued = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+        rescued = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
 
         archived = audio_dir / "2026" / "09" / "20260904-120000-0123456789abcdef.wav"
         assert rescued == archived
@@ -73,7 +74,7 @@ class TestRescueRecording:
         rec_file = tmp_path / "digue-rec.wav"  # never created: the copy must fail
         audio_dir = tmp_path / "audio"
 
-        result = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+        result = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
 
         assert result is None
         assert "Failed to keep recording" in capsys.readouterr().err
@@ -84,7 +85,7 @@ class TestRescueRecording:
         audio_dir = tmp_path / "audio"
 
         with patch("os.link", side_effect=OSError("disk full")):
-            result = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+            result = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
 
         month_dir = audio_dir / "2026" / "09"
         assert result is None
@@ -103,8 +104,8 @@ class TestTakeIdInSavedNames:
         rec_file.write_bytes(b"wav data")
         audio_dir = tmp_path / "audio"
 
-        saved, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
-        text_path = digue._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
+        saved, _ = audio_mod.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
+        text_path = audio_mod._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
 
         assert saved.name == "20260904-120000-0123456789abcdef.wav"
         assert text_path.name == "20260904-120000-0123456789abcdef.txt"
@@ -114,10 +115,10 @@ class TestTakeIdInSavedNames:
         rec_file.write_bytes(b"wav data")
         audio_dir = tmp_path / "audio"
 
-        saved_a, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0" * 16)
-        text_a = digue._write_transcript(audio_dir, "20260904-120000", "a", take_id="0" * 16)
-        saved_b, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="f" * 16)
-        text_b = digue._write_transcript(audio_dir, "20260904-120000", "b", take_id="f" * 16)
+        saved_a, _ = audio_mod.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0" * 16)
+        text_a = audio_mod._write_transcript(audio_dir, "20260904-120000", "a", take_id="0" * 16)
+        saved_b, _ = audio_mod.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="f" * 16)
+        text_b = audio_mod._write_transcript(audio_dir, "20260904-120000", "b", take_id="f" * 16)
 
         assert len({saved_a, saved_b, text_a, text_b}) == 4
         assert all(path.exists() for path in (saved_a, saved_b, text_a, text_b))
@@ -132,7 +133,7 @@ class TestTakeIdInSavedNames:
         existing.write_bytes(b"original")
 
         with pytest.raises(FileExistsError):
-            digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000")
+            audio_mod.save_audio(rec_file, audio_dir, timestamp="20260904-120000")
 
         assert existing.read_bytes() == b"original"
 
@@ -144,7 +145,7 @@ class TestTakeIdInSavedNames:
         existing.write_text("original\n")
 
         with pytest.raises(FileExistsError):
-            digue._write_transcript(audio_dir, "20260904-120000", "hello")
+            audio_mod._write_transcript(audio_dir, "20260904-120000", "hello")
 
         assert existing.read_text() == "original\n"
 
@@ -158,7 +159,7 @@ class TestTakeIdInSavedNames:
         existing.write_bytes(b"original")
 
         with pytest.raises(FileExistsError):
-            digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
+            audio_mod.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
 
         assert existing.read_bytes() == b"original"
 
@@ -170,7 +171,7 @@ class TestTakeIdInSavedNames:
         existing.write_text("original\n")
 
         with pytest.raises(FileExistsError):
-            digue._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
+            audio_mod._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
 
         assert existing.read_text() == "original\n"
 
@@ -188,8 +189,8 @@ class TestDictationFiles:
         for path in (old_wav, new_flac, new_txt, music, notes):
             path.write_bytes(b"x")
 
-        recordings = digue._dictation_files(audio_dir, digue.DICTATION_RECORDING_SUFFIXES)
-        transcripts = digue._dictation_files(audio_dir, frozenset((".txt",)))
+        recordings = audio_mod._dictation_files(audio_dir, audio_mod.DICTATION_RECORDING_SUFFIXES)
+        transcripts = audio_mod._dictation_files(audio_dir, frozenset((".txt",)))
 
         assert recordings == [old_wav, new_flac]
         assert transcripts == [new_txt]
@@ -202,14 +203,14 @@ class TestDictationFiles:
         target.write_bytes(b"x")
         (month_dir / "20260904-120000.wav").symlink_to(target)
 
-        assert digue._dictation_files(audio_dir, digue.DICTATION_RECORDING_SUFFIXES) == []
+        assert audio_mod._dictation_files(audio_dir, audio_mod.DICTATION_RECORDING_SUFFIXES) == []
 
 
 class TestCompressAudio:
     def test_wav_is_noop(self, tmp_path):
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"data")
-        assert digue._compress_audio(rec, "wav") == rec
+        assert audio_mod._compress_audio(rec, "wav") == rec
 
     def test_flac_compresses_and_removes_wav(self, tmp_path):
         import shutil
@@ -229,7 +230,7 @@ class TestCompressAudio:
             wav.writeframes(samples)
         wav_size = rec.stat().st_size
 
-        result = digue._compress_audio(rec, "flac")
+        result = audio_mod._compress_audio(rec, "flac")
 
         assert result.suffix == ".flac"
         assert result.exists()
@@ -240,7 +241,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"data")
         with pytest.raises(KeyError):
-            digue._compress_audio(rec, "mp3")
+            audio_mod._compress_audio(rec, "mp3")
 
     @patch("digue.container.container_status", return_value=None)
     @patch("shutil.which", return_value="/usr/bin/ffmpeg")
@@ -263,7 +264,7 @@ class TestCompressAudio:
 
         mock_run.side_effect = fake_run
 
-        result = digue._compress_audio(rec, "flac")
+        result = audio_mod._compress_audio(rec, "flac")
 
         assert result == tmp_path / "20260904-120000-0123456789abcdef.flac"
         assert result.read_bytes() == b"flac-data"
@@ -284,7 +285,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "flac")
+        result = audio_mod._compress_audio(rec, "flac")
 
         assert result == rec
         assert rec.exists()
@@ -304,7 +305,7 @@ class TestCompressAudio:
             patch("subprocess.run", side_effect=failure),
             pytest.raises(type(failure)),
         ):
-            digue._compress_audio(rec, "flac")
+            audio_mod._compress_audio(rec, "flac")
 
         assert rec.read_bytes() == b"data"
         assert sorted(path.name for path in audio_dir.iterdir()) == ["rec.wav"]
@@ -321,7 +322,7 @@ class TestCompressAudio:
             patch("subprocess.run", side_effect=OSError("docker gone")),
             pytest.raises(OSError),
         ):
-            digue._compress_audio(rec, "flac", backend="cpu")
+            audio_mod._compress_audio(rec, "flac", backend="cpu")
 
         assert rec.read_bytes() == b"data"
         assert sorted(path.name for path in audio_dir.iterdir()) == ["rec.wav"]
@@ -333,7 +334,7 @@ class TestCompressAudio:
         existing.write_bytes(b"original")
 
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"), pytest.raises(FileExistsError):
-            digue._compress_audio(rec, "flac")
+            audio_mod._compress_audio(rec, "flac")
 
         assert existing.read_bytes() == b"original"
         assert rec.exists()
@@ -348,7 +349,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "flac", backend="amd")
+        result = audio_mod._compress_audio(rec, "flac", backend="amd")
 
         assert result == tmp_path / "rec.flac"
         assert result.read_bytes() == b"flac-data"
@@ -369,7 +370,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "opus")
+        result = audio_mod._compress_audio(rec, "opus")
 
         assert result == tmp_path / "rec.opus"
         assert result.read_bytes() == b"opus-data"
@@ -386,7 +387,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "flac", backend="remote")
+        result = audio_mod._compress_audio(rec, "flac", backend="remote")
 
         assert result == rec
         assert rec.exists()
@@ -399,7 +400,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "flac")
+        result = audio_mod._compress_audio(rec, "flac")
 
         assert result == rec
         assert rec.exists()
@@ -417,7 +418,7 @@ class TestCompressAudio:
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
 
-        result = digue._compress_audio(rec, "flac")
+        result = audio_mod._compress_audio(rec, "flac")
 
         assert result == rec
         assert rec.exists()
@@ -447,8 +448,8 @@ class TestSaveAudioConfig:
         rec_file.write_bytes(b"fLaC")
         audio_dir = tmp_path / "audio"
 
-        with patch("digue._compress_audio") as mock_compress:
-            saved, _ = digue.save_audio(
+        with patch("digue.audio._compress_audio") as mock_compress:
+            saved, _ = audio_mod.save_audio(
                 rec_file,
                 audio_dir,
                 audio_format="flac",
@@ -460,21 +461,21 @@ class TestSaveAudioConfig:
         assert saved.suffix == ".flac"
         assert saved.read_bytes() == b"fLaC"
 
-    @patch("digue._compress_audio")
+    @patch("digue.audio._compress_audio")
     def test_save_audio_passes_backend(self, mock_compress, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
         mock_compress.return_value = audio_dir / "2026/01/test.flac"
 
-        digue.save_audio(rec_file, audio_dir, audio_format="flac", timestamp="2026-01-01T00-00-00", backend="amd")
+        audio_mod.save_audio(rec_file, audio_dir, audio_format="flac", timestamp="2026-01-01T00-00-00", backend="amd")
 
         mock_compress.assert_called_once()
         assert mock_compress.call_args[1]["backend"] == "amd"
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
-    @patch("digue.save_audio")
+    @patch("digue.audio.save_audio")
     def test_save_audio_false_skips_wav_but_writes_txt(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
