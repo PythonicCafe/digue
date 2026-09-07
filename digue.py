@@ -2114,7 +2114,9 @@ def _recording_file_of(pid: int) -> Path | None:
     the process is already gone (its descriptors are closed).
     """
 
-    runtime_dir = _runtime_dir()
+    # readlink yields the kernel's resolved path: compare against the resolved
+    # runtime dir (XDG_RUNTIME_DIR may be a symlink), as TakeState does
+    runtime_dir = _runtime_dir().resolve()
     try:
         fd_links = list(Path(f"/proc/{pid}/fd").iterdir())
     except (FileNotFoundError, ProcessLookupError, PermissionError):
