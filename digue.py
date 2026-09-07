@@ -1474,6 +1474,166 @@ class RecordingProcesses:
     rec_file: Path | None = None
 
 
+TAKE_STATE_VERSION = 1
+TAKE_STATES = ("starting", "recording", "delivering", "recovering")
+
+
+@dataclass(frozen=True)
+class TakeState:
+    """Persistent identity and lifecycle state for one recording take."""
+
+    version: int
+    take_id: str
+    created_at_ns: int
+    state: str
+    rec_file: Path
+    daemon_pid: int
+    daemon_starttime: int
+    recorder_pid: int | None = None
+    recorder_starttime: int | None = None
+    recoverer_pid: int | None = None
+    recoverer_starttime: int | None = None
+
+    def __post_init__(self) -> None:
+        import re
+
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version != TAKE_STATE_VERSION:
+            raise ValueError(f"Unsupported take state version: {self.version}")
+        if not isinstance(self.take_id, str) or re.fullmatch(r"[0-9a-f]{16}", self.take_id) is None:
+            raise ValueError("take_id must contain exactly 16 lowercase hexadecimal characters")
+        integer_fields: dict[str, int] = {
+            "created_at_ns": self.created_at_ns,
+            "daemon_pid": self.daemon_pid,
+            "daemon_starttime": self.daemon_starttime,
+        }
+        recorder: int | None = self.recorder_pid
+        recorder_start: int | None = self.recorder_starttime
+        recoverer: int | None = self.recoverer_pid
+        recoverer_start: int | None = self.recoverer_starttime
+        optional_integer_fields: dict[str, int | None] = {
+            "recorder_pid": recorder,
+            "recorder_starttime": recorder_start,
+            "recoverer_pid": recoverer,
+            "recoverer_starttime": recoverer_start,
+        }
+        for name, value in integer_fields.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        for optional_name, optional_value in optional_integer_fields.items():
+            is_invalid = optional_value is not None and (
+                isinstance(optional_value, bool) or not isinstance(optional_value, int) or optional_value <= 0
+            )
+            if is_invalid:
+                raise ValueError(f"{optional_name} must be a positive integer or null")
+        if (recorder is None) != (recorder_start is None):
+            raise ValueError("recorder_pid and recorder_starttime must both be set or null")
+        if (recoverer is None) != (recoverer_start is None):
+            raise ValueError("recoverer_pid and recoverer_starttime must both be set or null")
+        if self.state not in TAKE_STATES:
+            raise ValueError(f"Invalid take state: {self.state}")
+        if self.state == "starting" and (recorder is not None or recoverer is not None):
+            raise ValueError("starting takes cannot have a recorder or recoverer")
+        if self.state in ("recording", "delivering") and (recorder is None or recoverer is not None):
+            raise ValueError(f"{self.state} takes require a recorder and cannot have a recoverer")
+        if self.state == "recovering" and recoverer is None:
+            raise ValueError("recovering takes require a recoverer")
+        runtime_dir = _runtime_dir().resolve()
+        try:
+            relative_rec_file = self.rec_file.resolve().relative_to(runtime_dir)
+        except ValueError:
+            raise ValueError(f"rec_file must be inside the runtime directory: {self.rec_file}") from None
+        if (
+            relative_rec_file.parent != Path(".")
+            or not relative_rec_file.name.startswith("digue-")
+            or not relative_rec_file.name.endswith(".wav")
+        ):
+            raise ValueError("rec_file must be named digue-*.wav directly inside the runtime directory")
+
+
+def new_take_id() -> str:
+    import secrets
+
+    return secrets.token_hex(8)
+
+
+def _take_state_file(take_id: str) -> Path:
+    return _runtime_dir() / f"digue-take-{take_id}.json"
+
+
+def _write_take_state(take: TakeState) -> Path:
+    import json
+
+    state_path = _take_state_file(take.take_id)
+    data = {
+        "version": take.version,
+        "take_id": take.take_id,
+        "created_at_ns": take.created_at_ns,
+        "state": take.state,
+        "rec_file": str(take.rec_file),
+        "daemon_pid": take.daemon_pid,
+        "daemon_starttime": take.daemon_starttime,
+        "recorder_pid": take.recorder_pid,
+        "recorder_starttime": take.recorder_starttime,
+        "recoverer_pid": take.recoverer_pid,
+        "recoverer_starttime": take.recoverer_starttime,
+    }
+    _write_state_file(state_path, json.dumps(data, separators=(",", ":")))
+    return state_path
+
+
+def _read_take_state(state_path: Path) -> TakeState | None:
+    """Reads strict take JSON; malformed state is reported and left untouched."""
+    import json
+
+    required_fields = {
+        "version",
+        "take_id",
+        "created_at_ns",
+        "state",
+        "rec_file",
+        "daemon_pid",
+        "daemon_starttime",
+        "recorder_pid",
+        "recorder_starttime",
+        "recoverer_pid",
+        "recoverer_starttime",
+    }
+    try:
+        raw = json.loads(state_path.read_text())
+        if not isinstance(raw, dict) or set(raw) != required_fields:
+            raise ValueError("take state must contain exactly the required fields")
+        if not isinstance(raw["rec_file"], str):
+            raise ValueError("rec_file must be a string")
+        take = TakeState(
+            version=raw["version"],
+            take_id=raw["take_id"],
+            created_at_ns=raw["created_at_ns"],
+            state=raw["state"],
+            rec_file=Path(raw["rec_file"]),
+            daemon_pid=raw["daemon_pid"],
+            daemon_starttime=raw["daemon_starttime"],
+            recorder_pid=raw["recorder_pid"],
+            recorder_starttime=raw["recorder_starttime"],
+            recoverer_pid=raw["recoverer_pid"],
+            recoverer_starttime=raw["recoverer_starttime"],
+        )
+        if state_path != _take_state_file(take.take_id):
+            raise ValueError("take_id does not match the state filename")
+        return take
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"Unreadable take state at {state_path}: {exc}", file=sys.stderr)
+        return None
+
+
+def _take_states() -> list[TakeState]:
+    states = []
+    for state_path in _runtime_dir().glob("digue-take-*.json"):
+        take = _read_take_state(state_path)
+        if take is not None:
+            states.append(take)
+    return sorted(states, key=lambda take: (take.created_at_ns, take.take_id))
+
+
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     """Starts the recorder and safety watchdog, returning their owned handles.
 

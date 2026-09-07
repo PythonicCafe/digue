@@ -948,6 +948,89 @@ class TestRecording:
         assert digue.is_recording() is False
 
 
+class TestTakeState:
+    def make_state(self, tmp_path, **changes):
+        values = {
+            "version": digue.TAKE_STATE_VERSION,
+            "take_id": "0123456789abcdef",
+            "created_at_ns": 123,
+            "state": "starting",
+            "rec_file": tmp_path / "digue-recording.wav",
+            "daemon_pid": 42,
+            "daemon_starttime": 99,
+            "recorder_pid": None,
+            "recorder_starttime": None,
+            "recoverer_pid": None,
+            "recoverer_starttime": None,
+        }
+        values.update(changes)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            return digue.TakeState(**values)
+
+    def test_round_trip_and_ordering(self, tmp_path):
+        newer = self.make_state(tmp_path, take_id="ffffffffffffffff", created_at_ns=124)
+        older = self.make_state(tmp_path)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            digue._write_take_state(newer)
+            digue._write_take_state(older)
+            assert digue._read_take_state(tmp_path / "digue-take-0123456789abcdef.json") == older
+            assert digue._take_states() == [older, newer]
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"version": 2},
+            {"take_id": "not-hex"},
+            {"created_at_ns": 0},
+            {"state": "unknown"},
+            {"rec_file": Path("/outside/digue-recording.wav")},
+            {"rec_file": Path("PLACEHOLDER")},
+            {"recorder_pid": 1},
+            {"state": "recording"},
+            {
+                "state": "recording",
+                "recorder_pid": 1,
+                "recorder_starttime": 2,
+                "recoverer_pid": 3,
+                "recoverer_starttime": 4,
+            },
+            {"state": "recovering"},
+        ],
+    )
+    def test_rejects_invalid_combinations(self, tmp_path, changes):
+        if changes.get("rec_file") == Path("PLACEHOLDER"):
+            changes["rec_file"] = tmp_path / "other.wav"
+        with pytest.raises(ValueError):
+            self.make_state(tmp_path, **changes)
+
+    def test_accepts_each_valid_state(self, tmp_path):
+        self.make_state(tmp_path)
+        self.make_state(tmp_path, state="recording", recorder_pid=10, recorder_starttime=20)
+        self.make_state(tmp_path, state="delivering", recorder_pid=10, recorder_starttime=20)
+        self.make_state(tmp_path, state="recovering", recoverer_pid=30, recoverer_starttime=40)
+        self.make_state(
+            tmp_path,
+            state="recovering",
+            recorder_pid=10,
+            recorder_starttime=20,
+            recoverer_pid=30,
+            recoverer_starttime=40,
+        )
+
+    def test_truncated_state_is_reported_and_never_removed(self, tmp_path, capsys):
+        state_path = tmp_path / "digue-take-0123456789abcdef.json"
+        state_path.write_text('{"version":')
+        wav_path = tmp_path / "digue-recording.wav"
+        wav_path.write_bytes(b"audio")
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            assert digue._take_states() == []
+
+        assert state_path.exists()
+        assert wav_path.exists()
+        assert str(state_path) in capsys.readouterr().err
+
+
 class TestStateFilesAreWrittenAtomically:
     """Path.write_text truncates before writing: a concurrent toggle reading in
     between sees an empty file. For the daemon file that reads as "no daemon",
