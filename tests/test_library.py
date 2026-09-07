@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 
 class TestTranscribeFile:
@@ -14,7 +15,7 @@ class TestTranscribeFile:
     def test_uses_config_and_returns_text(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["transcribe"]["prompt"] = "KINAI"
         config["transcribe"]["language"] = "pt"
 
@@ -30,13 +31,13 @@ class TestTranscribeFile:
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")
         with pytest.raises(RuntimeError, match="server is not running"):
-            digue.transcribe_file(audio, digue._default_config())
+            digue.transcribe_file(audio, _default_config())
 
 
 class TestRecordTo:
     def test_uses_recording_command_and_returns_path(self, tmp_path):
         output = tmp_path / "take.wav"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["recorder"] = "arecord"
         config["dictate"]["device"] = "hw:2,0"
         proc = MagicMock()
@@ -58,7 +59,7 @@ class TestRecordTo:
 
     def test_propagates_recorder_startup_error(self, tmp_path):
         output = tmp_path / "take.wav"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["recorder"] = "pw-record"
         dead = MagicMock()
         dead.poll.return_value = 1

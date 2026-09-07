@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 
 class TestCmdConvert:
@@ -22,7 +23,7 @@ class TestCmdConvert:
         args.output = str(tmp_path / "b.txt")
         args.from_format = None
         args.to_format = None
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         assert "Saved:" in capsys.readouterr().err
@@ -37,7 +38,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = None
         args.to_format = "text"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         assert capsys.readouterr().out.strip() == "Hello World"
@@ -48,7 +49,7 @@ class TestCmdConvert:
         args.output = "b.txt"
         args.from_format = None
         args.to_format = None
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 1
         assert "from-format is required" in capsys.readouterr().err
@@ -59,7 +60,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = "vtt"
         args.to_format = "text"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 1
         err = capsys.readouterr().err
@@ -73,7 +74,7 @@ class TestCmdConvert:
         args.output = str(tmp_path / "b.txt")
         args.from_format = "vtt"
         args.to_format = None
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         assert "[00:00:00] Hi" in (tmp_path / "b.txt").read_text()
@@ -86,7 +87,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = None
         args.to_format = "text"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 1
         assert "from-format" in capsys.readouterr().err
@@ -100,7 +101,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = None
         args.to_format = None
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         assert capsys.readouterr().out.strip() == "Hello World"
@@ -113,7 +114,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = None
         args.to_format = "vtt"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         out = capsys.readouterr().out
@@ -173,7 +174,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = "text"
         args.to_format = "vtt"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 1
         assert "cannot convert" in capsys.readouterr().err
@@ -186,7 +187,7 @@ class TestCmdConvert:
         args.output = None
         args.from_format = None
         args.to_format = "text"
-        config = digue._default_config()
+        config = _default_config()
         result = digue.cmd_convert(args, config)
         assert result == 0
         assert "Hello" in capsys.readouterr().out
@@ -257,7 +258,7 @@ class TestSilentAudioTimestamps:
         args.prompt = None
         args.verbose = False
 
-        result = digue.cmd_transcribe(args, digue._default_config())
+        result = digue.cmd_transcribe(args, _default_config())
 
         captured = capsys.readouterr()
         assert result == 0
@@ -281,7 +282,7 @@ class TestSilentAudioTimestamps:
         args.response_format = "timestamps"
         args.language = None
 
-        result = digue.cmd_batch_transcribe(args, digue._default_config())
+        result = digue.cmd_batch_transcribe(args, _default_config())
 
         assert result == 0
         assert (output_dir / "silence.txt").read_text() == "\n"

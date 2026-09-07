@@ -14,12 +14,12 @@
 ## Conventions
 
 - **Stdlib only.** No external runtime dependencies. `tomllib` (3.11+), `urllib.request`, `subprocess`, `pathlib`.
-- **Package.** All logic currently lives in `digue/__init__.py`. Version is `digue.__version__`. Run via `python -m digue` or the `digue` console script.
+- **Package.** Submodules live under `digue/`. Version is `digue.__version__`. Run via `python -m digue` or the `digue` console script. Current modules: `__init__.py` (remaining logic), `config.py` (load/validate/config command), `__main__.py`.
 - **English everywhere.** README, docstrings, comments, CLI help text, notifications, commit messages -- all English.
 - **`pathlib.Path` always.** Never `os.path`.
 - **Modern type hints.** `str | None`, `list[Path]` -- not `Optional`, `List`.
 - **No single-char variables** except `_` in unpacking.
-- **Lazy imports.** Module level has only `argparse`, `collections.abc`, `contextlib`, `dataclasses`, `os`, `pathlib`, `sys` and `typing` (the test suite pins this list). Everything else is imported inside the function that uses it, and a function never re-imports a module-level name (`os`, `contextlib`, `Path` were re-imported 42 times before the test caught it).
+- **Lazy imports.** Each package module (except `__main__.py`) may import at module level only `argparse`, `collections.abc`, `contextlib`, `dataclasses`, `os`, `pathlib`, `sys`, `typing`, and `digue` (sibling modules / package constants). Everything else is imported inside the function that uses it, and a function never re-imports a module-level name (`os`, `contextlib`, `Path` were re-imported 42 times before the test caught it). The test suite scans every `digue/*.py` except `__main__.py`.
 - **Type hints everywhere; `mypy --strict` must stay clean.** Config dicts are `dict[str, dict[str, Any]]` (values are TOML-parsed scalars; `Any` beats `object` because `dict` is invariant and these values flow into `str`/`int` params).
 - **Errors are visible.** `send_notification()` always prints to stderr AND tries desktop notification. Never silently swallow errors.
 - **User-facing failures notify, never traceback.** A failure inside a dictation/transcription flow (save, transcribe, paste) reports via `send_notification(..., timeout_ms=...)` and returns exit code 1; raw tracebacks are for bugs only.

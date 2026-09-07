@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import digue
+from digue.config import _default_config, load_config
 
 # -- Detection ----------------------------------------------------------------
 
@@ -109,7 +110,7 @@ class TestDockerMissing:
         assert "Traceback" not in err
 
     def test_dictate_blames_docker_not_the_recorder(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=digue.DockerNotFoundError(digue.DOCKER_NOT_FOUND)),
@@ -141,7 +142,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_nvidia_uses_gpus_flag(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         digue.create_container(config, "nvidia")
         cmd = mock_docker.call_args[0][0]
         assert "--gpus" in cmd
@@ -153,7 +154,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_amd_uses_kfd_device(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         digue.create_container(config, "amd")
         cmd = mock_docker.call_args[0][0]
         assert "/dev/kfd" in cmd
@@ -163,7 +164,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_cpu_has_no_device_flags(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         digue.create_container(config, "cpu")
         cmd = mock_docker.call_args[0][0]
         assert "--device" not in cmd
@@ -174,7 +175,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_raises_on_failure(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=1, stderr="permission denied")
-        config = digue._default_config()
+        config = _default_config()
         with pytest.raises(RuntimeError, match="permission denied"):
             digue.create_container(config, "cpu")
 
@@ -183,7 +184,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_binds_to_localhost(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         digue.create_container(config, "cpu")
         cmd = mock_docker.call_args[0][0]
         port_binding = [arg for arg in cmd if "8178" in arg and "127.0.0.1" in arg]
@@ -194,7 +195,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_binds_to_configured_ip(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["bind_ip"] = "192.168.1.10"
         digue.create_container(config, "cpu")
         cmd = mock_docker.call_args[0][0]
@@ -205,7 +206,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_calls_pull_image(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         digue.create_container(config, "cpu")
         mock_pull.assert_called_once_with("ghcr.io/ggml-org/whisper.cpp:main-vulkan")
 
@@ -214,7 +215,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_downloads_model_when_missing(self, mock_docker, mock_pull, mock_download, tmp_path):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         digue.create_container(config, "cpu")
         mock_download.assert_called_once_with("small", tmp_path / "models", with_notification=True)
@@ -224,7 +225,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_skips_download_when_model_exists(self, mock_docker, mock_pull, mock_download, tmp_path):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         models_dir = tmp_path / "models"
         models_dir.mkdir(parents=True)
@@ -238,7 +239,7 @@ class TestCreateContainer:
     @patch("digue._docker_run")
     def test_downloads_when_vad_is_missing(self, mock_docker, mock_pull, mock_download, tmp_path):
         mock_docker.return_value = MagicMock(returncode=0)
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         models_dir = tmp_path / "models"
         models_dir.mkdir(parents=True)
@@ -417,12 +418,12 @@ class TestDownloadModel:
 class TestIsServerRunning:
     @patch("urllib.request.urlopen")
     def test_true_when_responds(self, mock_urlopen):
-        config = digue._default_config()
+        config = _default_config()
         assert digue.is_server_running(config) is True
 
     @patch("urllib.request.urlopen", side_effect=OSError)
     def test_false_when_refused(self, mock_urlopen):
-        config = digue._default_config()
+        config = _default_config()
         assert digue.is_server_running(config) is False
 
 
@@ -455,7 +456,7 @@ class TestContainerFailures:
         self, mock_running, mock_status, mock_start, mock_wait, capsys
     ):
         with pytest.raises(RuntimeError, match="start failed"):
-            digue.ensure_server(digue._default_config(), silent=True)
+            digue.ensure_server(_default_config(), silent=True)
 
         mock_wait.assert_not_called()
 
@@ -478,7 +479,7 @@ class TestContainerFailures:
         mock_notify_close,
         silent,
     ):
-        config = digue._default_config()
+        config = _default_config()
 
         assert digue.ensure_server(config, silent=silent) is None
 
@@ -497,7 +498,7 @@ class TestContainerFailures:
     @patch("digue.container_status", return_value="running")
     @patch("digue.is_server_running", return_value=False)
     def test_ensure_server_reports_running_container_timeout(self, mock_running, mock_status, mock_wait, mock_notify):
-        config = digue._default_config()
+        config = _default_config()
 
         assert digue.ensure_server(config) is None
 
@@ -528,7 +529,7 @@ class TestContainerFailures:
         expected_backend,
     ):
         mock_status.return_value = status
-        config = digue._default_config()
+        config = _default_config()
 
         assert digue.ensure_server(config, silent=True) == expected_backend
 
@@ -544,26 +545,26 @@ class TestContainerFailures:
     @patch("digue.container_status", return_value="paused")
     @patch("digue.is_server_running", return_value=False)
     def test_ensure_server_rejects_invalid_container_state(self, mock_running, mock_status, mock_wait, mock_notify):
-        assert digue.ensure_server(digue._default_config()) is None
+        assert digue.ensure_server(_default_config()) is None
 
         mock_notify.assert_called_once_with("Container in unexpected state: paused", timeout_ms=5000)
         mock_wait.assert_not_called()
 
     @patch("digue.stop_container", side_effect=RuntimeError("stop failed"))
     def test_cmd_server_stop_does_not_report_false_success(self, mock_stop, capsys):
-        assert digue.cmd_server_stop(MagicMock(), digue._default_config()) == 1
+        assert digue.cmd_server_stop(MagicMock(), _default_config()) == 1
         assert "Error: stop failed" in capsys.readouterr().err
 
     @patch("digue.remove_container", side_effect=RuntimeError("remove failed"))
     def test_cmd_server_destroy_does_not_report_false_success(self, mock_remove, capsys):
-        assert digue.cmd_server_destroy(MagicMock(), digue._default_config()) == 1
+        assert digue.cmd_server_destroy(MagicMock(), _default_config()) == 1
         assert "Error: remove failed" in capsys.readouterr().err
 
     @patch("digue.start_container", side_effect=RuntimeError("start failed"))
     @patch("digue.container_status", return_value="exited")
     @patch("digue.is_server_running", return_value=False)
     def test_cmd_server_start_does_not_report_false_success(self, mock_running, mock_status, mock_start, capsys):
-        assert digue.cmd_server_start(MagicMock(), digue._default_config()) == 1
+        assert digue.cmd_server_start(MagicMock(), _default_config()) == 1
         assert "Error: start failed" in capsys.readouterr().err
 
     @patch("digue._wait_for_server", return_value=False)
@@ -573,7 +574,7 @@ class TestContainerFailures:
     def test_cmd_server_start_timeout_hint_names_the_digue_container(
         self, mock_running, mock_status, mock_start, mock_wait, capsys
     ):
-        assert digue.cmd_server_start(MagicMock(), digue._default_config()) == 1
+        assert digue.cmd_server_start(MagicMock(), _default_config()) == 1
         err = capsys.readouterr().err
         assert f"docker logs {digue.CONTAINER_NAME}" in err
         assert "whisper-server" not in err
@@ -581,46 +582,46 @@ class TestContainerFailures:
 
 class TestRemoteBackend:
     def test_resolve_backend_from_config(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         assert digue.resolve_backend(config) == "remote"
 
     @patch("digue.is_server_running", return_value=False)
     @patch("digue.container_status")
     def test_ensure_server_remote_never_touches_container(self, mock_status, mock_running):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         assert digue.ensure_server(config, silent=True) is None
         mock_status.assert_not_called()
 
     @patch("digue._docker_run")
     def test_create_container_remote_raises(self, mock_docker):
-        config = digue._default_config()
+        config = _default_config()
         with pytest.raises(RuntimeError, match="remote"):
             digue.create_container(config, "remote")
         mock_docker.assert_not_called()
 
     def test_hint_remote_mentions_tunnel(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         hint = digue.server_not_running_hint(config)
         assert "ssh -NfL" in hint
         assert "8178" in hint
 
     def test_hint_local_suggests_start(self):
-        config = digue._default_config()
+        config = _default_config()
         assert digue.server_not_running_hint(config) == "Run: digue server start"
 
     @patch("digue.is_server_running", return_value=True)
     def test_cmd_server_status_remote(self, mock_running, capsys):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         assert digue.cmd_server_status(MagicMock(), config) == 0
         assert "remote" in capsys.readouterr().err
 
     @patch("digue.is_server_running", return_value=False)
     def test_cmd_server_status_remote_not_responding(self, mock_running, capsys):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         assert digue.cmd_server_status(MagicMock(), config) == 1
 
@@ -629,7 +630,7 @@ class TestRemoteHost:
     @patch("urllib.request.urlopen")
     @patch("digue.detect_backend")
     def test_server_probes_do_not_detect_auto_backend(self, mock_detect_backend, mock_urlopen):
-        config = digue._default_config()
+        config = _default_config()
 
         digue.is_server_running(config)
         digue.server_url(config)
@@ -638,30 +639,30 @@ class TestRemoteHost:
         mock_detect_backend.assert_not_called()
 
     def test_server_host_localhost_for_local_backends(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["remote_host"] = "10.0.0.5"
         assert digue.server_host(config) == "127.0.0.1"
 
     def test_server_host_default_tunnel(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         assert digue.server_host(config) == "127.0.0.1"
 
     def test_server_host_remote_lan(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "10.0.0.5"
         assert digue.server_host(config) == "10.0.0.5"
 
     def test_server_url_uses_remote_host(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "desktop.lan"
         assert digue.server_url(config) == "http://desktop.lan:8178/inference"
 
     @patch("urllib.request.urlopen")
     def test_is_server_running_probes_remote_host(self, mock_urlopen):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "10.0.0.5"
         digue.is_server_running(config)
@@ -669,7 +670,7 @@ class TestRemoteHost:
         assert url == "http://10.0.0.5:8178/"
 
     def test_hint_remote_lan_mentions_host(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "10.0.0.5"
         hint = digue.server_not_running_hint(config)
@@ -677,14 +678,14 @@ class TestRemoteHost:
         assert "ssh -NfL" not in hint
 
     def test_hint_remote_tunnel_keeps_ssh(self):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         hint = digue.server_not_running_hint(config)
         assert "ssh -NfL" in hint
 
     @patch("digue.is_server_running", return_value=False)
     def test_cmd_server_status_remote_shows_host(self, mock_running, capsys):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "10.0.0.5"
         digue.cmd_server_status(MagicMock(), config)
@@ -693,7 +694,7 @@ class TestRemoteHost:
 
 class TestCmdDoctor:
     def test_prints_resolved_config_without_crashing(self, capsys):
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue.image_exists", return_value=False),
             patch("shutil.which", return_value=None),
@@ -705,7 +706,7 @@ class TestCmdDoctor:
 
     def test_lists_both_supported_recorders(self, capsys):
         """arecord is the documented fallback recorder; doctor only checked pw-record."""
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue.image_exists", return_value=False),
             patch("shutil.which", return_value=None),
@@ -720,5 +721,5 @@ class TestCmdDoctor:
         target.write_text("")
         args = MagicMock(config=str(target))
         with patch("digue.image_exists", return_value=False), patch("shutil.which", return_value=None):
-            digue.cmd_doctor(args, digue.load_config(target))
+            digue.cmd_doctor(args, load_config(target))
         assert str(target) in capsys.readouterr().err

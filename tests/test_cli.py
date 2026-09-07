@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import digue
+from digue.config import load_config
 
 
 class TestCreateParser:
@@ -68,7 +69,7 @@ class TestCreateParser:
             language = "it"
         """)
         )
-        config = digue.load_config(config_path)
+        config = load_config(config_path)
         assert config["server"]["port"] == 9999
         assert config["transcribe"]["language"] == "it"
 
@@ -106,6 +107,22 @@ class TestCreateParser:
 
 
 class TestModuleImports:
+    _allowed_top_level = {
+        "argparse",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "digue",
+        "os",
+        "pathlib",
+        "sys",
+        "typing",
+    }
+
+    def _package_modules(self):
+        root = Path(digue.__file__).resolve().parent
+        return sorted(path for path in root.glob("*.py") if path.name != "__main__.py")
+
     def _top_level_imports(self, tree):
         names = set()
         for node in tree.body:
@@ -119,29 +136,37 @@ class TestModuleImports:
         """AGENTS.md: lazy imports live inside functions, and only what the
         module level does not already provide. os, contextlib and Path are
         module-level, so their 42 local re-imports were dead weight."""
-        tree = ast.parse(Path(digue.__file__).read_text())
-        top_level = self._top_level_imports(tree)
         duplicated = []
-        for function in ast.walk(tree):
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            for node in ast.walk(function):
-                if isinstance(node, ast.Import):
-                    duplicated.extend(
-                        f"{function.name}:{alias.name}" for alias in node.names if alias.name in top_level
-                    )
-                elif isinstance(node, ast.ImportFrom):
-                    duplicated.extend(
-                        f"{function.name}:{node.module}.{alias.name}"
-                        for alias in node.names
-                        if f"{node.module}.{alias.name}" in top_level
-                    )
+        for path in self._package_modules():
+            tree = ast.parse(path.read_text())
+            top_level = self._top_level_imports(tree)
+            for function in ast.walk(tree):
+                if not isinstance(function, ast.FunctionDef):
+                    continue
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Import):
+                        duplicated.extend(
+                            f"{path.name}:{function.name}:{alias.name}"
+                            for alias in node.names
+                            if alias.name in top_level
+                        )
+                    elif isinstance(node, ast.ImportFrom):
+                        duplicated.extend(
+                            f"{path.name}:{function.name}:{node.module}.{alias.name}"
+                            for alias in node.names
+                            if f"{node.module}.{alias.name}" in top_level
+                        )
         assert duplicated == []
 
     def test_module_level_imports_match_agents_md(self):
-        tree = ast.parse(Path(digue.__file__).read_text())
-        modules = {name.split(".")[0] for name in self._top_level_imports(tree)} - {"__future__"}
-        assert modules == {"argparse", "collections", "contextlib", "dataclasses", "os", "pathlib", "sys", "typing"}
+        extra = {}
+        for path in self._package_modules():
+            tree = ast.parse(path.read_text())
+            modules = {name.split(".")[0] for name in self._top_level_imports(tree)} - {"__future__"}
+            unexpected = modules - self._allowed_top_level
+            if unexpected:
+                extra[path.name] = sorted(unexpected)
+        assert extra == {}
 
 
 class TestExistingDir:

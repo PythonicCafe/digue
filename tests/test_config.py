@@ -9,30 +9,31 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import config as config_mod
 
 # -- Config -------------------------------------------------------------------
 
 
 class TestDefaultConfig:
     def test_has_required_sections(self):
-        config = digue._default_config()
+        config = config_mod._default_config()
         assert "server" in config
         assert "dictate" in config
         assert "models" in config
 
     def test_default_port(self):
-        config = digue._default_config()
+        config = config_mod._default_config()
         assert config["server"]["port"] == 8178
 
     def test_default_models_include_nvidia(self):
-        config = digue._default_config()
+        config = config_mod._default_config()
         assert "nvidia" in config["models"]
         assert config["models"]["nvidia"] == "large-v3-turbo"
 
 
 class TestLoadConfig:
     def test_returns_defaults_when_no_file(self, tmp_path):
-        config = digue.load_config(tmp_path / "nonexistent.toml")
+        config = config_mod.load_config(tmp_path / "nonexistent.toml")
         assert config["server"]["port"] == 8178
 
     def test_reads_toml_overrides(self, tmp_path):
@@ -47,7 +48,7 @@ class TestLoadConfig:
             cpu = "tiny"
         """)
         )
-        config = digue.load_config(config_path)
+        config = config_mod.load_config(config_path)
         assert config["server"]["port"] == 9999
         assert config["models"]["nvidia"] == "medium"
         assert config["models"]["cpu"] == "tiny"
@@ -56,7 +57,7 @@ class TestLoadConfig:
     def test_kebab_case_keys(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text('[server]\ndata-dir = "/opt/data"\n')
-        config = digue.load_config(config_path)
+        config = config_mod.load_config(config_path)
         assert config["server"]["data_dir"] == "/opt/data"
 
     def test_main_reports_invalid_toml_without_traceback(self, tmp_path, capsys):
@@ -85,7 +86,7 @@ class TestLoadConfig:
             audio-dir = "~/whisper-audio"
         """)
         )
-        config = digue.load_config(config_path)
+        config = config_mod.load_config(config_path)
         assert "~" not in config["server"]["data_dir"]
         assert "~" not in config["dictate"]["audio_dir"]
         assert config["server"]["data_dir"].endswith("whisper/data")
@@ -94,20 +95,20 @@ class TestLoadConfig:
     def test_custom_docker_image_is_allowed(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text('[server]\nimage = "registry.example/my-whisper:custom"\n')
-        assert digue.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
+        assert config_mod.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
 
 
 class TestModelForBackend:
     def test_returns_default_without_config(self):
-        assert digue.model_for_backend("nvidia") == "large-v3-turbo"
-        assert digue.model_for_backend("cpu") == "small"
+        assert config_mod.model_for_backend("nvidia") == "large-v3-turbo"
+        assert config_mod.model_for_backend("cpu") == "small"
 
     def test_respects_config_override(self):
         config = {"models": {"nvidia": "medium"}}
-        assert digue.model_for_backend("nvidia", config) == "medium"
+        assert config_mod.model_for_backend("nvidia", config) == "medium"
 
     def test_unknown_backend_falls_back_to_small(self):
-        assert digue.model_for_backend("unknown") == "small"
+        assert config_mod.model_for_backend("unknown") == "small"
 
 
 class TestHostOverrides:
@@ -123,7 +124,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["server"]["backend"] == "cpu"
         assert config["dictate"]["max_duration"] == 42
 
@@ -136,7 +137,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="laptop.company.com"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["server"]["backend"] == "remote"
 
     def test_ignores_other_hosts(self, tmp_path):
@@ -148,7 +149,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["server"]["backend"] == "auto"
 
     def test_host_overrides_beat_global(self, tmp_path):
@@ -163,7 +164,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["server"]["backend"] == "cpu"
 
     def test_global_fills_what_host_does_not_override(self, tmp_path):
@@ -179,7 +180,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["server"]["backend"] == "cpu"
         assert config["server"]["port"] == 9000
 
@@ -195,7 +196,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         assert config["models"]["cpu"] == "medium"
         assert config["models"]["nvidia"] == "large-v3-turbo"
 
@@ -208,7 +209,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"), pytest.raises(ValueError, match="no-such-key"):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_gethostname_called_once_with_host_section(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -219,7 +220,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="laptop") as mock_hostname:
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
         assert mock_hostname.call_count == 1
 
 
@@ -236,12 +237,12 @@ class TestConfigStructureValidation:
     def load_with_hostname(self, tmp_path, toml, hostname="thinkpad"):
         config_path = self.write_config(tmp_path, toml)
         with patch("socket.gethostname", return_value=hostname):
-            return digue.load_config(config_path)
+            return config_mod.load_config(config_path)
 
     def test_unknown_top_level_section_lists_valid_ones(self, tmp_path):
         config_path = self.write_config(tmp_path, '[serv]\nbackend = "cpu"\n')
         with pytest.raises(ValueError) as excinfo:
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
         message = str(excinfo.value)
         assert '"serv"' in message
         for name in ("server", "transcribe", "dictate", "models", "host"):
@@ -254,17 +255,17 @@ class TestConfigStructureValidation:
     def test_section_value_must_be_a_table(self, tmp_path):
         config_path = self.write_config(tmp_path, 'server = "cpu"\n')
         with pytest.raises(ValueError, match=r"\[server\].*must be a table"):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_unknown_key_suggests_close_match(self, tmp_path):
         config_path = self.write_config(tmp_path, '[server]\nbackends = "cpu"\n')
         with pytest.raises(ValueError, match=r'Unknown server key "backends".*did you mean "backend"'):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_unknown_key_without_match_lists_valid_keys(self, tmp_path):
         config_path = self.write_config(tmp_path, "[server]\nxyzzy = 1\n")
         with pytest.raises(ValueError) as excinfo:
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
         message = str(excinfo.value)
         assert '"xyzzy"' in message
         assert "port" in message
@@ -275,7 +276,7 @@ class TestConfigStructureValidation:
         key that only works by accident."""
         config_path = self.write_config(tmp_path, "[dictate]\nmax-durations = 5\n")
         with pytest.raises(ValueError) as excinfo:
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
         message = str(excinfo.value)
         assert 'did you mean "max-duration"' in message
         assert "audio-dir" in message and "save-audio" in message
@@ -302,17 +303,17 @@ class TestConfigStructureValidation:
     def test_kebab_and_snake_collision_after_normalization_is_rejected(self, tmp_path):
         config_path = self.write_config(tmp_path, '[server]\ndata-dir = "/a"\ndata_dir = "/b"\n')
         with pytest.raises(ValueError, match=r'Conflicting.*"data-dir".*"data_dir"'):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_models_rejects_unknown_backends(self, tmp_path):
         config_path = self.write_config(tmp_path, '[models]\nremote = "small"\n')
         with pytest.raises(ValueError, match=r'Unknown models key "remote"'):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_models_rejects_values_outside_available_models(self, tmp_path):
         config_path = self.write_config(tmp_path, '[models]\ncpu = "giant"\n')
         with pytest.raises(ValueError, match=r"Invalid models\.cpu.*giant"):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
     def test_models_accepts_valid_backends_and_values(self, tmp_path):
         config = self.load_with_hostname(tmp_path, '[models]\nnvidia = "tiny"\ncpu = "large-v3"\n')
@@ -333,7 +334,7 @@ class TestConfigStructureValidation:
         not claim the hostname was the actual problem."""
         config_path = self.write_config(tmp_path, '[host.thinkpad.local.server]\nbackend = "cpu"\n')
         with pytest.raises(ValueError) as excinfo:
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
         message = str(excinfo.value)
         assert 'Unknown host subsection "local"' in message
         assert "if the hostname contains dots, quote it" in message
@@ -366,7 +367,7 @@ class TestServerHost:
         (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
     )
     def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
-        config = digue._default_config()
+        config = config_mod._default_config()
         config["server"]["bind_ip"] = bind_ip
         assert digue.server_host(config) == expected
 
@@ -396,7 +397,7 @@ class TestConfigValueValidation:
         config_path = tmp_path / "config.toml"
         config_path.write_text(toml)
         with pytest.raises(ValueError, match=message):
-            digue.load_config(config_path)
+            config_mod.load_config(config_path)
 
 
 # -- CLI parser ---------------------------------------------------------------
@@ -404,10 +405,10 @@ class TestConfigValueValidation:
 
 class TestConfigCommand:
     def test_show_toml_includes_sections(self, capsys):
-        config = digue._default_config()
+        config = config_mod._default_config()
         args = MagicMock()
         args.output_format = "toml"
-        assert digue.cmd_config(args, config) == 0
+        assert config_mod.cmd_config(args, config) == 0
         out = capsys.readouterr().out
         assert "[server]" in out
         assert "[dictate]" in out
@@ -420,10 +421,10 @@ class TestConfigCommand:
         it documents. It must also be valid TOML that loads back unchanged."""
         import tomllib
 
-        config = digue._default_config()
+        config = config_mod._default_config()
         args = MagicMock()
         args.output_format = "toml"
-        digue.cmd_config(args, config)
+        config_mod.cmd_config(args, config)
         out = capsys.readouterr().out
 
         assert "data-dir = " in out
@@ -434,10 +435,10 @@ class TestConfigCommand:
         assert {key.replace("-", "_"): value for key, value in parsed["dictate"].items()} == config["dictate"]
 
     def test_show_json_unchanged(self, capsys):
-        config = digue._default_config()
+        config = config_mod._default_config()
         args = MagicMock()
         args.output_format = "json"
-        assert digue.cmd_config(args, config) == 0
+        assert config_mod.cmd_config(args, config) == 0
         output = json.loads(capsys.readouterr().out)
         assert output["server"]["port"] == 8178
 
@@ -450,18 +451,18 @@ class TestConfigCommand:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
+            config = config_mod.load_config(config_path)
         args = MagicMock()
         args.output_format = "toml"
-        digue.cmd_config(args, config)
+        config_mod.cmd_config(args, config)
         assert 'backend = "cpu"' in capsys.readouterr().out
 
     def test_init_creates_file(self, tmp_path, capsys, monkeypatch):
-        monkeypatch.setattr(digue, "_config_path", lambda: tmp_path / "digue" / "config.toml")
+        monkeypatch.setattr(config_mod, "_config_path", lambda: tmp_path / "digue" / "config.toml")
         args = MagicMock()
         args.force = False
         args.output = None
-        assert digue._config_init(args) == 0
+        assert config_mod._config_init(args) == 0
         created = tmp_path / "digue" / "config.toml"
         assert created.exists()
         assert "[server]" in created.read_text()
@@ -470,22 +471,22 @@ class TestConfigCommand:
     def test_init_refuses_existing_without_force(self, tmp_path, capsys, monkeypatch):
         existing = tmp_path / "config.toml"
         existing.write_text("# my custom config")
-        monkeypatch.setattr(digue, "_config_path", lambda: existing)
+        monkeypatch.setattr(config_mod, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = False
         args.output = None
-        assert digue._config_init(args) == 1
+        assert config_mod._config_init(args) == 1
         assert existing.read_text() == "# my custom config"
         assert "already exists" in capsys.readouterr().err
 
     def test_init_force_overwrites(self, tmp_path, monkeypatch):
         existing = tmp_path / "config.toml"
         existing.write_text("# old")
-        monkeypatch.setattr(digue, "_config_path", lambda: existing)
+        monkeypatch.setattr(config_mod, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = True
         args.output = None
-        assert digue._config_init(args) == 0
+        assert config_mod._config_init(args) == 0
         assert "[server]" in existing.read_text()
 
     def test_init_output_path(self, tmp_path, capsys):
@@ -493,28 +494,28 @@ class TestConfigCommand:
         args = MagicMock()
         args.force = False
         args.output = str(target)
-        assert digue._config_init(args) == 0
+        assert config_mod._config_init(args) == 0
         assert target.exists()
         assert "[server]" in target.read_text()
 
     def test_init_uses_args_config_path(self, tmp_path):
         target = tmp_path / "selected.toml"
         args = MagicMock(config=str(target), output=None, force=False)
-        assert digue._config_init(args) == 0
+        assert config_mod._config_init(args) == 0
         assert target.exists()
 
     def test_example_config_is_valid_toml(self, tmp_path):
         import tomllib
 
-        example = digue._config_example()
+        example = config_mod._config_example()
         parsed = tomllib.loads(example)
         assert "models" in parsed  # sections exist; all keys stay commented
 
 
 class TestCmdConfig:
     def test_prints_json(self, capsys):
-        config = digue._default_config()
-        result = digue.cmd_config(MagicMock(output_format="json"), config)
+        config = config_mod._default_config()
+        result = config_mod.cmd_config(MagicMock(output_format="json"), config)
         assert result == 0
         output = json.loads(capsys.readouterr().out)
         assert output["server"]["port"] == 8178
@@ -529,4 +530,4 @@ class TestConfigTemplateSync:
         fence_start = section.index("```toml") + len("```toml\n")
         fence_end = section.index("```", fence_start)
         readme_block = section[fence_start:fence_end].strip()
-        assert readme_block == digue._config_example().strip()
+        assert readme_block == config_mod._config_example().strip()

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 # -- Transcription ------------------------------------------------------------
 
@@ -470,7 +471,7 @@ class TestCmdDetectLanguage:
     @patch("digue.ensure_server")
     @patch("digue.is_server_running", return_value=True)
     def test_prints_language_code(self, mock_running, mock_ensure, mock_detect, tmp_path, capsys):
-        config = digue._default_config()
+        config = _default_config()
         args = MagicMock()
         args.audio = tmp_path / "a.wav"
         args.audio.write_bytes(b"data")
@@ -485,7 +486,7 @@ class TestCmdDetectLanguage:
     @patch("digue.ensure_server")
     @patch("digue.is_server_running", return_value=True)
     def test_json_output_has_detected_and_all(self, mock_running, mock_ensure, mock_probs, tmp_path, capsys):
-        config = digue._default_config()
+        config = _default_config()
         args = MagicMock()
         args.audio = tmp_path / "a.wav"
         args.audio.write_bytes(b"data")
@@ -502,7 +503,7 @@ class TestCmdDetectLanguage:
     @patch("digue.ensure_server")
     @patch("digue.is_server_running", return_value=True)
     def test_missing_file_gives_clear_error(self, mock_running, mock_ensure, tmp_path, capsys):
-        config = digue._default_config()
+        config = _default_config()
         args = MagicMock()
         args.audio = tmp_path / "nope.wav"
         args.json = False
@@ -543,7 +544,7 @@ class TestDetectLanguageVerbose:
         assert "ffmpeg" not in capsys.readouterr().err
 
     def test_cmd_detect_language_passes_verbose(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         args = MagicMock()
         args.audio = tmp_path / "a.wav"
         args.audio.write_bytes(b"data")
@@ -567,7 +568,7 @@ class TestCmdTranscribeInput:
         self, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path, capsys
     ):
         """Regression: a directory passed to transcribe must fail early with a clear error."""
-        config = digue._default_config()
+        config = _default_config()
         args = MagicMock()
         args.audio = tmp_path
         args.output = None
@@ -590,7 +591,7 @@ class TestCmdTranscribeInput:
     def test_missing_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         args = MagicMock(audio=tmp_path / "missing.wav")
 
-        assert digue.cmd_transcribe(args, digue._default_config()) == 1
+        assert digue.cmd_transcribe(args, _default_config()) == 1
 
         assert "not found" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -613,7 +614,7 @@ class TestCmdTranscribeInput:
             prompt=None,
             verbose=False,
         )
-        config = digue._default_config()
+        config = _default_config()
 
         transcribe_result = (
             patch("digue.transcribe", side_effect=failure)
@@ -640,7 +641,7 @@ class TestCmdTranscribeInput:
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"audio")
         args = MagicMock(audio=audio, language=None, response_format=None, verbose=False, prompt=None, output=None)
-        config = digue._default_config()
+        config = _default_config()
         config["transcribe"]["prompt"] = "Pythonic Café"
         assert digue.cmd_transcribe(args, config) == 0
         assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic Café"
@@ -661,7 +662,7 @@ class TestOutputFilesEndWithOneNewline:
         args.language = args.prompt = None
         args.verbose = False
 
-        assert digue.cmd_transcribe(args, digue._default_config()) == 0
+        assert digue.cmd_transcribe(args, _default_config()) == 0
 
         content = (tmp_path / "a.vtt").read_text()
         assert content == self.VTT
@@ -677,7 +678,7 @@ class TestOutputFilesEndWithOneNewline:
         output_dir.mkdir()
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format="vtt", language=None)
 
-        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 0
+        assert digue.cmd_batch_transcribe(args, _default_config()) == 0
 
         assert (output_dir / "a.vtt").read_text() == self.VTT
 
@@ -691,6 +692,6 @@ class TestOutputFilesEndWithOneNewline:
         args.language = args.prompt = None
         args.verbose = False
 
-        digue.cmd_transcribe(args, digue._default_config())
+        digue.cmd_transcribe(args, _default_config())
 
         assert (tmp_path / "a.txt").read_text() == "hello\n"

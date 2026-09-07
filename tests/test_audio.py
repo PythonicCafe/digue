@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import digue
+from digue.config import _default_config, load_config
 
 
 class TestTimestampFormat:
@@ -424,7 +425,7 @@ class TestCompressAudio:
 
 class TestSaveAudioConfig:
     def test_default_saves_audio(self):
-        config = digue._default_config()
+        config = _default_config()
         assert config["dictate"]["save_audio"] is True
 
     def test_loads_kebab_key(self, tmp_path):
@@ -437,7 +438,7 @@ class TestSaveAudioConfig:
             save-audio = false
         """)
         )
-        config = digue.load_config(config_path)
+        config = load_config(config_path)
         assert config["dictate"]["save_audio"] is False
 
     def test_flac_source_skips_ffmpeg_when_saving_flac(self, tmp_path):
@@ -477,7 +478,7 @@ class TestSaveAudioConfig:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["save_audio"] = False
         config["dictate"]["audio_dir"] = str(audio_dir)
 

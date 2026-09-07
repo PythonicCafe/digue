@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 # -- Recording ----------------------------------------------------------------
 
@@ -132,7 +133,7 @@ class TestStateFilesAreWrittenAtomically:
         mock_popen.return_value = MagicMock(pid=os.getpid())
         opened = self._truncating_writes(monkeypatch)
         with patch("digue._runtime_dir", return_value=tmp_path):
-            processes = digue.start_recording(digue._default_config())
+            processes = digue.start_recording(_default_config())
 
         state_file = tmp_path / f"digue-take-{processes.take_id}.json"
         assert state_file not in opened
@@ -194,27 +195,27 @@ class TestRecordingCommand:
 
 class TestLiveRecordingFormat:
     def test_wav_audio_format_always_records_wav(self):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_format"] = "wav"
         with patch("digue._pw_record_supports_flac", return_value=True):
             assert digue._live_recording_suffix(config) == ".wav"
 
     def test_flac_with_pw_record_support_records_flac(self):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_format"] = "flac"
         config["dictate"]["recorder"] = "pw-record"
         with patch("digue._pw_record_supports_flac", return_value=True):
             assert digue._live_recording_suffix(config) == ".flac"
 
     def test_flac_without_container_falls_back_to_wav(self):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_format"] = "flac"
         config["dictate"]["recorder"] = "pw-record"
         with patch("digue._pw_record_supports_flac", return_value=False):
             assert digue._live_recording_suffix(config) == ".wav"
 
     def test_arecord_never_records_flac(self):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_format"] = "flac"
         config["dictate"]["recorder"] = "arecord"
         with patch("digue._pw_record_supports_flac", return_value=True):
@@ -253,7 +254,7 @@ class TestStartRecording:
     def test_returns_owned_recorder_handle(self, mock_popen, tmp_path):
         recorder = MagicMock(pid=1234)
         mock_popen.return_value = recorder
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["max_duration"] = 0
 
         with patch("digue._runtime_dir", return_value=tmp_path):
@@ -273,7 +274,7 @@ class TestStartRecording:
         watchdog = MagicMock(pid=778)
         mock_popen.return_value = recorder
         mock_watchdog.return_value = watchdog
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["max_duration"] = 300
 
         with patch("digue._runtime_dir", return_value=tmp_path):
@@ -285,7 +286,7 @@ class TestStartRecording:
 
     def test_start_recording_passes_device_to_recorder(self, tmp_path):
         recorder = MagicMock(pid=os.getpid())
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["max_duration"] = 0
         config["dictate"]["recorder"] = "pw-record"
         config["dictate"]["device"] = "alsa_input.usb"
@@ -320,7 +321,7 @@ class TestStartRecordingPublishesTakeState:
             return recorder
 
         mock_popen.side_effect = fake_popen
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["max_duration"] = 0
 
         with patch("digue._runtime_dir", return_value=tmp_path):
@@ -340,7 +341,7 @@ class TestStartRecordingPublishesTakeState:
             return MagicMock(pid=9999)
 
         mock_popen.return_value = recorder
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["max_duration"] = 300
 
         with (
@@ -357,7 +358,7 @@ class TestStartRecordingPublishesTakeState:
 
     @patch("subprocess.Popen", side_effect=FileNotFoundError("pw-record"))
     def test_popen_failure_removes_state(self, mock_popen, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), pytest.raises(FileNotFoundError):
             digue.start_recording(config)
@@ -365,7 +366,7 @@ class TestStartRecordingPublishesTakeState:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_immediate_nonzero_exit_raises_with_stderr(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         dead = MagicMock(pid=4242)
         dead.poll.return_value = 1
 
@@ -386,7 +387,7 @@ class TestStartRecordingPublishesTakeState:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_toggle_publishes_take_state_and_removes_it_after_delivery(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
@@ -703,7 +704,7 @@ class TestRuntimeIsolation:
         sentinel_dir = tmp_path / "sentinel"
         sentinel_dir.mkdir()
         (sentinel_dir / "digue-daemon.pid").write_text("4242 recording 555")
-        config = digue._default_config()
+        config = _default_config()
 
         with (
             patch("digue._process_starttime", return_value="555"),

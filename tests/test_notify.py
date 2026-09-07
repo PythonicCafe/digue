@@ -4,6 +4,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import digue
+from digue.config import _default_config
 
 # -- Notifications -----------------------------------------------------------
 
@@ -77,7 +78,7 @@ class TestNotifyLifecycle:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.finish_dictation(config, rec_file)
@@ -98,7 +99,7 @@ class TestNotifyLifecycle:
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["input_mode"] = "type"
 
@@ -116,7 +117,7 @@ class TestNotifyLifecycle:
     def test_paste_failure_notifies_with_timeout(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         result = digue.finish_dictation(config, rec_file)
@@ -132,7 +133,7 @@ class TestNotifyLifecycle:
     def test_save_failure_notifies_and_does_not_crash(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         result = digue.finish_dictation(config, rec_file)
@@ -150,7 +151,7 @@ class TestNotifyLifecycle:
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["save_audio"] = False
         # point audio_dir at a file so the transcript write fails
         blocker = tmp_path / "blocker"
@@ -170,7 +171,7 @@ class TestNotifyLifecycle:
         still terminal (delivered, exit 1)."""
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         blocker = tmp_path / "blocker"
         blocker.write_text("not a dir")
         config["dictate"]["audio_dir"] = str(blocker)  # .txt write and rescue both fail

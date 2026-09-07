@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import digue
+from digue.config import _default_config
 
 
 class TestCmdClean:
@@ -23,7 +24,7 @@ class TestCmdClean:
     def test_lists_and_asks_without_force(self, tmp_path, capsys, monkeypatch):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
@@ -39,7 +40,7 @@ class TestCmdClean:
     def test_removes_on_confirmation(self, tmp_path, capsys, monkeypatch):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
@@ -52,7 +53,7 @@ class TestCmdClean:
     def test_force_removes_without_asking(self, tmp_path, capsys, monkeypatch):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         def fail_input(prompt):
@@ -68,7 +69,7 @@ class TestCmdClean:
     def test_what_recordings_keeps_transcripts(self, tmp_path, capsys):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True, what="recordings"), config)
@@ -80,7 +81,7 @@ class TestCmdClean:
     def test_what_transcripts_keeps_recordings(self, tmp_path, capsys):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
@@ -92,7 +93,7 @@ class TestCmdClean:
     def test_removes_empty_month_directories(self, tmp_path, capsys):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         digue.cmd_clean(self._args(force=True), config)
@@ -116,7 +117,7 @@ class TestCmdClean:
         foreign[-1].parent.mkdir(parents=True)
         for path in foreign:
             path.write_bytes(b"keep me")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True), config)
@@ -131,7 +132,7 @@ class TestCmdClean:
         self._make_audio_files(audio_dir)
         (audio_dir / "2025").write_text("a file, not a year directory")
         (audio_dir / "2026" / "08").write_text("a file, not a month directory")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True), config)
@@ -144,7 +145,7 @@ class TestCmdClean:
     def test_confirmation_lists_the_files_it_will_remove(self, tmp_path, capsys, monkeypatch):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
@@ -165,7 +166,7 @@ class TestCmdClean:
         (month / "20260904-120000-0123456789abcdef.wav").write_bytes(b"audio")
         (month / "20260904-120000-0123456789abcdef.json").write_text('{"state": "rescued"}')
         (month / "20260905-130000-aaaaaaaaaaaaaaaa.wav").write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True), config)
@@ -183,7 +184,7 @@ class TestCmdClean:
         month.mkdir(parents=True)
         json_path = month / "20260904-120000-0123456789abcdef.json"
         json_path.write_text('{"state": "rescued"}')
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True), config)
@@ -198,7 +199,7 @@ class TestCmdClean:
         month.mkdir(parents=True)
         json_path = month / "20260904-120000-0123456789abcdef.json"
         json_path.write_text('{"state": "rescued"}')
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
@@ -210,7 +211,7 @@ class TestCmdClean:
     def test_nothing_to_remove(self, tmp_path, capsys):
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir()
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.cmd_clean(self._args(), config)
@@ -219,7 +220,7 @@ class TestCmdClean:
         assert "Nothing to remove" in capsys.readouterr().err
 
     def test_missing_audio_dir(self, tmp_path, capsys):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "nonexistent")
 
         result = digue.cmd_clean(self._args(), config)

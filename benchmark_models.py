@@ -20,6 +20,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digue
+from digue.config import load_config
 
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
 ALL_MODELS = ("small", "medium", "large-v3-turbo")
@@ -156,7 +157,7 @@ def main() -> int:
     args = parser.parse_args()
     RUNS = args.runs
 
-    config = digue.load_config()
+    config = load_config()
     if digue._is_remote(config):
         print("Benchmarking requires a local container; backend 'remote' is not supported.", file=sys.stderr)
         return 1

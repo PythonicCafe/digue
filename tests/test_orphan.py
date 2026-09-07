@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 
 class TestOrphanStartingTake:
@@ -38,7 +39,7 @@ class TestOrphanStartingTake:
 
     def test_expired_orphan_without_wav_is_removed(self, tmp_path):
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
-        config = digue._default_config()
+        config = _default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
             rescued = digue._expire_orphan_starting(config, take)
@@ -50,7 +51,7 @@ class TestOrphanStartingTake:
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
@@ -70,7 +71,7 @@ class TestOrphanStartingTake:
 
     def test_recent_orphan_is_left_alone(self, tmp_path):
         take = self.make_starting_take(tmp_path, age_seconds=1)
-        config = digue._default_config()
+        config = _default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
             assert digue._expire_orphan_starting(config, take) is None
@@ -79,7 +80,7 @@ class TestOrphanStartingTake:
 
     def test_orphan_with_alive_daemon_is_left_alone(self, tmp_path):
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1, daemon_starttime=555)
-        config = digue._default_config()
+        config = _default_config()
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
@@ -91,7 +92,7 @@ class TestOrphanStartingTake:
         assert len(list(tmp_path.glob("digue-take-*.json"))) == 1
 
     def test_toggle_rescues_expired_orphan_starting_take(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
@@ -240,7 +241,7 @@ class TestOrphanTakeClaim:
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text("4242 recording 555")
         self.make_take(tmp_path)
-        config = digue._default_config()
+        config = _default_config()
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
@@ -264,7 +265,7 @@ class TestOrphanTakeClaim:
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         self.make_take(tmp_path)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         finish_calls = []
 
@@ -300,7 +301,7 @@ class TestOrphanTakeClaim:
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         self.make_take(tmp_path)
-        config = digue._default_config()
+        config = _default_config()
         seen: dict[str, object] = {}
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
@@ -349,7 +350,7 @@ class TestOrphanTakeClaim:
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         self.make_take(tmp_path)
-        config = digue._default_config()
+        config = _default_config()
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
@@ -383,7 +384,7 @@ class TestOrphanTakeClaim:
             recoverer_pid=os.getpid(),
             recoverer_starttime=int(digue._process_starttime(os.getpid())),
         )
-        config = digue._default_config()
+        config = _default_config()
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
@@ -432,7 +433,7 @@ class TestRecoverClaimedTake:
         return take
 
     def make_config(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         return config
 
@@ -719,7 +720,7 @@ class TestSurplusOrphanRescue:
         oldest = self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
         surplus_take_a = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", 200, rec_file=surplus_a)
         surplus_take_b = self.make_take(tmp_path, "bbbbbbbbbbbbbbbb", 300, rec_file=surplus_b)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
@@ -785,7 +786,7 @@ class TestSurplusOrphanRescue:
                 recorder_pid=surplus_recorder.pid,
                 recorder_starttime=int(digue._process_starttime(surplus_recorder.pid)),
             )
-            config = digue._default_config()
+            config = _default_config()
             config["dictate"]["audio_dir"] = str(tmp_path / "audio")
             config["dictate"]["max_duration"] = 0
             recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
@@ -842,7 +843,7 @@ class TestSurplusOrphanRescue:
             patch("digue._rescue_surplus_take", return_value=tmp_path / "rescued.wav"),
             patch("digue._take_state_file", return_value=tmp_path / "gone.json"),
         ):
-            rescued = digue._rescue_surplus_orphans(digue._default_config())
+            rescued = digue._rescue_surplus_orphans(_default_config())
 
         assert rescued == [tmp_path / "rescued.wav"]
         assert claims_under_lock == [True, True]
@@ -854,7 +855,7 @@ class TestSurplusOrphanRescue:
         surplus_wav.write_bytes(b"audio surplus")
         self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
         surplus_take = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", 200, rec_file=surplus_wav)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)

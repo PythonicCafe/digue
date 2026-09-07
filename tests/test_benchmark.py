@@ -7,13 +7,14 @@ import pytest
 
 import benchmark_models
 import digue
+from digue.config import _default_config
 
 
 class TestBenchmarkTempFiles:
     def test_recorded_benchmark_audio_lives_in_the_private_runtime_dir(self, tmp_path):
         """A fixed name in /tmp could be a symlink planted by another local
         user; the runtime dir is 0700 and owned by the user."""
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "cpu"
         args = argparse.Namespace(audio=None)
 
@@ -95,7 +96,7 @@ class TestBenchmarkContainerState:
 
 class TestRunBenchmarkLanguage:
     def test_language_default_comes_from_transcribe_section(self, tmp_path, capsys):
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue.download_model"),
             patch("digue.preserve_container_for_benchmark"),
@@ -111,7 +112,7 @@ class TestRunBenchmarkLanguage:
         assert "digue benchmark" in err
 
     def test_removes_benchmark_container_when_transcription_is_interrupted(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue.download_model"),
             patch("digue.preserve_container_for_benchmark"),
@@ -133,7 +134,7 @@ class TestBenchmarkRespectsConfig:
         """A forced backend (e.g. cpu with image = main on a Kaby Lake iGPU)
         must not be bypassed by hardware detection: the GPU cases would run
         with an image the machine cannot execute."""
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "cpu"
         with (
             patch("digue.download_model"),
@@ -153,7 +154,7 @@ class TestBenchmarkRespectsConfig:
         """server.image is a single global override that only makes sense for
         the backend the config resolved to (e.g. image "main" pinned for a
         Kaby Lake CPU): other cases must fall back to DOCKER_IMAGES."""
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "amd"
         config["server"]["image"] = "x"
         with (
@@ -180,7 +181,7 @@ class TestBenchmarkRespectsConfig:
     @patch("time.sleep")
     @patch("subprocess.Popen")
     def test_microphone_recording_uses_the_configured_recorder(self, mock_popen, mock_sleep, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["recorder"] = "arecord"
 
         digue.record_benchmark_audio(tmp_path / "bench.wav", config=config)
@@ -190,7 +191,7 @@ class TestBenchmarkRespectsConfig:
 
 class TestBenchmarkModels:
     def test_case_removes_container_when_transcription_is_interrupted(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         with (
             patch("benchmark_models.digue.create_container"),
@@ -205,14 +206,14 @@ class TestBenchmarkModels:
         mock_remove.assert_called_once_with()
 
     def test_main_preserves_previous_container_on_interrupt(self):
-        config = digue._default_config()
+        config = _default_config()
         manager = MagicMock()
         manager.__enter__.return_value = None
         manager.__exit__.return_value = False
         with (
             patch("benchmark_models.create_parser") as mock_parser,
             patch("benchmark_models.download_sample"),
-            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.load_config", return_value=config),
             patch("benchmark_models.digue.detect_backend", return_value="cpu"),
             patch("benchmark_models.digue.preserve_container_for_benchmark", return_value=manager),
             patch("benchmark_models.benchmark_case", side_effect=KeyboardInterrupt),
@@ -227,12 +228,12 @@ class TestBenchmarkModels:
 
 class TestBenchmarkModelsConfig:
     def test_main_rejects_remote_before_downloading_sample(self, capsys):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         with (
             patch("benchmark_models.create_parser") as mock_parser,
             patch("benchmark_models.download_sample") as mock_download,
-            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.load_config", return_value=config),
         ):
             mock_parser.return_value.parse_args.return_value = argparse.Namespace(
                 backends=None, models=["small"], runs=1
@@ -246,12 +247,12 @@ class TestBenchmarkModelsConfig:
     def test_main_uses_resolved_backend_for_case_selection(self, capsys):
         """A forced backend in config wins over detection, exactly like
         run_benchmark: the auto list must follow resolve_backend."""
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "cpu"
         with (
             patch("benchmark_models.create_parser") as mock_parser,
             patch("benchmark_models.download_sample"),
-            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.load_config", return_value=config),
             patch("benchmark_models.digue.detect_backend", return_value="intel"),
             patch("benchmark_models.digue.preserve_container_for_benchmark"),
             patch("benchmark_models.benchmark_case", return_value=None),
@@ -266,7 +267,7 @@ class TestBenchmarkModelsConfig:
         assert "intel" not in err
 
     def test_case_clears_custom_image_for_other_backends(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "cpu"
         config["server"]["image"] = "x"
         config["server"]["data_dir"] = str(tmp_path)
@@ -284,7 +285,7 @@ class TestBenchmarkModelsConfig:
         assert digue.resolve_image(backend, bench_config) == digue.DOCKER_IMAGES["intel"]
 
     def test_case_keeps_custom_image_for_resolved_backend(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "cpu"
         config["server"]["image"] = "x"
         config["server"]["data_dir"] = str(tmp_path)

@@ -10,12 +10,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 
 class TestDictateDaemon:
     def test_concurrent_first_toggles_start_only_one_recorder(self, tmp_path):
         """A second toggle must observe the first toggle's startup reservation."""
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         first_in_startup = threading.Event()
         release_first = threading.Event()
@@ -76,7 +77,7 @@ class TestDictateDaemon:
                 pass
 
         monkeypatch.setattr(sys, "stderr", NonFileStderr())
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         recorder = MagicMock(pid=777, poll=lambda: 0)
         with (
@@ -96,7 +97,7 @@ class TestDictateDaemon:
         """Runs the daemon path with a published take state and a mocked
         delivery; returns (exit_code, take state file)."""
 
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
@@ -166,7 +167,7 @@ class TestDictateDaemon:
         assert not (tmp_path / "digue-daemon.pid").exists()
 
     def test_startup_failure_clears_own_reservation(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         daemon_file = tmp_path / "digue-daemon.pid"
 
         def fail_after_reservation(_config):
@@ -187,7 +188,7 @@ class TestDictateDaemon:
         assert not daemon_file.exists()
 
     def test_startup_failure_does_not_clear_new_daemon_state(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         daemon_file = tmp_path / "digue-daemon.pid"
 
         def replace_reservation_then_fail(_config):
@@ -211,7 +212,7 @@ class TestDictateDaemon:
         daemon_pid = tmp_path / "digue-daemon.pid"
         daemon_pid.write_text("4242 recording 555")
 
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue._daemon_pid_file", return_value=daemon_pid),
@@ -231,7 +232,7 @@ class TestDictateDaemon:
         """A stale daemon pid file (crashed daemon) must not block a new recording."""
         daemon_pid = tmp_path / "digue-daemon.pid"
         daemon_pid.write_text("4242 recording 555")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue._daemon_pid_file", return_value=daemon_pid),
@@ -379,7 +380,7 @@ class TestDictateDaemon:
         after the state check so only the signaling decision matters."""
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text(state_text)
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
@@ -417,7 +418,7 @@ class TestDictateDaemon:
 
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text(f"{os.getpid()} starting {digue._process_starttime(os.getpid())}")
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_notification") as mock_notify,
@@ -432,7 +433,7 @@ class TestDictateDaemon:
         assert mock_notify.call_args.kwargs.get("timeout_ms", 0) > 0
 
     def test_daemon_state_records_the_process_starttime(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         seen = []
 
@@ -457,7 +458,7 @@ class TestDictateDaemon:
         assert first != second
 
     def test_recorder_startup_error_is_notified(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server"),
@@ -486,7 +487,7 @@ class TestDictateInterrupt:
         must not win: the daemon installs its own SIGINT handler)."""
         import signal
 
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         handlers = []
         recorder = MagicMock(pid=777)

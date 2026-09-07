@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import digue
+from digue.config import _default_config
 
 
 class TestCmdBatchTranscribeInput:
@@ -15,7 +16,7 @@ class TestCmdBatchTranscribeInput:
         output_dir.mkdir()
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
 
-        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 1
+        assert digue.cmd_batch_transcribe(args, _default_config()) == 1
 
         assert "No audio files" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -32,7 +33,7 @@ class TestCmdBatchTranscribeInput:
         (output_dir / "audio.txt").write_text("done\n")
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
 
-        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 0
+        assert digue.cmd_batch_transcribe(args, _default_config()) == 0
 
         assert "All files already transcribed" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -53,7 +54,7 @@ class TestCmdBatchSimplifyVtt:
         args = MagicMock()
         args.input_dir = input_dir
         args.output_dir = output_dir
-        config = digue._default_config()
+        config = _default_config()
 
         result = digue.cmd_batch_simplify_vtt(args, config)
         assert result == 0
@@ -73,7 +74,7 @@ class TestCmdBatchSimplifyVtt:
         args = MagicMock()
         args.input_dir = input_dir
         args.output_dir = output_dir
-        config = digue._default_config()
+        config = _default_config()
 
         result = digue.cmd_batch_simplify_vtt(args, config)
         assert result == 0
@@ -88,7 +89,7 @@ class TestCmdBatchSimplifyVtt:
         args = MagicMock()
         args.input_dir = input_dir
         args.output_dir = output_dir
-        config = digue._default_config()
+        config = _default_config()
 
         result = digue.cmd_batch_simplify_vtt(args, config)
         assert result == 1
@@ -105,7 +106,7 @@ class TestCmdBatchSimplifyVtt:
         args = MagicMock()
         args.input_dir = input_dir
         args.output_dir = output_dir
-        config = digue._default_config()
+        config = _default_config()
 
         with patch("digue.simplify_vtt", side_effect=[RuntimeError("broken vtt"), "second"]):
             result = digue.cmd_batch_simplify_vtt(args, config)
@@ -135,7 +136,7 @@ class TestCmdBatchTranscribe:
         args.output_dir = output_dir
         args.response_format = "vtt"
         args.language = None
-        config = digue._default_config()
+        config = _default_config()
 
         result = digue.cmd_batch_transcribe(args, config)
         assert result == 0
@@ -161,7 +162,7 @@ class TestCmdBatchTranscribe:
         args.output_dir = output_dir
         args.response_format = "vtt"
         args.language = None
-        config = digue._default_config()
+        config = _default_config()
 
         result = digue.cmd_batch_transcribe(args, config)
         assert result == 0
@@ -188,7 +189,7 @@ class TestCmdBatchTranscribe:
             language=None,
         )
 
-        result = digue.cmd_batch_transcribe(args, digue._default_config())
+        result = digue.cmd_batch_transcribe(args, _default_config())
 
         assert result == 1
         assert (output_dir / "a.txt").read_text() == "first\n"
@@ -211,7 +212,7 @@ class TestCmdBatchTranscribe:
         (input_dir / "a.mp3").write_bytes(b"audio")
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format="text", language=None)
 
-        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 1
+        assert digue.cmd_batch_transcribe(args, _default_config()) == 1
         assert not (output_dir / "a.txt").exists()
         assert not list(output_dir.glob("*.tmp"))
 
@@ -225,7 +226,7 @@ class TestCmdBatchTranscribe:
         output_dir.mkdir()
         (input_dir / "test.mp3").write_bytes(b"audio")
 
-        config = digue._default_config()
+        config = _default_config()
         config["transcribe"]["output_format"] = "timestamps"
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
 
@@ -245,7 +246,7 @@ class TestCmdBatchTranscribe:
         output_dir.mkdir()
         (input_dir / "audio.wav").write_bytes(b"audio")
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
-        config = digue._default_config()
+        config = _default_config()
         config["transcribe"].update(output_format="srt", prompt="names", max_line_length=50, max_lines=3)
         assert digue.cmd_batch_transcribe(args, config) == 0
         assert (output_dir / "audio.srt").exists()

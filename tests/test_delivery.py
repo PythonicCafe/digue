@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue.config import _default_config
 
 
 class TestSendText:
@@ -89,7 +90,7 @@ class TestSendText:
             digue.send_text("hello", display_server="x11")
 
     def test_input_mode_default_is_paste(self):
-        config = digue._default_config()
+        config = _default_config()
         assert config["dictate"]["input_mode"] == "paste"
 
 
@@ -197,7 +198,7 @@ class TestDeliveryResult:
     rescued, empty, or failed in a way a later toggle may retry."""
 
     def make_config(self, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         return config
 
@@ -375,7 +376,7 @@ class TestDeliveryResult:
 
     @pytest.mark.parametrize("exit_code", [0, 1])
     def test_toggle_maps_the_result_to_the_exit_code(self, exit_code, tmp_path):
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
@@ -402,7 +403,7 @@ class TestFinishDictationBackend:
     def test_finish_dictation_passes_resolved_backend(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["server"]["backend"] = "remote"
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
@@ -421,7 +422,7 @@ class TestFinishDictationBackend:
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         with patch("digue.detect_backend") as mock_detect:
@@ -438,7 +439,7 @@ class TestDictateArchivesAfterDelivery:
     def test_limit_warning_remains_in_transcription_progress(self, mock_transcribe, mock_send, mock_notify, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         assert digue.finish_dictation(config, rec_file, limit_reached=True).exit_code == 0
@@ -453,7 +454,7 @@ class TestDictateArchivesAfterDelivery:
     def test_transcribes_and_pastes_before_archiving(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         order = MagicMock()
@@ -472,7 +473,7 @@ class TestDictateArchivesAfterDelivery:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.finish_dictation(config, rec_file)
@@ -494,7 +495,7 @@ class TestDictateArchivesAfterDelivery:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
         config["dictate"]["save_audio"] = False
 
@@ -516,7 +517,7 @@ class TestDictateArchivesAfterDelivery:
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.finish_dictation(config, rec_file)
@@ -541,7 +542,7 @@ class TestDictateAudioTranscriptPairing:
 
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        config = digue._default_config()
+        config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue.now_timestamp", side_effect=["20260904-120000", "20260904-120005"]),
