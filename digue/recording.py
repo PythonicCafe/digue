@@ -786,7 +786,11 @@ def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: i
     """
     import time
 
-    from digue.dictate import _got_sigint, _got_sigterm
+    # The flags are read through the module on every iteration: a
+    # `from digue.dictate import _got_sigterm` would copy the value at call
+    # time (False) and never see the handler set it, so a second toggle or
+    # Ctrl+c would only stop the take at the duration limit.
+    from digue import dictate
 
     start = time.monotonic()
     while True:
@@ -795,9 +799,9 @@ def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: i
             if max_duration > 0 and time.monotonic() - start >= max_duration:
                 return "limit"
             return "died"
-        if _got_sigterm:
+        if dictate._got_sigterm:
             return "manual"
-        if _got_sigint:
+        if dictate._got_sigint:
             return "interrupted"
         if max_duration > 0 and time.monotonic() - start >= max_duration:
             return "limit"

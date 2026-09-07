@@ -559,6 +559,44 @@ class TestWaitRecorderEndDaemon:
             finally:
                 dictate_mod._got_sigterm = False
 
+    def test_sigterm_during_the_wait_returns_manual(self):
+        """Regression: the flag must be read live from `digue.dictate` on
+        every poll. A `from digue.dictate import _got_sigterm` inside the
+        function snapshots False at call time, and a SIGTERM (second toggle)
+        or SIGINT arriving while the loop runs was ignored until the limit."""
+        recorder = MagicMock()
+        recorder.poll.return_value = None
+        assert dictate_mod._got_sigterm is False
+
+        def sleep_then_signal(_seconds):
+            dictate_mod._on_sigterm(15, None)
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.1, 0.3, 0.5]),
+            patch("time.sleep", side_effect=sleep_then_signal),
+        ):
+            try:
+                assert recording_mod._wait_recorder_end_daemon(recorder, 300) == "manual"
+            finally:
+                dictate_mod._got_sigterm = False
+
+    def test_sigint_during_the_wait_returns_interrupted(self):
+        recorder = MagicMock()
+        recorder.poll.return_value = None
+        assert dictate_mod._got_sigint is False
+
+        def sleep_then_signal(_seconds):
+            dictate_mod._on_sigint(2, None)
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.1, 0.3, 0.5]),
+            patch("time.sleep", side_effect=sleep_then_signal),
+        ):
+            try:
+                assert recording_mod._wait_recorder_end_daemon(recorder, 300) == "interrupted"
+            finally:
+                dictate_mod._got_sigint = False
+
     def test_exit_after_the_limit_counts_as_limit(self):
         """If the watchdog killed the recorder first, the outcome is still the
         duration limit, not a spontaneous death (the notification depends on it)."""
