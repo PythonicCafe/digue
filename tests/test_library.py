@@ -5,11 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
 
 class TestTranscribeFile:
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_uses_config_and_returns_text(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -19,7 +20,7 @@ class TestTranscribeFile:
         config["transcribe"]["prompt"] = "KINAI"
         config["transcribe"]["language"] = "pt"
 
-        assert digue.transcribe_file(audio, config) == "hello"
+        assert transcribe_mod.transcribe_file(audio, config) == "hello"
 
         mock_ensure.assert_called_once()
         assert mock_transcribe.call_args.args[2] == "pt"
@@ -31,7 +32,7 @@ class TestTranscribeFile:
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")
         with pytest.raises(RuntimeError, match="server is not running"):
-            digue.transcribe_file(audio, _default_config())
+            transcribe_mod.transcribe_file(audio, _default_config())
 
 
 class TestRecordTo:

@@ -509,7 +509,7 @@ class TestRecoverClaimedTake:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text") as mock_send,
-            patch("digue.transcribe") as mock_transcribe,
+            patch("digue.transcribe.transcribe") as mock_transcribe,
             patch("digue.notify.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
@@ -542,7 +542,7 @@ class TestRecoverClaimedTake:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text") as mock_send,
-            patch("digue.transcribe") as mock_transcribe,
+            patch("digue.transcribe.transcribe") as mock_transcribe,
             patch("digue.notify.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
@@ -576,7 +576,7 @@ class TestRecoverClaimedTake:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text"),
-            patch("digue.transcribe"),
+            patch("digue.transcribe.transcribe"),
             patch("digue.notify.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
@@ -674,7 +674,7 @@ class TestRecoverClaimedTake:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.transcribe", return_value=""),
+            patch("digue.transcribe.transcribe", return_value=""),
             patch("digue.notify.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)

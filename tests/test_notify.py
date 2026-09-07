@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import digue
 from digue import notify as notify_mod
+from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
 # -- Notifications -----------------------------------------------------------
@@ -53,7 +54,7 @@ class TestNotify:
         response = MagicMock()
         response.read.return_value = b"ok"
         with patch("urllib.request.urlopen", return_value=response):
-            digue._multipart_request("http://x/inference", b"audio", {"model": "m"}, timeout=10)
+            transcribe_mod._multipart_request("http://x/inference", b"audio", {"model": "m"}, timeout=10)
         # The urllib stream must be released even if later processing fails.
         response.close.assert_called_once()
 
@@ -70,7 +71,7 @@ class TestNotifyClose:
 class TestNotifyLifecycle:
     @patch("digue.notify.send_notification")
     @patch("digue.send_text")
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_pasted(
@@ -92,7 +93,7 @@ class TestNotifyLifecycle:
 
     @patch("digue.notify.send_notification")
     @patch("digue.send_text")
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_typed(
@@ -113,7 +114,7 @@ class TestNotifyLifecycle:
         assert last_notify.kwargs == {"timeout_ms": 3000}
 
     @patch("digue.send_text", side_effect=RuntimeError("no display"))
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_paste_failure_notifies_with_timeout(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
@@ -129,7 +130,7 @@ class TestNotifyLifecycle:
         assert "Transcription saved to" in err
 
     @patch("digue.send_text")
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", side_effect=OSError("disk full"))
     def test_save_failure_notifies_and_does_not_crash(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
@@ -145,7 +146,7 @@ class TestNotifyLifecycle:
         assert "disk full" in err
 
     @patch("digue.send_text")
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_transcript_write_failure_notifies_and_prints_text(
         self, mock_save, mock_transcribe, mock_send, tmp_path, capsys
@@ -179,7 +180,7 @@ class TestNotifyLifecycle:
 
         with (
             patch("digue.send_text") as mock_send,
-            patch("digue.transcribe", return_value="hello"),
+            patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.notify.send_notification"),
         ):
             result = digue.finish_dictation(config, rec_file)

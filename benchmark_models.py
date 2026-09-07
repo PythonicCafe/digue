@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digue
 from digue import container as container_mod
+from digue import transcribe as transcribe_mod
 from digue.config import load_config
 
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
@@ -83,7 +84,7 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
         url = container_mod.server_url(config)
 
         try:
-            digue.transcribe(url, sample_path(), "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
+            transcribe_mod.transcribe(url, sample_path(), "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
         except Exception as exc:
             print(f"  Skipped: warm-up transcription failed: {exc}", file=sys.stderr)
             return None
@@ -92,7 +93,7 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
         text = ""
         for run_idx in range(1, RUNS + 1):
             start = time.perf_counter()
-            text = digue.transcribe(url, sample_path(), "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
+            text = transcribe_mod.transcribe(url, sample_path(), "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
             elapsed = time.perf_counter() - start
             results.append(elapsed)
             print(f"  run {run_idx}: {elapsed:.2f}s", file=sys.stderr)

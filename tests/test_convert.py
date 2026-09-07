@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
 
@@ -242,7 +243,7 @@ class TestSilentAudioTimestamps:
         )
         assert digue._convert_content(content, "vtt", "timestamps") == ""
 
-    @patch("digue.transcribe", return_value="WEBVTT\n")
+    @patch("digue.transcribe.transcribe", return_value="WEBVTT\n")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_cmd_transcribe_timestamps_on_silent_audio_succeeds(
@@ -258,14 +259,14 @@ class TestSilentAudioTimestamps:
         args.prompt = None
         args.verbose = False
 
-        result = digue.cmd_transcribe(args, _default_config())
+        result = transcribe_mod.cmd_transcribe(args, _default_config())
 
         captured = capsys.readouterr()
         assert result == 0
         assert captured.out == "\n"
         assert "does not look like" not in captured.err
 
-    @patch("digue.transcribe", return_value="WEBVTT\n")
+    @patch("digue.transcribe.transcribe", return_value="WEBVTT\n")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_batch_transcribe_timestamps_on_silent_audio_is_not_a_failure(
@@ -282,7 +283,7 @@ class TestSilentAudioTimestamps:
         args.response_format = "timestamps"
         args.language = None
 
-        result = digue.cmd_batch_transcribe(args, _default_config())
+        result = transcribe_mod.cmd_batch_transcribe(args, _default_config())
 
         assert result == 0
         assert (output_dir / "silence.txt").read_text() == "\n"

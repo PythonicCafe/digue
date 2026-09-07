@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-import digue
+from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
 
@@ -16,7 +16,7 @@ class TestCmdBatchTranscribeInput:
         output_dir.mkdir()
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
 
-        assert digue.cmd_batch_transcribe(args, _default_config()) == 1
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 1
 
         assert "No audio files" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -33,7 +33,7 @@ class TestCmdBatchTranscribeInput:
         (output_dir / "audio.txt").write_text("done\n")
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
 
-        assert digue.cmd_batch_transcribe(args, _default_config()) == 0
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 0
 
         assert "All files already transcribed" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -56,7 +56,7 @@ class TestCmdBatchSimplifyVtt:
         args.output_dir = output_dir
         config = _default_config()
 
-        result = digue.cmd_batch_simplify_vtt(args, config)
+        result = transcribe_mod.cmd_batch_simplify_vtt(args, config)
         assert result == 0
         assert (output_dir / "a.txt").exists()
         assert (output_dir / "b.txt").exists()
@@ -76,7 +76,7 @@ class TestCmdBatchSimplifyVtt:
         args.output_dir = output_dir
         config = _default_config()
 
-        result = digue.cmd_batch_simplify_vtt(args, config)
+        result = transcribe_mod.cmd_batch_simplify_vtt(args, config)
         assert result == 0
         assert (output_dir / "a.txt").read_text() == "already done"  # not overwritten
 
@@ -91,7 +91,7 @@ class TestCmdBatchSimplifyVtt:
         args.output_dir = output_dir
         config = _default_config()
 
-        result = digue.cmd_batch_simplify_vtt(args, config)
+        result = transcribe_mod.cmd_batch_simplify_vtt(args, config)
         assert result == 1
 
     def test_reports_failures_and_leaves_no_partial_output(self, tmp_path, capsys):
@@ -108,8 +108,8 @@ class TestCmdBatchSimplifyVtt:
         args.output_dir = output_dir
         config = _default_config()
 
-        with patch("digue.simplify_vtt", side_effect=[RuntimeError("broken vtt"), "second"]):
-            result = digue.cmd_batch_simplify_vtt(args, config)
+        with patch("digue.transcribe.simplify_vtt", side_effect=[RuntimeError("broken vtt"), "second"]):
+            result = transcribe_mod.cmd_batch_simplify_vtt(args, config)
 
         assert result == 1
         assert not (output_dir / "bad.txt").exists()
@@ -118,7 +118,7 @@ class TestCmdBatchSimplifyVtt:
 
 
 class TestCmdBatchTranscribe:
-    @patch("digue.transcribe", return_value="transcribed text")
+    @patch("digue.transcribe.transcribe", return_value="transcribed text")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_transcribes_audio_files(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -138,13 +138,13 @@ class TestCmdBatchTranscribe:
         args.language = None
         config = _default_config()
 
-        result = digue.cmd_batch_transcribe(args, config)
+        result = transcribe_mod.cmd_batch_transcribe(args, config)
         assert result == 0
         assert (output_dir / "a.vtt").exists()
         assert (output_dir / "b.vtt").exists()
         assert not (output_dir / "readme.vtt").exists()
 
-    @patch("digue.transcribe", return_value="text")
+    @patch("digue.transcribe.transcribe", return_value="text")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_skips_already_transcribed(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -164,12 +164,12 @@ class TestCmdBatchTranscribe:
         args.language = None
         config = _default_config()
 
-        result = digue.cmd_batch_transcribe(args, config)
+        result = transcribe_mod.cmd_batch_transcribe(args, config)
         assert result == 0
         assert mock_transcribe.call_count == 1  # only new.mp3
         assert (output_dir / "done.vtt").read_text() == "already done"
 
-    @patch("digue.transcribe", side_effect=["first", RuntimeError("request failed")])
+    @patch("digue.transcribe.transcribe", side_effect=["first", RuntimeError("request failed")])
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_returns_failure_reports_counts_and_leaves_no_partial_output(
@@ -189,7 +189,7 @@ class TestCmdBatchTranscribe:
             language=None,
         )
 
-        result = digue.cmd_batch_transcribe(args, _default_config())
+        result = transcribe_mod.cmd_batch_transcribe(args, _default_config())
 
         assert result == 1
         assert (output_dir / "a.txt").read_text() == "first\n"
@@ -199,7 +199,7 @@ class TestCmdBatchTranscribe:
         assert "1 succeeded, 1 failed, 0 skipped" in error
 
     @patch("pathlib.Path.replace", side_effect=OSError("replace failed"))
-    @patch("digue.transcribe", return_value="partial")
+    @patch("digue.transcribe.transcribe", return_value="partial")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_failed_replace_does_not_leave_output_or_temp(
@@ -212,11 +212,11 @@ class TestCmdBatchTranscribe:
         (input_dir / "a.mp3").write_bytes(b"audio")
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format="text", language=None)
 
-        assert digue.cmd_batch_transcribe(args, _default_config()) == 1
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 1
         assert not (output_dir / "a.txt").exists()
         assert not list(output_dir.glob("*.tmp"))
 
-    @patch("digue.transcribe", return_value="WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n")
+    @patch("digue.transcribe.transcribe", return_value="WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_supports_timestamps_format(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -230,13 +230,13 @@ class TestCmdBatchTranscribe:
         config["transcribe"]["output_format"] = "timestamps"
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
 
-        assert digue.cmd_batch_transcribe(args, config) == 0
+        assert transcribe_mod.cmd_batch_transcribe(args, config) == 0
         output_file = output_dir / "test.txt"
         assert output_file.exists()
         assert output_file.read_text().strip() == "[00:00:00] Hello"
         assert mock_transcribe.call_args[0][3] == "vtt"
 
-    @patch("digue.transcribe", return_value="WEBVTT\n")
+    @patch("digue.transcribe.transcribe", return_value="WEBVTT\n")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_uses_config_format_prompt_and_wrapping(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -248,7 +248,7 @@ class TestCmdBatchTranscribe:
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
         config = _default_config()
         config["transcribe"].update(output_format="srt", prompt="names", max_line_length=50, max_lines=3)
-        assert digue.cmd_batch_transcribe(args, config) == 0
+        assert transcribe_mod.cmd_batch_transcribe(args, config) == 0
         assert (output_dir / "audio.srt").exists()
         assert mock_transcribe.call_args.args[3] == "srt"
         assert mock_transcribe.call_args.kwargs == {

@@ -197,7 +197,7 @@ class TestBenchmarkModels:
         with (
             patch("benchmark_models.container_mod.create_container"),
             patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.digue.transcribe", side_effect=KeyboardInterrupt),
+            patch("benchmark_models.transcribe_mod.transcribe", side_effect=KeyboardInterrupt),
             patch("benchmark_models.container_mod.container_exists", return_value=True),
             patch("benchmark_models.container_mod.remove_container") as mock_remove,
             pytest.raises(KeyboardInterrupt),
@@ -275,7 +275,7 @@ class TestBenchmarkModelsConfig:
         with (
             patch("benchmark_models.container_mod.create_container") as mock_create,
             patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.digue.transcribe", return_value="hello"),
+            patch("benchmark_models.transcribe_mod.transcribe", return_value="hello"),
             patch("benchmark_models.container_mod.container_exists", return_value=False),
         ):
             assert benchmark_models.benchmark_case(config, "intel", "small") is not None
@@ -293,7 +293,7 @@ class TestBenchmarkModelsConfig:
         with (
             patch("benchmark_models.container_mod.create_container") as mock_create,
             patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.digue.transcribe", return_value="hello"),
+            patch("benchmark_models.transcribe_mod.transcribe", return_value="hello"),
             patch("benchmark_models.container_mod.container_exists", return_value=False),
         ):
             assert benchmark_models.benchmark_case(config, "cpu", "small") is not None

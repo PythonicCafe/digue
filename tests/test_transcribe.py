@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
 # -- Transcription ------------------------------------------------------------
@@ -21,7 +22,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"  hello world  \n"
         mock_urlopen.return_value = mock_response
 
-        result = digue.transcribe(
+        result = transcribe_mod.transcribe(
             "http://localhost:8178/inference",
             audio_file,
             "en",
@@ -36,7 +37,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"text"
         mock_urlopen.return_value = mock_response
 
-        digue.transcribe("http://localhost:8178/inference", audio_file, "pt")
+        transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "pt")
         request = mock_urlopen.call_args[0][0]
         assert b"language" in request.data
         assert b"pt" in request.data
@@ -51,7 +52,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"text"
         mock_urlopen.return_value = mock_response
 
-        digue.transcribe("http://localhost:8178/inference", audio_file, "auto")
+        transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "auto")
         request = mock_urlopen.call_args[0][0]
         assert b'name="language"' in request.data
         assert b"auto" in request.data
@@ -66,7 +67,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"First segment here.\n Second one.\n Third one.\n"
         mock_urlopen.return_value = mock_response
 
-        result = digue.transcribe("http://localhost:8178/inference", audio_file, "pt")
+        result = transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "pt")
         assert result == "First segment here. Second one. Third one."
 
     @patch("urllib.request.urlopen")
@@ -81,8 +82,8 @@ class TestTranscribe:
         error = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, None)
         mock_urlopen.side_effect = [error, mock_response]
 
-        with patch("digue._convert_to_wav", return_value=b"wav"):
-            result = digue.transcribe("http://localhost:8178/inference", audio_file, "pt")
+        with patch("digue.transcribe._convert_to_wav", return_value=b"wav"):
+            result = transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "pt")
         assert result == "text"
         assert capsys.readouterr().err == ""
 
@@ -97,8 +98,8 @@ class TestTranscribe:
         error = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, None)
         mock_urlopen.side_effect = [error, mock_response]
 
-        with patch("digue._convert_to_wav", return_value=b"wav"):
-            result = digue.transcribe("http://localhost:8178/inference", audio_file, "pt", verbose=True)
+        with patch("digue.transcribe._convert_to_wav", return_value=b"wav"):
+            result = transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "pt", verbose=True)
         assert result == "text"
         err = capsys.readouterr().err
         assert "HTTP 400" in err
@@ -117,7 +118,7 @@ class TestTranscribe:
         )
         mock_urlopen.return_value = mock_response
 
-        result = digue.transcribe("http://x", audio_file, "pt", response_format="vtt")
+        result = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="vtt")
         assert "WEBVTT" in result
         for line in result.splitlines():
             if "-->" in line or line.startswith("WEBVTT"):
@@ -133,7 +134,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"1\n00:00:00,000 --> 00:00:01,000\n cue com espaco\n\n"
         mock_urlopen.return_value = mock_response
 
-        result = digue.transcribe("http://x", audio_file, "pt", response_format="srt")
+        result = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="srt")
         lines = result.splitlines()
         assert lines[0] == "1"
         assert "-->" in lines[1]
@@ -150,7 +151,7 @@ class TestTranscribe:
             "00:00:02,000 --> 00:00:03,000\n"
             "Segunda fala\n"
         )
-        result = digue._post_process_subtitle(srt, "srt", max_line_length=42, max_lines=2)
+        result = transcribe_mod._post_process_subtitle(srt, "srt", max_line_length=42, max_lines=2)
         lines = result.splitlines()
         assert lines[0] == "1"
         assert lines[1] == "00:00:00,000 --> 00:00:01,000"
@@ -172,7 +173,7 @@ class TestTranscribe:
         mock_urlopen.return_value = mock_response
 
         with patch("digue.notify._stderr_is_tty", return_value=True):
-            result = digue.transcribe("http://x", audio_file, "pt", response_format="vtt")
+            result = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="vtt")
         converted = digue._convert_content(result, "vtt", "timestamps")
         assert "[00:00:00] Primeira frase." in converted
         assert "[00:00:02] Segunda frase com mais conteudo." in converted
@@ -190,7 +191,7 @@ class TestTranscribe:
 
         # Simulate the cmd_transcribe path: vtt with wrap disabled, then convert
         with patch("digue.notify._stderr_is_tty", return_value=True):
-            vtt = digue.transcribe("http://x", audio_file, "pt", response_format="vtt", wrap_cues=False)
+            vtt = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="vtt", wrap_cues=False)
         result = digue._convert_content(vtt, "vtt", "timestamps")
         lines = [line for line in result.splitlines() if line.strip()]
         assert len(lines) == 1  # same timestamp, single line
@@ -204,7 +205,7 @@ class TestTranscribe:
         mock_response.read.return_value = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n First segment\n"
         mock_urlopen.return_value = mock_response
 
-        result = digue.transcribe("http://localhost:8178/inference", audio_file, "pt", response_format="vtt")
+        result = transcribe_mod.transcribe("http://localhost:8178/inference", audio_file, "pt", response_format="vtt")
         assert "WEBVTT" in result
         assert "\n" in result
 
@@ -213,26 +214,26 @@ class TestTranscribe:
 
 
 class TestTranscribeFfmpegFallback:
-    @patch("digue._send_audio")
+    @patch("digue.transcribe._send_audio")
     def test_native_format_sends_directly(self, mock_send, tmp_path):
         mock_send.return_value = "ok"
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"data")
-        assert digue.transcribe("http://x", audio) == "ok"
+        assert transcribe_mod.transcribe("http://x", audio) == "ok"
         mock_send.assert_called_once()
 
-    @patch("digue._convert_to_wav", return_value=b"wav-bytes")
-    @patch("digue._send_audio")
+    @patch("digue.transcribe._convert_to_wav", return_value=b"wav-bytes")
+    @patch("digue.transcribe._send_audio")
     def test_converts_unknown_extension_upfront(self, mock_send, mock_convert, tmp_path):
         audio = tmp_path / "file.amr"
         audio.write_bytes(b"data")
         mock_send.return_value = "text"
-        result = digue.transcribe("http://x", audio)
+        result = transcribe_mod.transcribe("http://x", audio)
         assert result == "text"
         mock_convert.assert_called_once_with(audio)
 
-    @patch("digue._convert_to_wav", return_value=b"wav-bytes")
-    @patch("digue._send_audio")
+    @patch("digue.transcribe._convert_to_wav", return_value=b"wav-bytes")
+    @patch("digue.transcribe._send_audio")
     def test_retries_after_http_400(self, mock_send, mock_convert, tmp_path):
         import urllib.error
 
@@ -241,14 +242,14 @@ class TestTranscribeFfmpegFallback:
         error = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, None)
         mock_send.side_effect = [error, "converted text"]
 
-        result = digue.transcribe("http://x", audio)
+        result = transcribe_mod.transcribe("http://x", audio)
 
         assert result == "converted text"
         assert mock_send.call_count == 2
         mock_convert.assert_called_once_with(audio)
 
     @patch("shutil.which", return_value=None)
-    @patch("digue._send_audio")
+    @patch("digue.transcribe._send_audio")
     def test_400_without_ffmpeg_raises(self, mock_send, mock_which, tmp_path):
         import urllib.error
 
@@ -256,15 +257,15 @@ class TestTranscribeFfmpegFallback:
         audio.write_bytes(b"data")
         mock_send.side_effect = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, None)
         with pytest.raises(RuntimeError, match="ffmpeg is not installed"):
-            digue.transcribe("http://x", audio)
+            transcribe_mod.transcribe("http://x", audio)
 
     @patch("shutil.which", return_value=None)
-    @patch("digue._send_audio")
+    @patch("digue.transcribe._send_audio")
     def test_unknown_extension_without_ffmpeg_raises(self, mock_send, mock_which, tmp_path):
         audio = tmp_path / "file.amr"
         audio.write_bytes(b"data")
         with pytest.raises(RuntimeError, match="ffmpeg is not installed"):
-            digue.transcribe("http://x", audio)
+            transcribe_mod.transcribe("http://x", audio)
 
     def test_conversion_returns_bytes_not_file(self, tmp_path):
         # _convert_to_wav must work in memory: returns bytes, writes nothing
@@ -272,7 +273,7 @@ class TestTranscribeFfmpegFallback:
         audio.write_bytes(b"x")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=b"wav", stderr=b"")
-            result = digue._convert_to_wav(audio)
+            result = transcribe_mod._convert_to_wav(audio)
             argv = mock_run.call_args[0][0]
         assert result == b"wav"
         assert "pipe:1" in argv
@@ -280,38 +281,38 @@ class TestTranscribeFfmpegFallback:
 
 
 class TestSendAudioTokenTimestamps:
-    @patch("digue._multipart_request", return_value="text")
+    @patch("digue.transcribe._multipart_request", return_value="text")
     def test_always_sends_token_timestamps_false(self, mock_multipart, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"data")
-        digue._send_audio("http://x", audio, "en", "text", 10)
+        transcribe_mod._send_audio("http://x", audio, "en", "text", 10)
         fields = mock_multipart.call_args[0][2]
         assert fields["token_timestamps"] == "false"
 
-    @patch("digue._multipart_request", return_value="text")
+    @patch("digue.transcribe._multipart_request", return_value="text")
     def test_always_sends_language_even_when_auto(self, mock_multipart, tmp_path):
         """Regression: the server's default language is "en" (server.cpp); omitting
         the field made every transcription English. "auto" must be sent as-is so
         whisper detects the language in the same pass."""
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"data")
-        digue._send_audio("http://x", audio, "auto", "text", 10)
+        transcribe_mod._send_audio("http://x", audio, "auto", "text", 10)
         fields = mock_multipart.call_args[0][2]
         assert fields["language"] == "auto"
 
-    @patch("digue._multipart_request", return_value="text")
+    @patch("digue.transcribe._multipart_request", return_value="text")
     def test_sends_language_when_fixed(self, mock_multipart, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"data")
-        digue._send_audio("http://x", audio, "pt", "text", 10)
+        transcribe_mod._send_audio("http://x", audio, "pt", "text", 10)
         fields = mock_multipart.call_args[0][2]
         assert fields["language"] == "pt"
 
-    @patch("digue._multipart_request", return_value="text")
+    @patch("digue.transcribe._multipart_request", return_value="text")
     def test_sends_original_filename(self, mock_multipart, tmp_path):
         audio = tmp_path / "tone_opus.ogg"
         audio.write_bytes(b"data")
-        digue._send_audio("http://x", audio, "auto", "text", 10, audio_data=b"converted")
+        transcribe_mod._send_audio("http://x", audio, "auto", "text", 10, audio_data=b"converted")
         filename = mock_multipart.call_args[1]["filename"]
         assert filename == "tone_opus.ogg"
         audio_data = mock_multipart.call_args[0][1]
@@ -323,15 +324,15 @@ class TestSendAudioTokenTimestamps:
 
 class TestWrapCueLines:
     def test_short_text_returns_single_line(self):
-        assert digue._wrap_cue_lines("hello world", 42, 2) == ["hello world"]
+        assert transcribe_mod._wrap_cue_lines("hello world", 42, 2) == ["hello world"]
 
     def test_empty_text_returns_empty_list(self):
-        assert digue._wrap_cue_lines("", 42, 2) == []
-        assert digue._wrap_cue_lines("   ", 42, 2) == []
+        assert transcribe_mod._wrap_cue_lines("", 42, 2) == []
+        assert transcribe_mod._wrap_cue_lines("   ", 42, 2) == []
 
     def test_wraps_at_word_boundary(self):
         text = "uma frase bem comprida que passa do limite de caracteres"
-        result = digue._wrap_cue_lines(text, 35, 2)
+        result = transcribe_mod._wrap_cue_lines(text, 35, 2)
         assert len(result) == 2
         assert " ".join(result) == text
         assert len(result[0]) <= 35
@@ -341,7 +342,7 @@ class TestWrapCueLines:
             "uma frase bem comprida que passa do limite de quarenta e dois caracteres "
             "e continua por mais uma linha inteira de texto"
         )
-        result = digue._wrap_cue_lines(text, 42, 2)
+        result = transcribe_mod._wrap_cue_lines(text, 42, 2)
         assert len(result) == 2
         assert " ".join(result) == text
 
@@ -349,14 +350,14 @@ class TestWrapCueLines:
 class TestStripVttTags:
     def test_removes_c_tags(self):
         text = "Hey<00:00:00.440><c> everyone,</c><00:00:00.960><c> I'm</c>"
-        assert digue._strip_vtt_tags(text) == "Hey everyone, I'm"
+        assert transcribe_mod._strip_vtt_tags(text) == "Hey everyone, I'm"
 
     def test_plain_text_unchanged(self):
-        assert digue._strip_vtt_tags("Hello world") == "Hello world"
+        assert transcribe_mod._strip_vtt_tags("Hello world") == "Hello world"
 
     def test_empty_and_whitespace(self):
-        assert digue._strip_vtt_tags("") == ""
-        assert digue._strip_vtt_tags("   ") == ""
+        assert transcribe_mod._strip_vtt_tags("") == ""
+        assert transcribe_mod._strip_vtt_tags("   ") == ""
 
 
 class TestSimplifyVtt:
@@ -366,7 +367,7 @@ class TestSimplifyVtt:
             "1\n00:00:00.320 --> 00:00:02.000\nHello everyone.\n\n"
             "2\n00:00:02.000 --> 00:00:05.000\nWelcome to the talk.\n\n"
         )
-        result = digue.simplify_vtt(vtt)
+        result = transcribe_mod.simplify_vtt(vtt)
         assert result == "[00:00:00] Hello everyone.\n[00:00:02] Welcome to the talk."
 
     def test_youtube_rolling_pattern(self):
@@ -378,7 +379,7 @@ class TestSimplifyVtt:
             "00:00:02.000 --> 00:00:03.710 align:start position:0%\nHey everyone, I'm Ishaan\n"
             "and<00:00:02.480><c> today</c><00:00:03.000><c> I'm</c><00:00:03.120><c> going</c>\n\n"
         )
-        result = digue.simplify_vtt(vtt)
+        result = transcribe_mod.simplify_vtt(vtt)
         lines = result.splitlines()
         assert len(lines) == 2
         assert lines[0] == "[00:00:00] Hey everyone, I'm Ishaan"
@@ -386,13 +387,13 @@ class TestSimplifyVtt:
 
     def test_skips_youtube_headers(self):
         vtt = "WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:01.000\nHello\n"
-        result = digue.simplify_vtt(vtt)
+        result = transcribe_mod.simplify_vtt(vtt)
         assert "Kind:" not in result
         assert result == "[00:00:00] Hello"
 
     def test_strips_milliseconds(self):
         vtt = "WEBVTT\n\n1\n00:01:23.456 --> 00:01:25.000\nTest line\n"
-        result = digue.simplify_vtt(vtt)
+        result = transcribe_mod.simplify_vtt(vtt)
         assert result == "[00:01:23] Test line"
 
 
@@ -408,10 +409,10 @@ class TestDetectLanguage:
             "language_probabilities": {},
         }
         with (
-            patch("digue._multipart_request", return_value=json.dumps(payload)) as mock_request,
-            patch("digue.NATIVE_FORMATS", new=frozenset({".wav"})),
+            patch("digue.transcribe._multipart_request", return_value=json.dumps(payload)) as mock_request,
+            patch("digue.transcribe.NATIVE_FORMATS", new=frozenset({".wav"})),
         ):
-            result = digue.detect_language("http://x", audio, timeout=10)
+            result = transcribe_mod.detect_language("http://x", audio, timeout=10)
         assert result == "pt"
         fields = mock_request.call_args[0][2]
         assert fields["detect_language"] == "true"
@@ -421,18 +422,18 @@ class TestDetectLanguage:
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"data")
         payload = {"detected_language": "pt", "detected_language_probability": 0.9, "language_probabilities": {}}
-        with patch("digue._multipart_request", return_value=json.dumps(payload)):
-            assert digue.detect_language("http://x", audio, timeout=10) == "pt"
+        with patch("digue.transcribe._multipart_request", return_value=json.dumps(payload)):
+            assert transcribe_mod.detect_language("http://x", audio, timeout=10) == "pt"
 
     def test_detect_language_converts_unsupported_format_upfront(self, tmp_path):
         audio = tmp_path / "a.m4a"
         audio.write_bytes(b"m4a!")
         payload = {"detected_language": "en", "detected_language_probability": 0.9, "language_probabilities": {}}
         with (
-            patch("digue._multipart_request", return_value=json.dumps(payload)) as mock_request,
-            patch("digue._convert_to_wav", return_value=b"wav") as mock_convert,
+            patch("digue.transcribe._multipart_request", return_value=json.dumps(payload)) as mock_request,
+            patch("digue.transcribe._convert_to_wav", return_value=b"wav") as mock_convert,
         ):
-            assert digue.detect_language("http://x", audio, timeout=10) == "en"
+            assert transcribe_mod.detect_language("http://x", audio, timeout=10) == "en"
         mock_convert.assert_called_once()
         assert mock_request.call_args[0][1] == b"wav"
 
@@ -444,12 +445,12 @@ class TestDetectLanguage:
         payload = {"detected_language": "en", "detected_language_probability": 0.9, "language_probabilities": {}}
         with (
             patch(
-                "digue._multipart_request",
+                "digue.transcribe._multipart_request",
                 side_effect=[urllib.error.HTTPError("url", 400, "Bad", {}, None), json.dumps(payload)],
             ) as mock_request,
-            patch("digue._convert_to_wav", return_value=b"wav"),
+            patch("digue.transcribe._convert_to_wav", return_value=b"wav"),
         ):
-            assert digue.detect_language("http://x", audio, timeout=10) == "en"
+            assert transcribe_mod.detect_language("http://x", audio, timeout=10) == "en"
         assert mock_request.call_count == 2
 
     def test_language_probabilities_via_verbose_json(self, tmp_path):
@@ -460,14 +461,14 @@ class TestDetectLanguage:
             "detected_language_probability": 0.999,
             "language_probabilities": {"pt": 0.999, "en": 0.0005},
         }
-        with patch("digue._multipart_request", return_value=json.dumps(payload)):
-            probs = digue.language_probabilities("http://x", audio, timeout=10)
+        with patch("digue.transcribe._multipart_request", return_value=json.dumps(payload)):
+            probs = transcribe_mod.language_probabilities("http://x", audio, timeout=10)
         assert probs["detected"] == ("pt", 0.999)
         assert probs["all"] == {"pt": 0.999, "en": 0.0005}
 
 
 class TestCmdDetectLanguage:
-    @patch("digue.detect_language", return_value="pt")
+    @patch("digue.transcribe.detect_language", return_value="pt")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_prints_language_code(self, mock_running, mock_ensure, mock_detect, tmp_path, capsys):
@@ -477,12 +478,12 @@ class TestCmdDetectLanguage:
         args.audio.write_bytes(b"data")
         args.json = False
 
-        result = digue.cmd_detect_language(args, config)
+        result = transcribe_mod.cmd_detect_language(args, config)
 
         assert result == 0
         assert capsys.readouterr().out.strip() == "pt"
 
-    @patch("digue.language_probabilities", return_value={"detected": ("pt", 0.999), "all": {"pt": 0.999}})
+    @patch("digue.transcribe.language_probabilities", return_value={"detected": ("pt", 0.999), "all": {"pt": 0.999}})
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_json_output_has_detected_and_all(self, mock_running, mock_ensure, mock_probs, tmp_path, capsys):
@@ -492,7 +493,7 @@ class TestCmdDetectLanguage:
         args.audio.write_bytes(b"data")
         args.json = True
 
-        result = digue.cmd_detect_language(args, config)
+        result = transcribe_mod.cmd_detect_language(args, config)
 
         assert result == 0
         output = json.loads(capsys.readouterr().out)
@@ -508,7 +509,7 @@ class TestCmdDetectLanguage:
         args.audio = tmp_path / "nope.wav"
         args.json = False
 
-        result = digue.cmd_detect_language(args, config)
+        result = transcribe_mod.cmd_detect_language(args, config)
 
         assert result == 1
         assert "not found" in capsys.readouterr().err
@@ -517,30 +518,30 @@ class TestCmdDetectLanguage:
 
 
 class TestDetectLanguageVerbose:
-    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    @patch("digue.transcribe._multipart_request", side_effect=RuntimeError("stop"))
     def test_conversion_message_respects_verbose_false(self, mock_request, tmp_path, capsys):
         """Regression: the ffmpeg-conversion notice is progress output; without
         --verbose the stderr stays clean."""
         audio = tmp_path / "a.ogg"
         audio.write_bytes(b"ogg")
-        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
-            digue.detect_language("http://x", audio, timeout=10, verbose=False)
+        with patch("digue.transcribe._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            transcribe_mod.detect_language("http://x", audio, timeout=10, verbose=False)
         assert "ffmpeg" not in capsys.readouterr().err
 
-    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    @patch("digue.transcribe._multipart_request", side_effect=RuntimeError("stop"))
     def test_conversion_message_shown_with_verbose_true(self, mock_request, tmp_path, capsys):
         audio = tmp_path / "a.m4a"
         audio.write_bytes(b"m4a")
-        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
-            digue.detect_language("http://x", audio, timeout=10, verbose=True)
+        with patch("digue.transcribe._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            transcribe_mod.detect_language("http://x", audio, timeout=10, verbose=True)
         assert "ffmpeg" in capsys.readouterr().err
 
-    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    @patch("digue.transcribe._multipart_request", side_effect=RuntimeError("stop"))
     def test_language_probabilities_message_respects_verbose_false(self, mock_request, tmp_path, capsys):
         audio = tmp_path / "a.ogg"
         audio.write_bytes(b"ogg")
-        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
-            digue.language_probabilities("http://x", audio, timeout=10, verbose=False)
+        with patch("digue.transcribe._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            transcribe_mod.language_probabilities("http://x", audio, timeout=10, verbose=False)
         assert "ffmpeg" not in capsys.readouterr().err
 
     def test_cmd_detect_language_passes_verbose(self, tmp_path):
@@ -551,17 +552,17 @@ class TestDetectLanguageVerbose:
         args.json = False
         args.verbose = False
         with (
-            patch("digue.detect_language", return_value="pt") as mock_detect,
+            patch("digue.transcribe.detect_language", return_value="pt") as mock_detect,
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
         ):
-            assert digue.cmd_detect_language(args, config) == 0
+            assert transcribe_mod.cmd_detect_language(args, config) == 0
         assert mock_detect.call_args[1]["verbose"] is False
 
 
 class TestCmdTranscribeInput:
     @patch("digue.send_text")
-    @patch("digue.transcribe", return_value="text")
+    @patch("digue.transcribe.transcribe", return_value="text")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_directory_input_gives_clear_error_not_ffmpeg(
@@ -577,7 +578,7 @@ class TestCmdTranscribeInput:
         args.prompt = None
         args.verbose = False
 
-        result = digue.cmd_transcribe(args, config)
+        result = transcribe_mod.cmd_transcribe(args, config)
 
         assert result == 1
         err = capsys.readouterr().err
@@ -591,7 +592,7 @@ class TestCmdTranscribeInput:
     def test_missing_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         args = MagicMock(audio=tmp_path / "missing.wav")
 
-        assert digue.cmd_transcribe(args, _default_config()) == 1
+        assert transcribe_mod.cmd_transcribe(args, _default_config()) == 1
 
         assert "not found" in capsys.readouterr().err
         mock_ensure.assert_not_called()
@@ -617,9 +618,9 @@ class TestCmdTranscribeInput:
         config = _default_config()
 
         transcribe_result = (
-            patch("digue.transcribe", side_effect=failure)
+            patch("digue.transcribe.transcribe", side_effect=failure)
             if isinstance(failure, RuntimeError)
-            else patch("digue.transcribe", return_value="text")
+            else patch("digue.transcribe.transcribe", return_value="text")
         )
         write_result = (
             patch("pathlib.Path.write_text", side_effect=failure)
@@ -627,14 +628,14 @@ class TestCmdTranscribeInput:
             else patch("pathlib.Path.write_text")
         )
         with transcribe_result, write_result:
-            result = digue.cmd_transcribe(args, config)
+            result = transcribe_mod.cmd_transcribe(args, config)
 
         assert result == 1
         error = capsys.readouterr().err
         assert f"Error: {failure}" in error
         assert "Traceback" not in error
 
-    @patch("digue.transcribe", return_value="text")
+    @patch("digue.transcribe.transcribe", return_value="text")
     @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.container.ensure_server")
     def test_uses_config_prompt_when_cli_absent(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
@@ -643,14 +644,14 @@ class TestCmdTranscribeInput:
         args = MagicMock(audio=audio, language=None, response_format=None, verbose=False, prompt=None, output=None)
         config = _default_config()
         config["transcribe"]["prompt"] = "Pythonic Café"
-        assert digue.cmd_transcribe(args, config) == 0
+        assert transcribe_mod.cmd_transcribe(args, config) == 0
         assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic Café"
 
 
 class TestOutputFilesEndWithOneNewline:
     VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n"
 
-    @patch("digue.transcribe", return_value=VTT)
+    @patch("digue.transcribe.transcribe", return_value=VTT)
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_transcribe_output_file(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
@@ -662,12 +663,12 @@ class TestOutputFilesEndWithOneNewline:
         args.language = args.prompt = None
         args.verbose = False
 
-        assert digue.cmd_transcribe(args, _default_config()) == 0
+        assert transcribe_mod.cmd_transcribe(args, _default_config()) == 0
 
         content = (tmp_path / "a.vtt").read_text()
         assert content == self.VTT
 
-    @patch("digue.transcribe", return_value=VTT)
+    @patch("digue.transcribe.transcribe", return_value=VTT)
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_batch_transcribe_output_file(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
@@ -678,11 +679,11 @@ class TestOutputFilesEndWithOneNewline:
         output_dir.mkdir()
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format="vtt", language=None)
 
-        assert digue.cmd_batch_transcribe(args, _default_config()) == 0
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 0
 
         assert (output_dir / "a.vtt").read_text() == self.VTT
 
-    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_text_output_still_gets_its_newline(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
@@ -692,6 +693,6 @@ class TestOutputFilesEndWithOneNewline:
         args.language = args.prompt = None
         args.verbose = False
 
-        digue.cmd_transcribe(args, _default_config())
+        transcribe_mod.cmd_transcribe(args, _default_config())
 
         assert (tmp_path / "a.txt").read_text() == "hello\n"
