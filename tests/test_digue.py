@@ -5598,6 +5598,30 @@ class TestNotifyLifecycle:
         assert "Failed to save transcript" in err
         assert "hello" in err
 
+    def test_transcript_write_failure_without_rescue_is_terminal(self, tmp_path, capsys):
+        """The text was already pasted: a retryable outcome would make the
+        recovery paste it again, so a failed .txt with a failed rescue is
+        still terminal (delivered, exit 1)."""
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        config["dictate"]["audio_dir"] = str(blocker)  # .txt write and rescue both fail
+
+        with (
+            patch("digue.send_text") as mock_send,
+            patch("digue.transcribe", return_value="hello"),
+            patch("digue.notify"),
+        ):
+            result = digue.finish_dictation(config, rec_file)
+
+        mock_send.assert_called_once()
+        assert result.outcome == "delivered"
+        assert result.exit_code == 1
+        assert rec_file.exists()
+        assert "hello" in capsys.readouterr().err
+
 
 # -- Batch commands -----------------------------------------------------------
 

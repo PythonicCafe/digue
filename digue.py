@@ -2802,6 +2802,10 @@ def finish_dictation(
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
     notify_close()
 
+    # From here on every outcome is terminal: the text was pasted, and a
+    # retryable_failure would make a recovery paste it a second time. A
+    # failure to save the transcript or to archive the audio is still an
+    # error (exit 1), reported as delivered/rescued.
     try:
         text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
     except Exception as exc:
@@ -2810,14 +2814,11 @@ def finish_dictation(
         archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         if archived is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
-        return DeliveryResult(outcome="retryable_failure", exit_code=1)
+        return DeliveryResult(outcome="delivered", exit_code=1)
     # Transcribing... is a \r-redrawn line (no newline); break before this one.
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
     print(f"Dictation done ({len(text)} chars): {text_path}", file=sys.stderr)
-    # From here on every outcome is terminal: the text was pasted, and a
-    # retryable_failure would make a recovery paste it a second time. An
-    # archive failure is still an error (exit 1), reported as delivered.
     if not archive_audio():
         if rescued_path is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
