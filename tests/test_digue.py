@@ -868,10 +868,12 @@ class TestSaveAudioConfig:
         import textwrap
 
         config_path = tmp_path / "config.toml"
-        config_path.write_text(textwrap.dedent("""\
+        config_path.write_text(
+            textwrap.dedent("""\
             [dictation]
             save-audio = false
-        """))
+        """)
+        )
         config = digue.load_config(config_path)
         assert config["dictation"]["save_audio"] is False
 

@@ -172,9 +172,8 @@ def detect_backend():
         )
         old_gpu_markers = ("Broadwell", "Haswell", "Ivy", "Sandy")
         for line in result.stdout.splitlines():
-            if "VGA" in line.upper() and "Intel" in line:
-                if not any(marker in line for marker in old_gpu_markers):
-                    return "intel"
+            if "VGA" in line.upper() and "Intel" in line and not any(marker in line for marker in old_gpu_markers):
+                return "intel"
     except (subprocess.SubprocessError, FileNotFoundError):
         pass
 
@@ -383,9 +382,10 @@ def notify(message, timeout_ms=0):
 
 def notify_close():
     """Closes the current digue notification via D-Bus."""
+    import contextlib
     import subprocess
 
-    try:
+    with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
         subprocess.run(
             [
                 "gdbus",
@@ -402,8 +402,6 @@ def notify_close():
             capture_output=True,
             timeout=5,
         )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
 
 
 # -- Server -------------------------------------------------------------------
@@ -938,7 +936,9 @@ def send_text(text, display_server="auto", input_mode="paste"):
         except FileNotFoundError:
             raise RuntimeError(f"{type_cmd[0]} not found. Install with: sudo apt install {type_pkg}")
         except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"{type_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}")
+            raise RuntimeError(
+                f"{type_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}"
+            )
         return
 
     if display_server == "wayland":
@@ -1078,12 +1078,11 @@ def dictate_toggle(config):
 
 def _benchmark_run(url, audio_path, language, runs):
     """Runs N transcription requests and returns list of (elapsed_ms, text)."""
+    import contextlib
     import time
 
-    try:
+    with contextlib.suppress(Exception):
         transcribe(url, audio_path, language, timeout=BENCHMARK_TRANSCRIPTION_TIMEOUT)
-    except Exception:
-        pass
 
     results = []
     for _run in range(runs):
