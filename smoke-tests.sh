@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# digue smoke tests (pre-release). Complements TESTES-MANUAIS.md: the human checklist covers GUI/mic/recovery behavior
-# a script cannot automate; this runs everything a script can -- CLI commands, config validation, transcription formats,
-# conversion, batch, server lifecycle, remote-backend refusals -- against real Docker containers on cpu/amd backends.
+# digue smoke tests
+# This runs everything a script can -- CLI commands, config validation, transcription formats, conversion, batch,
+# server lifecycle, remote-backend refusals -- against real Docker containers on cpu/amd backends.
 #
 # Usage:
 #   ./smoke-tests.sh [backend] [model ...]     # backend: cpu or amd (default: digue detect, then cpu)
@@ -14,7 +14,7 @@
 #   DIGUE_SMOKE_CACHE=dir      model cache (default: ~/.cache/digue-smoke-models; empty disables)
 #
 # Dictation tests need a microphone and are interactive: the script says what to speak (language, duration), waits for
-# ENTER, and only then starts recording. They run first among the functional tests and cover both pw-record and arecord
+# ENTER and only then starts recording. They run first among the functional tests and cover both pw-record and arecord
 # (one short sentence each). Everything else is hands-off.
 #
 # Everything runs in a mktemp dir (config, data, runtime, audio). The whisper-server container uses a dedicated name
@@ -24,7 +24,7 @@
 set -o pipefail
 
 # NOTE: deliberately no `set -e`: failing commands are the test data here (every check inspects $?), and an early abort
-# would skip cleanup. Each dg call captures rc explicitly.
+# would skip cleanup. Each digue call captures rc explicitly.
 
 SCRIPT_BACKEND="${1:-}"
 if [ -n "$2" ]; then
@@ -36,8 +36,8 @@ fi
 
 CONTAINER_NAME="digue-smoke"
 JFK_URL="https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
-# Where downloaded models are kept between runs (models are the only state worth keeping; set
-# DIGUE_SMOKE_CACHE="" to force re-downloading).
+# Where downloaded models are kept between runs (models are the only state worth keeping; set DIGUE_SMOKE_CACHE="" to
+# force re-downloading).
 CACHE_DIR="${DIGUE_SMOKE_CACHE:-$HOME/.cache/digue-smoke-models}"
 PORT=18378
 
@@ -160,6 +160,14 @@ case "$BACKEND" in
     cpu | amd) ;;
     *) echo "error: backend must be cpu or amd (got: $BACKEND); nvidia/intel are out of scope here" >&2; exit 2 ;;
 esac
+# digue keeps its daemon/take state directly in $XDG_RUNTIME_DIR, so the run is isolated by pointing it at a temp dir.
+# PipeWire (pw-record, and arecord through the ALSA plugin) and Wayland find their sockets through the same variable:
+# without the two exports below every take fails with "pw_context_connect() failed: Host is down".
+REAL_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PIPEWIRE_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-$REAL_RUNTIME_DIR}"
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [[ "$WAYLAND_DISPLAY" != /* ]]; then
+    export WAYLAND_DISPLAY="$REAL_RUNTIME_DIR/$WAYLAND_DISPLAY"
+fi
 export XDG_RUNTIME_DIR="$RUNTIME"
 echo "backend: $BACKEND  container: $CONTAINER_NAME  root: $TEST_ROOT"
 
@@ -193,8 +201,9 @@ timeout = 600
 audio-dir = "$DATA_DIR/audio"
 display-server = "auto"
 input-mode = "paste"
+paste-key = "shift+insert"
 recorder = "auto"
-max-duration = 300
+max-duration = 30
 save-audio = true
 audio-format = "flac"
 EOF
@@ -262,6 +271,8 @@ port = 8178'
 cpu = "gigante"'
     'bad-duration:[dictate]
 max-duration = -1'
+    'bad-paste-key:[dictate]
+paste-key = "alt+v"'
 )
 for entry in "${bad_configs[@]}"; do
     name="${entry%%:*}"
@@ -381,8 +392,15 @@ rc=$?
 check "benchmark exits 0" 0 "$rc" "$(cat "$TEST_ROOT/bench-stderr.log")"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && pass "benchmark --json is valid JSON" || fail "benchmark JSON invalid"
 check_output "benchmark summary printed" "$(cat "$TEST_ROOT/bench-stderr.log")" "Summary"
+# the restore is `docker start`, which returns before whisper-server has loaded the model: give it the same grace
+# `server start` gives (status exits 1 while the container is up but not yet answering)
+waited=0
+until dg server status >/dev/null 2>&1 || [ "$waited" -ge 60 ]; do
+    sleep 1
+    waited=$((waited + 1))
+done
 dg server status >/dev/null 2>&1
-check "server restored and running after benchmark" 0 $?
+check "server restored and running after benchmark (${waited}s)" 0 $?
 docker ps -a --format '{{.Names}}' | grep -q "benchmark-backup" && fail "benchmark backup container left behind" || pass "no backup container left"
 
 # Dictation (interactive: speak when asked)
@@ -396,7 +414,7 @@ mic_take() { # mic_take <recorder>: one interactive take (daemon in background, 
     fi
     local daemon_pid="" waited=0
     echo "  recorder: $recorder"
-    echo "  >>> Press ENTER, then speak ONE SHORT SENTENCE IN ENGLISH for about 5 seconds <<<"
+    echo "  >>> Press ENTER, wait for 'recording' then speak ONE SHORT SENTENCE IN ENGLISH for about 5 seconds <<<"
     read -r
     dg dictate >/dev/null 2>&1 &
     daemon_pid=$!
@@ -408,20 +426,22 @@ mic_take() { # mic_take <recorder>: one interactive take (daemon in background, 
     done
     if grep -q " recording " "$RUNTIME/digue-daemon.pid" 2>/dev/null; then
         pass "$recorder: daemon reached recording state"
+        echo "  >>> Recording... press ENTER to stop <<<"
+        read -r
+        dg dictate >/dev/null 2>&1
     else
-        fail "$recorder: daemon never reached recording state"
+        wait "$daemon_pid" 2>/dev/null
+        fail "$recorder: daemon never reached recording state (exit $?); the desktop notification has the cause"
+        return
     fi
-    echo "  >>> Recording... press ENTER to stop <<<"
-    read -r
-    dg dictate >/dev/null 2>&1
-    # delivery (transcribe + paste/archive) can take a while on cpu: cap at 300s then give up loudly
+    # delivery (transcribe + paste/archive) can take a while on cpu: cap at 30s then give up loudly
     waited=0
-    while kill -0 "$daemon_pid" 2>/dev/null && [ "$waited" -lt 300 ]; do
+    while kill -0 "$daemon_pid" 2>/dev/null && [ "$waited" -lt 30 ]; do
         sleep 1
         waited=$((waited + 1))
     done
     if kill -0 "$daemon_pid" 2>/dev/null; then
-        fail "$recorder: daemon did not finish in 300s"
+        fail "$recorder: daemon did not finish in 30s"
         kill -9 "$daemon_pid" 2>/dev/null
         return
     fi
@@ -433,8 +453,8 @@ mic_take() { # mic_take <recorder>: one interactive take (daemon in background, 
         fail "$recorder: unexpected daemon exit $rc_daemon"
     fi
     local latest_txt latest_audio
-    latest_txt="$(find "$DATA_DIR/audio" -name '*.txt' -newer "$CONFIG" | sort | tail -1)"
-    latest_audio="$(find "$DATA_DIR/audio" \( -name '*.flac' -o -name '*.wav' \) -newer "$CONFIG" | sort | tail -1)"
+    latest_txt="$(find "$DATA_DIR/audio" -name '*.txt' -newer "$CONFIG" 2>/dev/null | sort | tail -1)"
+    latest_audio="$(find "$DATA_DIR/audio" \( -name '*.flac' -o -name '*.wav' \) -newer "$CONFIG" 2>/dev/null | sort | tail -1)"
     if [ -n "$latest_txt" ] && [ -s "$latest_txt" ]; then
         pass "$recorder: transcript saved with content ($latest_txt)"
     else
@@ -501,8 +521,8 @@ last_char="$(tail -c 1 "$out_file" | od -An -c | tr -d ' ')"
 lines="$(wc -l <"$out_file")"
 [ "$lines" -eq 1 ] && pass "text format is one line" || fail "text format has $lines lines"
 
-# The model name is baked into the container's command line: changing [models] only
-# takes effect after destroy + start (which downloads a missing model first).
+# The model name is baked into the container's command line: changing [models] only takes effect after destroy + start
+# (which downloads a missing model first).
 for model in "${MODELS[@]:1}"; do
     config_set models "$BACKEND" "$model"
     out="$(dg server destroy 2>&1 && dg server start 2>&1)"
