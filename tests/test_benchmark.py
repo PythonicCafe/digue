@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import benchmark_models
-import digue
+from digue import benchmark as benchmark_mod
 from digue import container as container_mod
 from digue.config import _default_config
 
@@ -21,10 +21,10 @@ class TestBenchmarkTempFiles:
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.record_benchmark_audio") as mock_record,
-            patch("digue.run_benchmark"),
+            patch("digue.benchmark.record_benchmark_audio") as mock_record,
+            patch("digue.benchmark.run_benchmark"),
         ):
-            assert digue.cmd_benchmark(args, config) == 0
+            assert benchmark_mod.cmd_benchmark(args, config) == 0
 
         assert mock_record.call_args[0][0].parent == tmp_path
 
@@ -105,10 +105,10 @@ class TestRunBenchmarkLanguage:
             patch("digue.container.remove_container"),
             patch("digue.container.create_container"),
             patch("digue.container._wait_for_server", return_value=True),
-            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.benchmark._benchmark_run", return_value=[]),
             patch("digue.container.detect_backend", return_value="cpu"),
         ):
-            digue.run_benchmark(tmp_path / "no-audio.wav", config)
+            benchmark_mod.run_benchmark(tmp_path / "no-audio.wav", config)
         err = capsys.readouterr().err
         assert "digue benchmark" in err
 
@@ -121,11 +121,11 @@ class TestRunBenchmarkLanguage:
             patch("digue.container.remove_container") as mock_remove,
             patch("digue.container.create_container"),
             patch("digue.container._wait_for_server", return_value=True),
-            patch("digue._benchmark_run", side_effect=KeyboardInterrupt),
+            patch("digue.benchmark._benchmark_run", side_effect=KeyboardInterrupt),
             patch("digue.container.detect_backend", return_value="cpu"),
             pytest.raises(KeyboardInterrupt),
         ):
-            digue.run_benchmark(tmp_path / "audio.wav", config)
+            benchmark_mod.run_benchmark(tmp_path / "audio.wav", config)
 
         mock_remove.assert_called_once_with()
 
@@ -143,10 +143,10 @@ class TestBenchmarkRespectsConfig:
             patch("digue.container.container_exists", return_value=False),
             patch("digue.container.create_container") as mock_create,
             patch("digue.container._wait_for_server", return_value=True),
-            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.benchmark._benchmark_run", return_value=[]),
             patch("digue.container.detect_backend", return_value="intel"),
         ):
-            digue.run_benchmark(tmp_path / "audio.wav", config)
+            benchmark_mod.run_benchmark(tmp_path / "audio.wav", config)
 
         backends = [recorded_call.args[1] for recorded_call in mock_create.call_args_list]
         assert backends == ["cpu", "cpu"]
@@ -164,10 +164,10 @@ class TestBenchmarkRespectsConfig:
             patch("digue.container.container_exists", return_value=False),
             patch("digue.container.create_container") as mock_create,
             patch("digue.container._wait_for_server", return_value=True),
-            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.benchmark._benchmark_run", return_value=[]),
             patch("digue.container.detect_backend", return_value="amd"),
         ):
-            digue.run_benchmark(tmp_path / "audio.wav", config)
+            benchmark_mod.run_benchmark(tmp_path / "audio.wav", config)
 
         images = {backend: [] for backend in ("cpu", "amd")}
         for create_call in mock_create.call_args_list:
@@ -185,7 +185,7 @@ class TestBenchmarkRespectsConfig:
         config = _default_config()
         config["dictate"]["recorder"] = "arecord"
 
-        digue.record_benchmark_audio(tmp_path / "bench.wav", config=config)
+        benchmark_mod.record_benchmark_audio(tmp_path / "bench.wav", config=config)
 
         assert mock_popen.call_args.args[0][0] == "arecord"
 
