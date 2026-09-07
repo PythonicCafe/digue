@@ -247,7 +247,7 @@ class TestCreateContainer:
         config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         container_mod.create_container(config, "cpu")
-        mock_download.assert_called_once_with("small", tmp_path / "models", with_notification=True)
+        mock_download.assert_called_once_with("small", tmp_path / "models", with_notification=False)
 
     @patch("digue.container.download_model")
     @patch("digue.container.pull_image")
@@ -276,7 +276,7 @@ class TestCreateContainer:
 
         container_mod.create_container(config, "cpu")
 
-        mock_download.assert_called_once_with("small", models_dir, with_notification=True)
+        mock_download.assert_called_once_with("small", models_dir, with_notification=False)
 
 
 class TestCmdModels:
@@ -625,7 +625,7 @@ class TestContainerFailures:
             mock_create.assert_not_called()
         else:
             mock_start.assert_not_called()
-            mock_create.assert_called_once_with(config, "cpu")
+            mock_create.assert_called_once_with(config, "cpu", with_notification=False)
 
     @patch("digue.notify.send_notification")
     @patch("digue.container._wait_for_server")

@@ -199,11 +199,14 @@ def resolve_image(backend: str, config: dict[str, dict[str, Any]]) -> str:
     return DOCKER_IMAGES[backend]
 
 
-def create_container(config: dict[str, dict[str, Any]], backend: str | None = None) -> str:
+def create_container(
+    config: dict[str, dict[str, Any]], backend: str | None = None, *, with_notification: bool = False
+) -> str:
     """Creates the digue container.
 
     Resolves backend and image from config (with auto-detection fallback).
     Downloads the model and pulls the Docker image if not present locally.
+    Desktop notifications are for the dictation hotkey path only.
     """
     if backend is None:
         backend = resolve_backend(config)
@@ -223,7 +226,7 @@ def create_container(config: dict[str, dict[str, Any]], backend: str | None = No
     if not model_path.exists() or not vad_path.exists():
         missing = model_path if not model_path.exists() else vad_path
         print(f"Model not found: {missing.name}. Downloading...", file=sys.stderr, flush=True)
-        download_model(model, models_dir, with_notification=True)
+        download_model(model, models_dir, with_notification=with_notification)
 
     pull_image(image)
 
@@ -449,7 +452,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
         backend = resolve_backend(config)
         if not silent:
             send_notification(f"Creating server ({backend})...")
-        create_container(config, backend)
+        create_container(config, backend, with_notification=not silent)
     else:
         if not silent:
             send_notification(f"Container in unexpected state: {status}", timeout_ms=5000)
