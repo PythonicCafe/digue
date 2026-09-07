@@ -2961,6 +2961,11 @@ def _ensure_dir(value: str) -> Path:
 
 
 CONFIG_TEMPLATE = """\
+# Only the sections and keys documented below are accepted (each key in
+# kebab-case or snake_case, not both spellings at once); anything else --
+# including inside [host.<hostname>] tables -- is rejected when the config
+# is loaded. `digue config show` prints the resolved settings for this machine.
+
 # -- Server -------------------------------------------------------------------
 [server]
 # port = 8178                   # host port for the whisper-server container
@@ -3011,6 +3016,8 @@ CONFIG_TEMPLATE = """\
 # [host.<hostname>][section] tables override the global sections of the same
 # name on that machine only (defaults < global < host). The hostname matches
 # exactly, or without the domain part (thinkpad matches thinkpad.local).
+# Hostnames containing dots must be quoted, or TOML parses each dot as a
+# nested table and the file is rejected: [host."minipc.local".server]
 # Example:
 #
 # [host.minideb.server]

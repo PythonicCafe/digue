@@ -216,9 +216,16 @@ digue benchmark audio.wav            # benchmark with existing audio
 
 All settings have sensible defaults. The config file is optional; `digue config init` writes it with every setting documented (defaults commented out).
 
+Unknown sections, keys, or `[models]` backends are rejected when the config is loaded -- including inside `[host.<hostname>]` tables and for every host, not just the current machine, since the file is versioned in dotfiles. If you are upgrading from an earlier version, a config file that relied on misspelled or otherwise ignored keys will now fail with an error naming the offending entry (with a suggestion when the spelling is close to a valid key).
+
 Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 
 ```toml
+# Only the sections and keys documented below are accepted (each key in
+# kebab-case or snake_case, not both spellings at once); anything else --
+# including inside [host.<hostname>] tables -- is rejected when the config
+# is loaded. `digue config show` prints the resolved settings for this machine.
+
 # -- Server -------------------------------------------------------------------
 [server]
 # port = 8178                   # host port for the whisper-server container
@@ -269,6 +276,8 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # [host.<hostname>][section] tables override the global sections of the same
 # name on that machine only (defaults < global < host). The hostname matches
 # exactly, or without the domain part (thinkpad matches thinkpad.local).
+# Hostnames containing dots must be quoted, or TOML parses each dot as a
+# nested table and the file is rejected: [host."minipc.local".server]
 # Example:
 #
 # [host.minideb.server]
@@ -288,7 +297,7 @@ Paths support `~` (expanded to home directory).
 
 `[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe`, and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, and `max-lines` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
 
-One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `transcribe`, `dictate`, `models`); keys there override the global sections when the hostname matches, and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved.
+One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `transcribe`, `dictate`, `models`); keys there override the global sections when the hostname matches, and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved. Hostnames containing dots must be quoted (`[host."minipc.local".server]`); unquoted, TOML parses each dot as a nested table and the file is rejected.
 
 ## Config command
 
