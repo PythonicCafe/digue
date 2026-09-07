@@ -216,8 +216,10 @@ def rescue_recording(
     audio-dir usually live on different filesystems, the destination must
     never be readable in a partial state, and an existing destination is
     never overwritten), then removes the origin -- only after the destination
-    is valid. Any failure removes the temp, preserves the origin and reports
-    on stderr.
+    is valid. Any failure before the publish removes the temp, preserves the
+    origin and reports on stderr; once the destination is linked the rescue
+    is done, and a failure to remove the origin is only reported (the caller
+    must not retry: the published name is exclusive).
     """
     import shutil
 
@@ -235,14 +237,17 @@ def rescue_recording(
         # os.link fails with FileExistsError instead of replacing: the publish
         # step is as exclusive as the temp file (os.replace would clobber).
         os.link(temp_archived, archived)
-        temp_archived.unlink()
-        rec_file.unlink()
-        return archived
     except Exception as rescue_exc:
         if temp_archived is not None:
             temp_archived.unlink(missing_ok=True)
         print(f"Failed to keep recording: {rescue_exc}; audio still at {rec_file}", file=sys.stderr)
         return None
+    temp_archived.unlink(missing_ok=True)
+    try:
+        rec_file.unlink()
+    except OSError as unlink_exc:
+        print(f"Recording kept at {archived}, but the origin could not be removed: {unlink_exc}", file=sys.stderr)
+    return archived
 
 
 def _write_transcript(audio_dir: Path, timestamp: str, text: str, take_id: str | None = None) -> Path:

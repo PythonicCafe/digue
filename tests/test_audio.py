@@ -84,6 +84,29 @@ class TestRescueRecording:
         assert rescued.read_bytes() == b"fLaC"
         assert not rec_file.exists()
 
+    def test_origin_unlink_failure_after_publish_still_reports_the_rescue(self, tmp_path, capsys):
+        """Once the destination is linked, the rescue succeeded whatever
+        happens to the origin: reporting None there made the caller keep the
+        take state, and every retry collided with the published file."""
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"audio")
+        audio_dir = tmp_path / "audio"
+        real_unlink = Path.unlink
+
+        def unlink_all_but_origin(self, missing_ok=False):
+            if self == rec_file:
+                raise PermissionError("origin is read-only")
+            real_unlink(self, missing_ok=missing_ok)
+
+        with patch.object(Path, "unlink", unlink_all_but_origin):
+            rescued = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        assert rescued == audio_dir / "2026" / "09" / "20260904-120000-0123456789abcdef.wav"
+        assert rescued.read_bytes() == b"audio"
+        assert rec_file.exists()
+        assert sorted(path.name for path in rescued.parent.iterdir()) == [rescued.name]
+        assert "origin is read-only" in capsys.readouterr().err
+
     def test_copy_failure_preserves_origin_and_returns_none(self, tmp_path, capsys):
         rec_file = tmp_path / "digue-rec.wav"  # never created: the copy must fail
         audio_dir = tmp_path / "audio"
