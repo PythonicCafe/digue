@@ -4,6 +4,7 @@ import argparse
 import ast
 import json
 import math
+import os
 import subprocess
 import sys
 import textwrap
@@ -437,7 +438,8 @@ class TestDownloadModel:
         with patch("urllib.request.urlopen", return_value=response), pytest.raises(OSError, match="reset"):
             digue._download_file("http://example/model.bin", tmp_path / "ggml-small.bin", "ggml-small.bin")
 
-        assert list(tmp_path.iterdir()) == []
+        assert not (tmp_path / "ggml-small.bin").exists()
+        assert not (tmp_path / "ggml-small.bin.part").exists()
 
 
 # -- Notifications -----------------------------------------------------------
@@ -1680,25 +1682,34 @@ class TestCmdConfig:
         assert "nvidia" in output["models"]
 
 
-class TestNotifyAppTitle:
-    def test_limit_notification_replaces_progress_popup(self):
-        """The daemon's limit notification must use --replace-id (no second popup)."""
+class TestRuntimeIsolation:
+    def test_state_paths_use_isolated_runtime_dir(self):
+        runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
+
+        assert digue._runtime_dir() == runtime_dir
+        assert digue._pid_file().parent == runtime_dir
+        assert digue._daemon_pid_file().parent == runtime_dir
+        assert digue._recorder_pid_file(123).parent == runtime_dir
+        with digue._dictate_lock():
+            assert (runtime_dir / "digue.lock").exists()
+
+    def test_toggle_does_not_read_state_outside_isolated_runtime(self, tmp_path):
+        """A stale recorder state outside the isolated runtime must not be recovered."""
+        sentinel_dir = tmp_path / "sentinel"
+        sentinel_dir.mkdir()
+        (sentinel_dir / "digue-daemon.pid").write_text("4242 recording 555")
         config = digue._default_config()
-        config["dictate"]["max_duration"] = 300
+
         with (
-            patch("digue.is_recording", side_effect=[True, False]),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
-            patch(
-                "digue.start_recording",
-                return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
-            ),
-            patch("digue.stop_recording", return_value=None),
-            patch("digue.finish_dictation", return_value=0) as mock_finish,
+            patch("digue._process_starttime", return_value="555"),
+            patch("digue.ensure_server", side_effect=RuntimeError("stop after state lookup")),
+            patch("digue.is_recording", return_value=False),
+            patch("digue.notify"),
+            patch("os.kill") as mock_kill,
         ):
-            result = digue.dictate_toggle(config)
-        assert result == 0
-        mock_finish.assert_called_once()
+            assert digue.dictate_toggle(config) == 1
+
+        mock_kill.assert_not_called()
 
 
 class TestModuleImports:
@@ -2236,14 +2247,12 @@ class TestDictateInterrupt:
             return "interrupted"
 
         with (
-            patch("digue._daemon_pid_file", return_value=tmp_path / "digue-daemon.pid") as mock_daemon_file,
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue._wait_recorder_end_daemon", side_effect=fake_wait),
             patch("digue.finish_dictation", return_value=0) as mock_finish,
             patch("signal.signal", side_effect=lambda sig, handler: handlers.append((sig, handler))),
         ):
-            (tmp_path / "digue.pid").write_text("777")  # the fake recorder's pid
+            digue._pid_file().write_text("777")  # the fake recorder's pid
             result = digue.dictate_toggle(config)
 
         assert result == 0
@@ -2253,7 +2262,7 @@ class TestDictateInterrupt:
         installed = dict(handlers)
         assert signal.SIGINT in installed
         assert installed[signal.SIGINT] is digue._on_sigint
-        assert not mock_daemon_file.return_value.exists()
+        assert not digue._daemon_pid_file().exists()
 
     def test_wait_recorder_end_interrupted_outcome(self):
         recorder = MagicMock()
