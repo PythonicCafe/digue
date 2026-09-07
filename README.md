@@ -202,6 +202,7 @@ language = "auto"               # language for transcription: "auto", "pt", "en"
                                 #   Wayland uses: wl-copy + wtype (paste) or wtype (type)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
+# save-audio = true             # save the .wav recording as a backup
 
 # Models per backend
 [models]                        # available: tiny, base, small, medium, large-v3-turbo, large-v3
@@ -236,6 +237,8 @@ sudo apt install alsa-utils      # fallback recorder (arecord)
 ```
 
 The recorder runs in its own process group, so it keeps recording even if the `digue` process is killed; it stops either when you press the key again or when `max-duration` is reached (default 300s, set `0` for unlimited). The limit is enforced by an independent watchdog process: when it fires, it kills the recorder and sends a desktop notification ("Recording stopped: 300s limit reached") -- this bounds the worst-case recording size even if digue dies mid-recording.
+
+The recorded `.wav` is saved as a backup next to the `.txt` transcript. Set `save-audio = false` to keep only the transcript.
 
 ## Remote access via SSH tunnel
 
@@ -288,7 +291,7 @@ ruff check . --fix && ruff format --line-length 120
 
 ## Audio storage
 
-Every dictation is saved as a timestamped `.wav` + `.txt` pair in the audio directory (default: `<data-dir>/audio/`). These are kept as backup and not cleaned up automatically.
+Every dictation is saved as a timestamped `.txt` transcript in the audio directory (default: `<data-dir>/audio/`), and the `.wav` recording as well unless `save-audio = false`. These are kept as backup and not cleaned up automatically.
 
 ## License
 

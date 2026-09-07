@@ -84,6 +84,7 @@ def _default_config():
             "display_server": "auto",
             "recorder": "auto",
             "max_duration": DEFAULT_MAX_RECORD_SECONDS,
+            "save_audio": True,
         },
         "models": dict(DEFAULT_MODELS),
     }
@@ -889,8 +890,19 @@ def save_audio(rec_file, audio_dir):
     return saved, timestamp
 
 
+def normalize_pasted_text(text):
+    """Joins wrapped lines into a single clean line.
+
+    Line breaks come from whisper segment boundaries (word-aligned once
+    token_timestamps is disabled, see _send_audio), so joining with a single
+    space is safe; mid-word splits do not occur anymore.
+    """
+    return " ".join(text.split())
+
+
 def dictate_toggle(config):
     """Toggle recording/transcription. Returns exit code."""
+    import datetime
     from pathlib import Path
 
     if is_recording():
@@ -900,13 +912,17 @@ def dictate_toggle(config):
             return 1
 
         audio_dir = config["dictation"]["audio_dir"]
-        saved, timestamp = save_audio(rec_file, audio_dir)
+        Path(audio_dir).mkdir(parents=True, exist_ok=True)
+        if config["dictation"]["save_audio"]:
+            _saved, timestamp = save_audio(rec_file, audio_dir)
+        else:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
         notify("Transcribing...")
         try:
             url = server_url(config)
             language = config["dictation"]["language"]
-            text = transcribe(url, rec_file, language)
+            text = normalize_pasted_text(transcribe(url, rec_file, language))
         except Exception as exc:
             notify(f"Transcription failed: {exc}", timeout_ms=10000)
             return 1

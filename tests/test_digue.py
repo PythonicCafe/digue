@@ -741,6 +741,72 @@ class TestSaveAudio:
         assert timestamp in saved.name
 
 
+class TestSaveAudioConfig:
+    def test_default_saves_audio(self):
+        config = digue._default_config()
+        assert config["dictation"]["save_audio"] is True
+
+    def test_loads_kebab_key(self, tmp_path):
+        import textwrap
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(textwrap.dedent("""\
+            [dictation]
+            save-audio = false
+        """))
+        config = digue.load_config(config_path)
+        assert config["dictation"]["save_audio"] is False
+
+    @patch("digue.paste_text")
+    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.stop_recording")
+    @patch("digue.is_recording", return_value=True)
+    @patch("digue.save_audio")
+    def test_save_audio_false_skips_wav_but_writes_txt(
+        self, mock_save, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path
+    ):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        mock_stop.return_value = rec_file
+        audio_dir = tmp_path / "audio"
+        config = digue._default_config()
+        config["dictation"]["save_audio"] = False
+        config["dictation"]["audio_dir"] = str(audio_dir)
+
+        result = digue.dictate_toggle(config)
+
+        assert result == 0
+        mock_save.assert_not_called()
+        txt_files = list(audio_dir.glob("*.txt"))
+        assert len(txt_files) == 1
+        assert txt_files[0].read_text().strip() == "hello"
+
+
+class TestNormalizePastedText:
+    def test_collapses_newlines_and_spaces(self):
+        assert digue.normalize_pasted_text("olá\n\nmundo \t aqui") == "olá mundo aqui"
+
+    def test_joins_whisper_wrapped_lines(self):
+        sample = (
+            "Eu queria fazer um teste aqui e aí por algum motivo o trans\n"
+            "crevendo não sumiu.\n"
+            "Então tem que ver o que está acontecendo aqui para ele não\n"
+            "estar desaparecendo."
+        )
+        assert digue.normalize_pasted_text(sample) == (
+            "Eu queria fazer um teste aqui e aí por algum motivo o trans crevendo não sumiu. "
+            "Então tem que ver o que está acontecendo aqui para ele não estar desaparecendo."
+        )
+
+    def test_strips_edges(self):
+        assert digue.normalize_pasted_text("  text  ") == "text"
+
+    def test_empty(self):
+        assert digue.normalize_pasted_text("") == ""
+
+
 # -- Batch commands -----------------------------------------------------------
 
 
