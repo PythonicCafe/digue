@@ -1353,6 +1353,220 @@ class TestOrphanStartingTake:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
 
+class TestOrphanTakeClaim:
+    """Orphan takes (daemon provably dead, or a recovering take whose recoverer
+    died) are claimed for recovery under the dictate lock: exactly one claimer
+    wins, the transition to "recovering" carries the claimer's identity, and an
+    old orphan never blocks stopping the current recording."""
+
+    def make_take(self, tmp_path, take_id="0123456789abcdef", created_at_ns=100, **changes):
+        import time
+
+        values = {
+            "version": digue.TAKE_STATE_VERSION,
+            "take_id": take_id,
+            "created_at_ns": created_at_ns or time.time_ns(),
+            "state": "recording",
+            "rec_file": tmp_path / "digue-recording.wav",
+            "daemon_pid": 999999,
+            "daemon_starttime": 1,
+            "recorder_pid": 555,
+            "recorder_starttime": 666,
+        }
+        values.update(changes)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            take = digue.TakeState(**values)
+            digue._write_take_state(take)
+        return take
+
+    def test_claims_the_oldest_orphan_and_records_the_recoverer_identity(self, tmp_path):
+        import os
+
+        newer = self.make_take(tmp_path, take_id="ffffffffffffffff", created_at_ns=200)
+        oldest = self.make_take(tmp_path)
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            claimed = digue._claim_orphan_take()
+
+        assert claimed is not None
+        assert claimed.take_id == oldest.take_id
+        assert claimed.state == "recovering"
+        assert claimed.recorder_pid == 555
+        assert claimed.recoverer_pid == os.getpid()
+        assert claimed.recoverer_starttime == int(digue._process_starttime(os.getpid()))
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            states = {take.take_id: take for take in digue._take_states()}
+        assert states[oldest.take_id].state == "recovering"
+        assert states[newer.take_id].state == "recording"
+
+    def test_take_with_live_daemon_is_not_claimed(self, tmp_path):
+        import os
+
+        self.make_take(tmp_path, daemon_pid=os.getpid(), daemon_starttime=int(digue._process_starttime(os.getpid())))
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            assert digue._claim_orphan_take() is None
+
+    def test_recovering_take_with_live_recoverer_is_not_claimed(self, tmp_path):
+        import os
+
+        self.make_take(
+            tmp_path,
+            state="recovering",
+            recorder_pid=None,
+            recorder_starttime=None,
+            recoverer_pid=os.getpid(),
+            recoverer_starttime=int(digue._process_starttime(os.getpid())),
+        )
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            assert digue._claim_orphan_take() is None
+
+    def test_recovering_take_with_dead_recoverer_is_claimed(self, tmp_path):
+        self.make_take(
+            tmp_path,
+            state="recovering",
+            recorder_pid=None,
+            recorder_starttime=None,
+            recoverer_pid=999999,
+            recoverer_starttime=1,
+        )
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            claimed = digue._claim_orphan_take()
+
+        assert claimed is not None
+        assert claimed.state == "recovering"
+        assert claimed.recoverer_pid == os.getpid()
+
+    def test_concurrent_recoverers_exactly_one_claims(self, tmp_path):
+        """Two recoverers racing for the same orphan: the dictate lock makes
+        the second one see a recovering take with a live recoverer (the first
+        claimer, this same process) and claim nothing."""
+
+        self.make_take(tmp_path)
+        first_in_lock = threading.Event()
+        release_first = threading.Event()
+        claimed = []
+
+        def recover_first():
+            with digue._dictate_lock():
+                first_in_lock.set()
+                assert release_first.wait(2)
+                claimed.append(digue._claim_orphan_take())
+
+        def recover_second():
+            assert first_in_lock.wait(2)
+            release_first.set()
+            with digue._dictate_lock():
+                claimed.append(digue._claim_orphan_take())
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            thread_first = threading.Thread(target=recover_first)
+            thread_second = threading.Thread(target=recover_second)
+            thread_first.start()
+            assert first_in_lock.wait(2)
+            thread_second.start()
+            release_first.set()
+            thread_first.join(timeout=2)
+            thread_second.join(timeout=2)
+
+        assert not thread_first.is_alive()
+        assert not thread_second.is_alive()
+        assert claimed[0] is not None
+        assert claimed[1] is None
+
+    def test_toggle_signals_current_recording_and_leaves_orphan_alone(self, tmp_path):
+        """A second press must stop the current recording even with an orphan
+        take waiting: an old orphan never blocks the toggle."""
+        daemon_file = tmp_path / "digue-daemon.pid"
+        daemon_file.write_text("4242 recording 555")
+        self.make_take(tmp_path)
+        config = digue._default_config()
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", return_value=True),
+            patch("digue._process_starttime", return_value="555"),
+            patch("digue.notify"),
+            patch("os.kill") as mock_kill,
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        mock_kill.assert_called_once_with(4242, 15)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            states = digue._take_states()
+        assert len(states) == 1 and states[0].state == "recording"
+
+    def test_toggle_recovers_the_claimed_orphan_then_starts_a_new_take(self, tmp_path):
+        import os
+
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        self.make_take(tmp_path)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["max_duration"] = 0
+        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+        finish_calls = []
+
+        def fake_finish(_config, file, limit_reached=False, take_id=None):
+            finish_calls.append((file, take_id))
+            return 0
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.stop_recording_pid", return_value=rec_file) as mock_stop,
+            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("subprocess.Popen", return_value=recorder),
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.notify"),
+            patch("digue.notify_close"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        assert [finish_call[1] for finish_call in finish_calls] == ["0123456789abcdef", finish_calls[1][1]]
+        assert finish_calls[0][0] == rec_file
+        mock_stop.assert_called_once()
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_toggle_during_slow_recovery_starts_a_new_take(self, tmp_path):
+        """A recovering take with a live recoverer is like a delivering one:
+        the toggle does not touch it and starts a new take."""
+        import os
+
+        self.make_take(
+            tmp_path,
+            state="recovering",
+            recorder_pid=None,
+            recorder_starttime=None,
+            recoverer_pid=os.getpid(),
+            recoverer_starttime=int(digue._process_starttime(os.getpid())),
+        )
+        config = digue._default_config()
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
+            patch("digue.notify"),
+            patch("os.kill") as mock_kill,
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        mock_kill.assert_not_called()
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            states = digue._take_states()
+        assert len(states) == 1
+        assert states[0].state == "recovering"
+        assert states[0].recoverer_pid == os.getpid()
+
+
 class TestSpawnLimitWatchdog:
     @patch("digue._process_starttime", return_value="98765")
     @patch("subprocess.Popen")

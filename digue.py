@@ -1677,6 +1677,69 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     return rescued
 
 
+def _take_identity_alive(pid: int | None, starttime: int | None) -> bool:
+    """True only when pid is alive AND is still the process that published the
+    identity: a pid alone is not an identity (pids get recycled)."""
+    if pid is None or starttime is None:
+        return False
+    return _pid_alive(pid) and _process_starttime(pid) == str(starttime)
+
+
+def _take_is_orphan(take: TakeState) -> bool:
+    """True when the take's owner is provably dead: the daemon for a take that
+    is starting/recording/delivering, or the recoverer for a recovering one."""
+    if take.state == "recovering":
+        return not _take_identity_alive(take.recoverer_pid, take.recoverer_starttime)
+    return not _take_identity_alive(take.daemon_pid, take.daemon_starttime)
+
+
+def _claim_orphan_take() -> TakeState | None:
+    """Claims the oldest orphan take for recovery by the current process.
+
+    Must be called while holding the dictate lock (discovery + transition only,
+    nothing slow). Returns the take in state "recovering" with this process as
+    recoverer, or None when there is nothing to recover: a recovering take
+    with a live recoverer is not an orphan, so a concurrent toggle claims
+    nothing and starts a new take instead.
+    """
+    import dataclasses
+
+    for take in _take_states():
+        if not _take_is_orphan(take):
+            continue
+        recoverer_starttime = _process_starttime(os.getpid())
+        if recoverer_starttime is None:
+            return None
+        claimed = dataclasses.replace(
+            take,
+            state="recovering",
+            recoverer_pid=os.getpid(),
+            recoverer_starttime=int(recoverer_starttime),
+        )
+        _write_take_state(claimed)
+        return claimed
+    return None
+
+
+def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) -> int:
+    """Recovers a claimed orphan take; called outside the dictate lock.
+
+    The recorder identity published by the dead daemon is revalidated before
+    signaling; a dead recorder's WAV goes straight to the delivery flow. The
+    claimed state is removed after delivery. A "starting" take has no recorder
+    identity to trust or stop, so the conservative expiry rules apply instead.
+    """
+    if take.recorder_pid is None:
+        # A rescued starting take keeps its audio and warns the user; not a
+        # failure of this toggle (the new take's exit code still dominates).
+        _expire_orphan_starting(config, take)
+        return 0
+    rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
+    exit_code = finish_dictation(config, rec_file, take_id=take.take_id)
+    _take_state_file(take.take_id).unlink(missing_ok=True)
+    return exit_code
+
+
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     """Starts the recorder and safety watchdog, returning their owned handles.
 
@@ -2520,18 +2583,25 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             rec_file = stop_recording()
             daemon_file.unlink(missing_ok=True)
             return finish_dictation(config, rec_file)
-        _write_daemon_state(daemon_pid, "starting")
+        # Only with no current recording does the toggle look at orphan takes:
+        # an old orphan must never keep the user from stopping the live one.
+        claimed = _claim_orphan_take()
+        if claimed is None:
+            _write_daemon_state(daemon_pid, "starting")
 
     for take in _take_states():
         if take.state == "starting":
             _expire_orphan_starting(config, take)
 
+    recovery_exit = 0
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
             notify(server_not_running_hint(config), timeout_ms=5000)
             _remove_daemon_state(daemon_pid)
             return 1
+        if claimed is not None:
+            recovery_exit = _recover_claimed_take(config, claimed)
         limit = config["dictate"]["max_duration"]
         message = (
             f"Recording... (max {limit}s, press again to stop)" if limit > 0 else "Recording... (press again to stop)"
@@ -2587,11 +2657,12 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
         _pid_file().unlink(missing_ok=True)
     try:
-        return finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
+        own_exit = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
         if processes.take_id is not None:
             _take_state_file(processes.take_id).unlink(missing_ok=True)
+    return own_exit or recovery_exit
 
 
 # -- Benchmark ----------------------------------------------------------------
