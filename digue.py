@@ -17,9 +17,6 @@ if TYPE_CHECKING:
 
 __version__ = "0.1.0"
 
-import argparse
-import sys
-
 CONTAINER_NAME = "digue"
 NOTIFY_REPLACE_ID = 48271
 NOTIFY_ID_SLOTS = 32  # concurrent takes: id = base + (pid % slots), so popups of
@@ -29,6 +26,11 @@ DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
 AVAILABLE_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 DEFAULT_MAX_RECORD_SECONDS = 300
+# The daemon enforces max-duration (200ms poll); the detached watchdog is only
+# a safety killer for a SIGKILLed daemon, so it fires this much later. With an
+# equal deadline the watchdog won the race (measured: at 20s the recorder was
+# already dead when the daemon checked) and the daemon saw "died", not "limit".
+WATCHDOG_GRACE_SECONDS = 5
 # Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3,
 # Ogg/Vorbis, AIFF). Verified empirically against whisper-server (ghcr.io main-vulkan
 # image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3, ogg-vorbis and aiff
@@ -175,8 +177,6 @@ AUDIO_EXTENSIONS = frozenset(
         ".oga",
     )
 )
-
-
 DEFAULT_LAST_CUE_DURATION_MS = 2_000
 
 
@@ -193,8 +193,6 @@ class SubtitleCue:
 
 
 def _config_path() -> Path:
-    import os
-    from pathlib import Path
 
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".config"
@@ -202,8 +200,6 @@ def _config_path() -> Path:
 
 
 def _default_config() -> dict[str, dict[str, Any]]:
-    import os
-    from pathlib import Path
 
     xdg = os.environ.get("XDG_DATA_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
@@ -318,7 +314,6 @@ def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, An
     merged on top of the global ones, which in turn override the defaults.
     """
     import tomllib
-    from pathlib import Path
 
     config = _default_config()
     path = Path(config_path) if config_path else _config_path()
@@ -348,20 +343,20 @@ def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, An
     return config
 
 
-def model_for_backend(backend, config=None):
+def model_for_backend(backend: str, config: dict[str, dict[str, Any]] | None = None) -> str:
     """Returns the model name for a given backend, respecting config overrides."""
     if config and "models" in config:
-        return config["models"].get(backend, DEFAULT_MODELS.get(backend, "small"))
+        models: dict[str, Any] = config["models"]
+        return str(models.get(backend, DEFAULT_MODELS.get(backend, "small")))
     return DEFAULT_MODELS.get(backend, "small")
 
 
 # -- Detection ----------------------------------------------------------------
 
 
-def detect_backend():
+def detect_backend() -> str:
     """Detects GPU backend: nvidia, amd, intel, or cpu."""
     import subprocess
-    from pathlib import Path
 
     # NVIDIA discrete GPU (highest priority)
     try:
@@ -401,7 +396,7 @@ def detect_backend():
 # -- Container management -----------------------------------------------------
 
 
-def _docker_run(args, timeout=30):
+def _docker_run(args: list[str], timeout: int | float = 30) -> subprocess.CompletedProcess[str]:
     import subprocess
 
     return subprocess.run(
@@ -412,13 +407,13 @@ def _docker_run(args, timeout=30):
     )
 
 
-def container_exists():
+def container_exists() -> bool:
     """Returns True if the digue container exists (running or stopped)."""
     result = _docker_run(["inspect", "--format", "{{.State.Status}}", CONTAINER_NAME])
     return result.returncode == 0
 
 
-def container_status():
+def container_status() -> str | None:
     """Returns container status string ('running', 'exited', etc.) or None."""
     result = _docker_run(["inspect", "--format", "{{.State.Status}}", CONTAINER_NAME])
     if result.returncode == 0:
@@ -426,13 +421,13 @@ def container_status():
     return None
 
 
-def image_exists(image):
+def image_exists(image: str) -> bool:
     """Returns True if a Docker image exists locally."""
     result = _docker_run(["image", "inspect", image])
     return result.returncode == 0
 
 
-def pull_image(image):
+def pull_image(image: str) -> None:
     """Pulls a Docker image if not present locally, showing download progress."""
     import subprocess
 
@@ -449,31 +444,30 @@ def pull_image(image):
     print(f"Pull complete: {image}", file=sys.stderr)
 
 
-def resolve_backend(config):
+def resolve_backend(config: dict[str, dict[str, Any]]) -> str:
     """Returns the backend to use, respecting config override or auto-detecting."""
     configured = config["server"].get("backend", "auto")
     if configured != "auto":
-        return configured
+        return str(configured)
     return detect_backend()
 
 
-def resolve_image(backend, config):
+def resolve_image(backend: str, config: dict[str, dict[str, Any]]) -> str:
     """Returns the Docker image to use, respecting config override."""
     if backend == "remote":
         return ""
     configured = config["server"].get("image", "")
     if configured:
-        return configured
+        return str(configured)
     return DOCKER_IMAGES[backend]
 
 
-def create_container(config, backend=None):
+def create_container(config: dict[str, dict[str, Any]], backend: str | None = None) -> str:
     """Creates the digue container.
 
     Resolves backend and image from config (with auto-detection fallback).
     Downloads the model and pulls the Docker image if not present locally.
     """
-    from pathlib import Path
 
     if backend is None:
         backend = resolve_backend(config)
@@ -532,58 +526,34 @@ def create_container(config, backend=None):
 
     result = _docker_run(cmd, timeout=60)
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create container: {result.stderr.strip()}")
+        first_error_line = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "unknown error"
+        raise RuntimeError(f"Failed to create container: {first_error_line}")
     return backend
 
 
-def remove_container():
+def _raise_for_docker_failure(result: subprocess.CompletedProcess[str], action: str) -> None:
+    if result.returncode != 0:
+        error = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "unknown error"
+        raise RuntimeError(f"Failed to {action}: {error}")
+
+
+def remove_container() -> None:
     """Stops and removes the digue container."""
-    _docker_run(["rm", "-f", CONTAINER_NAME])
+    result = _docker_run(["rm", "-f", CONTAINER_NAME])
+    _raise_for_docker_failure(result, "remove container")
 
 
-def start_container():
+def start_container() -> bool:
     """Starts an existing stopped container."""
     result = _docker_run(["start", CONTAINER_NAME])
-    return result.returncode == 0
+    _raise_for_docker_failure(result, "start container")
+    return True
 
 
-def stop_container():
+def stop_container() -> None:
     """Stops the running container."""
-    _docker_run(["stop", CONTAINER_NAME], timeout=15)
-
-
-def _rename_container(old_name: str, new_name: str) -> None:
-    result = _docker_run(["rename", old_name, new_name])
-    _raise_for_docker_failure(result, "rename container")
-
-
-@contextlib.contextmanager
-def preserve_container_for_benchmark() -> Iterator[None]:
-    """Makes room for benchmark containers, then restores the prior container and running state."""
-    previous_status = container_status()
-    backup_name = f"{CONTAINER_NAME}-benchmark-backup-{os.getpid()}"
-
-    if previous_status is not None:
-        if previous_status == "running":
-            stop_container()
-        try:
-            _rename_container(CONTAINER_NAME, backup_name)
-        except BaseException:
-            if previous_status == "running":
-                start_container()
-            raise
-
-    try:
-        yield
-    finally:
-        try:
-            if container_exists():
-                remove_container()
-        finally:
-            if previous_status is not None:
-                _rename_container(backup_name, CONTAINER_NAME)
-                if previous_status == "running":
-                    start_container()
+    result = _docker_run(["stop", CONTAINER_NAME], timeout=15)
+    _raise_for_docker_failure(result, "stop container")
 
 
 def _rename_container(old_name: str, new_name: str) -> None:
@@ -626,18 +596,17 @@ _notify_send_warned = False
 _last_notify_len = 0
 
 
-def notify(message, timeout_ms=0):
+def notify(message: str, timeout_ms: int = 0) -> None:
     """Prints message to stderr AND sends a desktop notification.
 
     The notification stays visible until replaced by the next one (timeout_ms=0).
     Pass a timeout for messages that should auto-dismiss (success, errors).
     If notify-send is not installed, prints a one-time warning and continues.
 
-    On a terminal the stderr line is redrawn (\r, padded to erase a previous
+    On a terminal the stderr line is redrawn (\\r, padded to erase a previous
     shorter message), so it coexists with single-line progress bars; on a
-    captured stderr it is a plain line with \n.
+    captured stderr it is a plain line with \\n.
     """
-    import os
     import subprocess
 
     global _notify_send_warned, _last_notify_len
@@ -683,10 +652,8 @@ def notify(message, timeout_ms=0):
             _notify_send_warned = True
 
 
-def notify_close():
+def notify_close() -> None:
     """Closes the current digue notification via D-Bus."""
-    import contextlib
-    import os
     import subprocess
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
@@ -711,7 +678,7 @@ def notify_close():
 # -- Server -------------------------------------------------------------------
 
 
-def server_host(config):
+def server_host(config: dict[str, dict[str, Any]]) -> str:
     """Returns the host the server is probed on.
 
     With backend 'remote', returns the configured remote host (default
@@ -724,17 +691,16 @@ def server_host(config):
     return "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
 
 
-def server_url(config):
+def server_url(config: dict[str, dict[str, Any]]) -> str:
     port = config["server"]["port"]
     return f"http://{server_host(config)}:{port}/inference"
 
 
-def is_server_running(config):
+def is_server_running(config: dict[str, dict[str, Any]]) -> bool:
     """Returns True if the server is responding to HTTP requests.
 
-    For local backends this always probes localhost: the bind IP only controls
-    where Docker exposes the port, but the server is always reachable from the
-    same machine via localhost (Docker DNATs traffic to the container).
+    For local backends this probes the configured bind address. A wildcard
+    bind is reached through loopback because 0.0.0.0 is not a destination.
     """
     import urllib.error
     import urllib.request
@@ -746,7 +712,7 @@ def is_server_running(config):
         return False
 
 
-def _wait_for_server(config, verbose=False):
+def _wait_for_server(config: dict[str, dict[str, Any]], verbose: bool = False) -> bool:
     """Waits for server to respond. Returns True if successful.
 
     When verbose=True, prints elapsed time to stderr every 10 seconds.
@@ -770,7 +736,7 @@ def _wait_for_server(config, verbose=False):
     return False
 
 
-def ensure_server(config, silent=False):
+def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> str | None:
     """Ensures server is running, creating/starting the container if needed.
 
     Returns the backend used, or None if the server was already running.
@@ -816,7 +782,7 @@ def ensure_server(config, silent=False):
     return None
 
 
-def server_not_running_hint(config):
+def server_not_running_hint(config: dict[str, dict[str, Any]]) -> str:
     """Returns the actionable hint shown when the server is not responding."""
     if resolve_backend(config) == "remote":
         host = config["server"].get("remote_host") or "127.0.0.1"
@@ -833,9 +799,10 @@ def server_not_running_hint(config):
 # -- HTTP helpers -------------------------------------------------------------
 
 
-def _multipart_request(url, audio_data, fields, timeout, filename="audio.wav"):
+def _multipart_request(
+    url: str, audio_data: bytes, fields: dict[str, str], timeout: int | float, filename: str = "audio.wav"
+) -> str:
     """Sends a multipart/form-data POST request using only stdlib."""
-    import os
     import time
     import urllib.request
 
@@ -861,13 +828,16 @@ def _multipart_request(url, audio_data, fields, timeout, filename="audio.wav"):
         method="POST",
     )
     response = urllib.request.urlopen(request, timeout=timeout)
-    return response.read().decode()
+    try:
+        return str(response.read().decode())
+    finally:
+        response.close()
 
 
 # -- Transcription ------------------------------------------------------------
 
 
-def _convert_to_wav(audio_path):
+def _convert_to_wav(audio_path: Path) -> bytes:
     """Converts audio to 16 kHz mono WAV in memory using ffmpeg. Returns the bytes.
 
     Nothing is written to disk: ffmpeg writes to stdout, which is captured
@@ -1132,7 +1102,6 @@ def transcribe(
     chars over max_lines lines.
     """
     import urllib.error
-    from pathlib import Path
 
     audio_path = Path(audio_path)
     if audio_path.suffix.lower() not in NATIVE_FORMATS:
@@ -1156,6 +1125,11 @@ def transcribe(
         wav_data = _convert_to_wav(audio_path)
         result = _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data, prompt=prompt)
         return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
+
+
+def _with_final_newline(text: str) -> str:
+    """Ends file content with exactly one newline (subtitle results already carry one)."""
+    return text if text.endswith("\n") else text + "\n"
 
 
 def _finalize_output(
@@ -1267,22 +1241,22 @@ def simplify_vtt(content: str, keep_timestamps: bool = True) -> str:
 def _stderr_is_tty() -> bool:
     """Returns True if stderr is a terminal (dynamic progress makes sense).
 
-    With captured/piped stderr, \r has no visual effect and every update
+    With captured/piped stderr, \\r has no visual effect and every update
     becomes a full line in the log -- hence the sparse-line mode in progress
     and notification prints.
     """
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 
-def _download_progress_hook(label, with_notification=False):
+def _download_progress_hook(label: str, with_notification: bool = False) -> Any:
     """Returns a reporthook callback for urlretrieve that prints a progress bar.
 
-    On a terminal, redraws one line with \r. On a captured/piped stderr, prints
-    one line every ~5% (no bar, no \r), so logs stay readable.
+    On a terminal, redraws one line with \\r. On a captured/piped stderr, prints
+    one line every ~5% (no bar, no \\r), so logs stay readable.
     The downloaded MBs are padded to the total's width, so line size stays
     stable across digit rollovers (9.9 -> 10.0 MB).
     When with_notification=True, also updates the desktop notification (~2x/s);
-    the notification text never carries the bar nor \r.
+    the notification text never carries the bar nor \\r.
     """
     import time
 
@@ -1290,7 +1264,7 @@ def _download_progress_hook(label, with_notification=False):
     last_reported_pct = [-1]
     tty = _stderr_is_tty()
 
-    def hook(block_num, block_size, total_size):
+    def hook(block_num: int, block_size: int, total_size: int) -> None:
         downloaded = block_num * block_size
         if total_size > 0:
             pct = min(100, downloaded * 100 // total_size)
@@ -1338,27 +1312,31 @@ def _download_progress_hook(label, with_notification=False):
     return hook
 
 
-def _download_file(url, output, label, with_notification=False):
+def _download_file(url: str, output: Path, label: str, with_notification: bool = False) -> None:
     """Downloads to a temporary sibling and atomically publishes the complete file."""
     import urllib.request
 
     part_path = output.with_suffix(f"{output.suffix}.part")
     hook = _download_progress_hook(label, with_notification)
     block_size = 1024 * 1024
-    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, part_path.open("wb") as part_file:
-        total_size = int(response.headers.get("Content-Length", -1))
-        downloaded = 0
-        hook(downloaded, 1, total_size)
-        while block := response.read(block_size):
-            part_file.write(block)
-            downloaded += len(block)
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, part_path.open("wb") as part_file:
+            total_size = int(response.headers.get("Content-Length", -1))
+            downloaded = 0
             hook(downloaded, 1, total_size)
+            while block := response.read(block_size):
+                part_file.write(block)
+                downloaded += len(block)
+                hook(downloaded, 1, total_size)
+    except BaseException:
+        # No resume support, so a partial file is only clutter next to the models.
+        part_path.unlink(missing_ok=True)
+        raise
     part_path.replace(output)
 
 
-def download_model(model_name, models_dir, with_notification=False):
+def download_model(model_name: str, models_dir: str | Path, with_notification: bool = False) -> None:
     """Downloads a whisper.cpp GGML model and the Silero VAD model."""
-    from pathlib import Path
 
     models_dir = Path(models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -1384,9 +1362,7 @@ def download_model(model_name, models_dir, with_notification=False):
 
 
 def _runtime_dir() -> Path:
-    import os
     import tempfile
-    from pathlib import Path
 
     configured = os.environ.get("XDG_RUNTIME_DIR")
     runtime_dir = Path(configured) if configured else Path(tempfile.gettempdir()) / f"digue-{os.getuid()}"
@@ -1400,6 +1376,18 @@ def _runtime_dir() -> Path:
 
 def _pid_file() -> Path:
     return _runtime_dir() / "digue.pid"
+
+
+def _write_state_file(path: Path, content: str) -> None:
+    """Publishes a small state file in one step (temp sibling + rename).
+
+    Path.write_text truncates before writing, so a concurrent toggle could read
+    an empty file and conclude there is no daemon/recorder.
+    """
+
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(content)
+    os.replace(temp_path, path)
 
 
 def now_timestamp() -> str:
@@ -1420,7 +1408,6 @@ def month_dir_for(timestamp: str) -> Path:
 
 def _rec_file() -> Path:
     """Returns a unique recording path without creating the audio file."""
-    import os
     import secrets
 
     return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}.wav"
@@ -1430,12 +1417,14 @@ def is_recording() -> bool:
     pid_file = _pid_file()
     if not pid_file.exists():
         return False
-    pid = int(pid_file.read_text().strip())
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return False
     return _pid_alive(pid)
 
 
 def _pid_alive(pid: int) -> bool:
-    import os
 
     try:
         os.kill(pid, 0)
@@ -1493,7 +1482,7 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    pid_file.write_text(str(recorder.pid))
+    _write_state_file(pid_file, str(recorder.pid))
     watchdog = _spawn_limit_watchdog(recorder.pid, max_duration) if max_duration > 0 else None
     return RecordingProcesses(recorder=recorder, watchdog=watchdog, rec_file=rec_file)
 
@@ -1513,7 +1502,9 @@ def _spawn_limit_watchdog(pgid: int, max_duration: int) -> subprocess.Popen[byte
     """Spawns an identity-checking safety killer and returns its handle.
 
     The detached child survives a SIGKILLed daemon. Before signaling, it checks
-    Linux /proc starttime so a stale watchdog cannot kill a recycled PGID.
+    Linux /proc starttime so a stale watchdog cannot kill a recycled PGID. It
+    sleeps WATCHDOG_GRACE_SECONDS past max_duration so the daemon, which polls,
+    always reaches the limit first.
     """
     import subprocess
 
@@ -1538,7 +1529,7 @@ except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueEr
     pass
 """
     return subprocess.Popen(
-        [sys.executable, "-c", script, str(pgid), starttime, str(max_duration)],
+        [sys.executable, "-c", script, str(pgid), starttime, str(max_duration + WATCHDOG_GRACE_SECONDS)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -1560,38 +1551,20 @@ def _cancel_watchdog(watchdog: subprocess.Popen[bytes] | None) -> None:
         watchdog.wait(timeout=5)
 
 
-def _wait_recorder_end(max_duration: int) -> str:
-    """Waits until the recorder dies, the duration limit hits, or a stop arrives.
-
-    Returns "died" (recorder ended on its own or was killed), "limit" (the
-    duration limit was reached), "manual" (a second toggle signaled the
-    daemon), or "interrupted" (Ctrl+c in a terminal: stop and deliver, like a
-    manual stop). Polls every 200ms; time.monotonic keeps the limit honest
-    across sleep() drift.
-    """
-    import time
-
-    start = time.monotonic()
-    while True:
-        if not is_recording():
-            return "died"
-        if _got_sigterm:
-            return "manual"
-        if _got_sigint:
-            return "interrupted"
-        if max_duration > 0 and time.monotonic() - start >= max_duration:
-            return "limit"
-        time.sleep(0.2)
-
-
 def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: int) -> str:
-    """Waits on the daemon's own recorder handle and reaps spontaneous exits."""
+    """Waits on the daemon's own recorder handle and reaps spontaneous exits.
+
+    An exit at or past the limit is reported as "limit" whoever stopped the
+    recorder (the watchdog may have), so the limit notification is never lost.
+    """
     import time
 
     start = time.monotonic()
     while True:
         if recorder.poll() is not None:
             recorder.wait(timeout=0)
+            if max_duration > 0 and time.monotonic() - start >= max_duration:
+                return "limit"
             return "died"
         if _got_sigterm:
             return "manual"
@@ -1602,14 +1575,28 @@ def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: i
         time.sleep(0.2)
 
 
+def _process_is_zombie(pid: int) -> bool:
+    """True if /proc reports the process as exited but not yet reaped (state Z)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat[stat.rindex(")") + 2 :].split()[0] == "Z"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def _group_alive(pid: int) -> bool:
-    import os
+    """True while the recorder group still has a running process.
+
+    A zombie recorder (exited, not yet reaped by the daemon's Popen.wait)
+    still answers signal 0, so it is checked explicitly: otherwise every stop
+    escalated to SIGKILL and paid the full grace period.
+    """
 
     try:
         os.killpg(pid, 0)
-        return True
     except (ProcessLookupError, PermissionError):
         return False
+    return not _process_is_zombie(pid)
 
 
 def _recording_file_of(pid: int) -> Path | None:
@@ -1621,8 +1608,6 @@ def _recording_file_of(pid: int) -> Path | None:
     stop_recording check a file the recorder never wrote). Returns None when
     the process is already gone (its descriptors are closed).
     """
-    import os
-    from pathlib import Path
 
     runtime_dir = _runtime_dir()
     try:
@@ -1658,8 +1643,6 @@ def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
     it, the newest-runtime-wav fallback runs (single-take recovery only: with
     concurrent takes it could grab another daemon's file).
     """
-    import contextlib
-    import os
     import time
 
     if rec_file is None:
@@ -1668,7 +1651,11 @@ def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
     for signal in (15, 9):  # SIGTERM, then SIGKILL if it does not exit
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal)
-        time.sleep(0.5)
+        # Poll instead of a fixed sleep: pw-record exits within milliseconds,
+        # and this wait sits between the hotkey and the transcription.
+        deadline = time.monotonic() + 0.5
+        while _group_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
         if not _group_alive(pid):
             break
 
@@ -1714,7 +1701,6 @@ def stop_recording() -> Path | None:
 
 def detect_display_server() -> str | None:
     """Detects whether the session is Wayland or X11."""
-    import os
 
     if os.environ.get("WAYLAND_DISPLAY"):
         return "wayland"
@@ -1741,17 +1727,21 @@ def send_text(text: str, display_server: str = "auto", input_mode: str = "paste"
         display_server = detected
 
     if input_mode == "type":
+        # The text goes through stdin, never argv: wtype rejects any unknown
+        # -option ("Unknown parameter", it has no --no-newline flag) and
+        # xdotool would parse a transcript starting with "-" as an option.
         if display_server == "wayland":
-            type_cmd = ["wtype", "--no-newline"]
+            type_cmd = ["wtype", "-"]
             type_pkg = "wtype"
         else:
-            type_cmd = ["xdotool", "type", "--clearmodifiers"]
+            type_cmd = ["xdotool", "type", "--clearmodifiers", "--file", "-"]
             type_pkg = "xdotool"
-        type_cmd.append(text)
         try:
-            subprocess.run(type_cmd, capture_output=True, timeout=120, check=True)
+            subprocess.run(type_cmd, input=text.encode(), capture_output=True, timeout=120, check=True)
         except FileNotFoundError:
             raise RuntimeError(f"{type_cmd[0]} not found. Install with: sudo apt install {type_pkg}")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{type_cmd[0]} timed out. Is a {display_server} session running?")
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 f"{type_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}"
@@ -1855,7 +1845,6 @@ def save_audio(
     is kept as WAV and removed after saving.
     """
     import shutil
-    from pathlib import Path
 
     audio_dir = Path(audio_dir)
     timestamp = timestamp or now_timestamp()
@@ -1892,7 +1881,6 @@ def _write_transcript(audio_dir: Path, timestamp: str, text: str) -> Path:
 
 def _dictate_lock() -> Any:
     """Serializes short state transitions between concurrent toggle processes."""
-    import contextlib
     import fcntl
 
     @contextlib.contextmanager
@@ -1911,12 +1899,20 @@ def _dictate_lock() -> Any:
 def _daemon_pid_file() -> Path:
     """The daemon is the digue process that started the recording and waits for it.
 
-    Content: "<pid> starting" while startup is reserved, "<pid> recording"
-    while the recorder is alive (a second toggle should stop it), and
-    "<pid> delivering" while the take is being delivered (a second toggle
-    must NOT stop it -- it starts a new take instead).
+    Content: "<pid> <state> <starttime>". state is "starting" while startup is
+    reserved, "recording" while the recorder is alive (a second toggle should
+    stop it), and "delivering" while the take is being delivered (a second
+    toggle must NOT stop it -- it starts a new take instead). starttime is the
+    /proc starttime of the daemon: a pid alone is not an identity (the file
+    outlives a SIGKILLed daemon and the kernel reuses pids), and signaling a
+    recycled pid would SIGTERM an unrelated process of the same user.
     """
     return _runtime_dir() / "digue-daemon.pid"
+
+
+def _write_daemon_state(daemon_pid: int, state: str) -> None:
+    starttime = _process_starttime(daemon_pid) or "?"
+    _write_state_file(_daemon_pid_file(), f"{daemon_pid} {state} {starttime}")
 
 
 def _recorder_pid_file(daemon_pid: int) -> Path:
@@ -1930,33 +1926,42 @@ def _recorder_pid_file(daemon_pid: int) -> Path:
     return _runtime_dir() / f"digue-recorder-{daemon_pid}.pid"
 
 
-def _daemon_state() -> tuple[int, str] | None:
+def _daemon_state() -> tuple[int, str, str] | None:
+    """Returns (pid, state, starttime) from the daemon file, or None.
+
+    A file without the starttime (older format, or a truncated write) has no
+    verifiable identity and is treated as absent.
+    """
     daemon_file = _daemon_pid_file()
-    if not daemon_file.exists():
-        return None
     try:
-        pid_text, _, state = daemon_file.read_text().strip().partition(" ")
-        return int(pid_text), state or "recording"
+        pid_text, state, starttime = daemon_file.read_text().split()
+        return int(pid_text), state, starttime
     except (OSError, ValueError):
         return None
+
+
+def _daemon_alive(entry: tuple[int, str, str]) -> bool:
+    """True only if the pid is alive AND is still the process that wrote the file."""
+    pid, _state, starttime = entry
+    return _pid_alive(pid) and _process_starttime(pid) == starttime
 
 
 def _remove_daemon_state(daemon_pid: int) -> bool:
     """Removes the global state only while it still belongs to this daemon."""
     daemon_file = _daemon_pid_file()
     try:
-        current_pid, _, _state = daemon_file.read_text().strip().partition(" ")
+        current_pid = daemon_file.read_text().split()[0]
         if int(current_pid) != daemon_pid:
             return False
         daemon_file.unlink()
         return True
-    except (FileNotFoundError, OSError, ValueError):
+    except (OSError, ValueError, IndexError):
         return False
 
 
 def _is_daemon_alive() -> bool:
     entry = _daemon_state()
-    return entry is not None and _pid_alive(entry[0])
+    return entry is not None and _daemon_alive(entry)
 
 
 # Set by the SIGTERM handler when a second toggle signals the daemon.
@@ -1982,7 +1987,6 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -
     signaled the daemon, which stopped the recorder) or duration limit (the
     watchdog safety killer stopped it).
     """
-    from pathlib import Path
 
     if rec_file is None:
         notify("Empty or missing audio file", timeout_ms=5000)
@@ -1992,15 +1996,14 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -
     timestamp = now_timestamp()
 
     def rescue_recording() -> Path | None:
-        """Keeps the live recording when the compressed archive could not be produced.
+        """Keeps the live recording when the take could not be fully delivered.
 
         Moves the raw WAV to <audio_dir>/YYYY/MM/<timestamp>.wav (shutil.move
-        handles cross-filesystem); drops it when save-audio is disabled. On a
-        failed move, notifies and leaves the file in the runtime dir. Never raises.
+        handles cross-filesystem) regardless of save-audio: that setting only
+        skips the backup of a delivered take, and an undelivered one exists
+        nowhere else. On a failed move, prints and leaves the file in the
+        runtime dir. Never raises.
         """
-        if not config["dictate"]["save_audio"]:
-            rec_file.unlink(missing_ok=True)
-            return None
         try:
             import shutil
 
@@ -2100,23 +2103,22 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     so the keybinding feels instant. Killing the daemon (pkill digue) leaves
     the recorder alive -- the next toggle transcribes what kept recording.
     """
-    import os
 
     daemon_pid = os.getpid()
     daemon_file = _daemon_pid_file()
     with _dictate_lock():
         entry = _daemon_state()
-        if entry is not None and _pid_alive(entry[0]):
-            current_daemon_pid, daemon_state = entry
+        if entry is not None and _daemon_alive(entry):
+            current_daemon_pid, daemon_state, _starttime = entry
             if daemon_state == "recording":
-                import contextlib
-
                 with contextlib.suppress(OSError):
                     os.kill(current_daemon_pid, 15)  # SIGTERM: daemon stops recording and delivers
                 return 0
             if daemon_state == "starting":
                 # Startup is already owned by another toggle. It has no recorder
                 # to stop yet, so signaling it would abort or orphan the take.
+                # First use may take minutes (image pull, model download): say so.
+                notify("Still starting the server; recording begins when it is ready", timeout_ms=3000)
                 return 0
             # A delivering daemon owns its old take. A new recording may replace
             # the global state; the old daemon removes it only if it still owns it.
@@ -2126,7 +2128,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             rec_file = stop_recording()
             daemon_file.unlink(missing_ok=True)
             return finish_dictation(config, rec_file)
-        daemon_file.write_text(f"{daemon_pid} starting")
+        _write_daemon_state(daemon_pid, "starting")
 
     try:
         result = ensure_server(config)
@@ -2169,8 +2171,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         return 1
     recorder_pid = processes.recorder.pid
     recorder_file = _recorder_pid_file(daemon_pid)
-    recorder_file.write_text(str(recorder_pid))
-    daemon_file.write_text(f"{daemon_pid} recording")
+    _write_state_file(recorder_file, str(recorder_pid))
+    _write_daemon_state(daemon_pid, "recording")
     # capture the recording file while the recorder is alive: the fd scan is
     # deterministic here; after death the fallback could grab another
     # concurrent take's file (overlap scenario C).
@@ -2181,7 +2183,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     # the take is complete: mark delivering BEFORE stopping the recorder, so a
     # concurrent toggle never lands in the kill window (it would be dropped:
     # SIGTERM on a daemon that is already delivering is ignored by the gate).
-    daemon_file.write_text(f"{daemon_pid} delivering")
+    _write_daemon_state(daemon_pid, "delivering")
     notify_close()
     rec_file = _finish_owned_recorder(processes.recorder, rec_file)
     _cancel_watchdog(processes.watchdog)
@@ -2201,7 +2203,6 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
 
 def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -> list[tuple[int, str]]:
     """Runs N transcription requests and returns list of (elapsed_ms, text)."""
-    import contextlib
     import time
 
     with contextlib.suppress(Exception):
@@ -2218,16 +2219,18 @@ def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -
 
 def run_benchmark(audio_path: str | Path, config: dict[str, dict[str, Any]]) -> None:
     """Benchmarks different backend/model combinations with the same audio."""
-    from pathlib import Path
 
     models_dir = Path(config["server"]["data_dir"]) / "models"
     url = server_url(config)
     language = config["transcribe"]["language"]
-    detected = detect_backend()
+    # The configured backend wins over detection: a forced "cpu" (with an
+    # image override for a CPU the default image cannot run on) must not be
+    # bypassed here.
+    detected = resolve_backend(config)
 
     print("digue benchmark", file=sys.stderr)
     print(f"Audio: {audio_path}", file=sys.stderr)
-    print(f"Detected backend: {detected}", file=sys.stderr)
+    print(f"Backend: {detected}", file=sys.stderr)
     print(f"Runs per case: {BENCHMARK_RUNS}", file=sys.stderr)
     print(file=sys.stderr)
 
@@ -2283,15 +2286,18 @@ def run_benchmark(audio_path: str | Path, config: dict[str, dict[str, Any]]) -> 
         print(f"  {label:<35} {avg_ms}ms", file=sys.stderr)
 
 
-def record_benchmark_audio(output_path: str | Path, duration_seconds: int = 10) -> None:
-    """Records audio from microphone for benchmark."""
+def record_benchmark_audio(
+    output_path: str | Path, duration_seconds: int = 10, config: dict[str, dict[str, Any]] | None = None
+) -> None:
+    """Records audio from microphone for benchmark, with the configured recorder."""
     import subprocess
     import time
 
+    recorder = config["dictate"]["recorder"] if config else "auto"
     print(f"Recording {duration_seconds}s from microphone...", file=sys.stderr)
     print("(speak something so there is content to transcribe)", file=sys.stderr)
     proc = subprocess.Popen(
-        ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", str(output_path)],
+        recording_command(output_path, recorder=recorder),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -2306,7 +2312,6 @@ def record_benchmark_audio(output_path: str | Path, duration_seconds: int = 10) 
 
 def _existing_dir(value: str) -> Path:
     """argparse type: validates that the path is an existing directory."""
-    from pathlib import Path
 
     path = Path(value)
     if not path.is_dir():
@@ -2316,7 +2321,6 @@ def _existing_dir(value: str) -> Path:
 
 def _ensure_dir(value: str) -> Path:
     """argparse type: creates the directory if it doesn't exist."""
-    from pathlib import Path
 
     path = Path(value)
     path.mkdir(parents=True, exist_ok=True)
@@ -2387,13 +2391,17 @@ CONFIG_TEMPLATE = """\
 """
 
 
-def _config_example():
-    """Renders the example config template with the current defaults."""
-    return CONFIG_TEMPLATE.format(port=DEFAULT_PORT)
+def _config_example() -> str:
+    """Returns the config template (all settings documented, defaults commented)."""
+    return CONFIG_TEMPLATE
 
 
-def _config_as_toml(config):
-    """Renders the resolved config as TOML (section by section, strings quoted)."""
+def _config_as_toml(config: dict[str, dict[str, Any]]) -> str:
+    """Renders the resolved config as TOML (section by section, strings quoted).
+
+    Keys use the kebab-case spelling of the template and README (data-dir),
+    so the output can be pasted back into config.toml as documented.
+    """
     lines = []
     for section, values in config.items():
         lines.append(f"[{section}]")
@@ -2403,14 +2411,13 @@ def _config_as_toml(config):
             elif isinstance(value, int):
                 rendered = str(value)
             else:
-                rendered = '"' + str(value).replace('"', '\\"') + '"'
-            lines.append(f"{key} = {rendered}")
+                rendered = '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+            lines.append(f"{key.replace('_', '-')} = {rendered}")
         lines.append("")
     return "\n".join(lines)
 
 
-def create_parser():
-    from pathlib import Path
+def create_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="digue",
@@ -2574,6 +2581,8 @@ def create_parser():
 
     sub_config = subparsers.add_parser("config", help="Show or initialize the configuration")
     sub_config_sub = sub_config.add_subparsers(dest="config_action", metavar="action")
+    # main() prints this help when no action is given (no default action).
+    sub_config.set_defaults(config_parser=sub_config)
 
     sub_config_show = sub_config_sub.add_parser("show", help="Show the resolved configuration")
     sub_config_show.add_argument(
@@ -2592,12 +2601,34 @@ def create_parser():
         action="store_true",
         help="Overwrite the config file if it already exists",
     )
+    sub_config_init.add_argument(
+        "-o",
+        "--output",
+        metavar="path",
+        default=None,
+        help="Where to write the config file (default: -c/--config path, else ~/.config/digue/config.toml)",
+    )
     subparsers.add_parser("doctor", help="Check system dependencies and test Docker images")
+
+    sub_clean = subparsers.add_parser("clean", help="Remove dictation recordings and/or transcripts")
+    sub_clean.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Remove without asking for confirmation",
+    )
+    sub_clean.add_argument(
+        "-w",
+        "--what",
+        choices=("recordings", "transcripts", "both"),
+        default="both",
+        help="What to remove (default: both)",
+    )
 
     return parser
 
 
-def cmd_detect(args):
+def cmd_detect(args: argparse.Namespace) -> int:
     backend = detect_backend()
     print(backend)
     return 0
@@ -2634,8 +2665,7 @@ def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, An
     return 0
 
 
-def cmd_download(args, config):
-    from pathlib import Path
+def cmd_download(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
 
     models_dir = Path(config["server"]["data_dir"]) / "models"
 
@@ -2657,7 +2687,7 @@ def cmd_download(args, config):
     return 0
 
 
-def cmd_start(args, config):
+def cmd_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if is_server_running(config):
         print("server is already running", file=sys.stderr)
         return 0
@@ -2667,45 +2697,57 @@ def cmd_start(args, config):
         return 1
 
     status = container_status()
-    if status == "exited":
-        print("Starting existing container...", file=sys.stderr, flush=True)
-        start_container()
-    elif status is None:
-        backend = resolve_backend(config)
-        print(f"Creating container ({backend})...", file=sys.stderr, flush=True)
-        create_container(config, backend)
-    elif status == "running":
-        print("Container running but server not responding, waiting...", file=sys.stderr, flush=True)
-    else:
-        print(f"Container in unexpected state: {status}", file=sys.stderr)
+    try:
+        if status == "exited":
+            print("Starting existing container...", file=sys.stderr, flush=True)
+            start_container()
+        elif status is None:
+            backend = resolve_backend(config)
+            print(f"Creating container ({backend})...", file=sys.stderr, flush=True)
+            create_container(config, backend)
+        elif status == "running":
+            print("Container running but server not responding, waiting...", file=sys.stderr, flush=True)
+        else:
+            print(f"Container in unexpected state: {status}", file=sys.stderr)
+            return 1
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     if _wait_for_server(config, verbose=True):
         return 0
 
-    print("Server failed to start. Check: docker logs whisper-server", file=sys.stderr)
+    print(f"Server failed to start. Check: docker logs {CONTAINER_NAME}", file=sys.stderr)
     return 1
 
 
-def cmd_stop(args, config):
+def cmd_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if resolve_backend(config) == "remote":
         print("Backend is 'remote': there is no local container to stop", file=sys.stderr)
         return 1
-    stop_container()
+    try:
+        stop_container()
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     print("Server stopped", file=sys.stderr)
     return 0
 
 
-def cmd_destroy(args, config):
+def cmd_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if resolve_backend(config) == "remote":
         print("Backend is 'remote': there is no local container to remove", file=sys.stderr)
         return 1
-    remove_container()
+    try:
+        remove_container()
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     print("Container removed", file=sys.stderr)
     return 0
 
 
-def cmd_status(args, config):
+def cmd_status(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     port = config["server"]["port"]
     if resolve_backend(config) == "remote":
         http_ok = is_server_running(config)
@@ -2731,7 +2773,6 @@ def cmd_dictate(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> 
 
 
 def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    from pathlib import Path
 
     ensure_server(config, silent=True)
     if not is_server_running(config):
@@ -2775,7 +2816,7 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
         if args.output:
             output_path = Path(args.output)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(result + "\n")
+            output_path.write_text(_with_final_newline(result))
             if args.verbose:
                 print(f"Saved: {output_path}", file=sys.stderr)
         else:
@@ -2870,9 +2911,37 @@ def _parse_subtitle_cues(content: str, input_format: str) -> list[SubtitleCue]:
         text = "\n".join(line for line in text_lines if line)
         if text:
             cues.append(SubtitleCue(start_ms=start_ms, end_ms=end_ms, text=text))
-    if not cues:
+    if not cues and not _is_empty_subtitle(content, input_format):
         raise ValueError(f"input does not look like a {input_format.upper()} file")
     return cues
+
+
+def _is_empty_subtitle(content: str, input_format: str) -> bool:
+    """True for a subtitle file with no cues: blank, or a VTT with only its header.
+
+    whisper-server answers a silent audio with a bare "WEBVTT" line, which is
+    a valid, empty subtitle -- not malformed input.
+    """
+    stripped = content.strip()
+    if not stripped:
+        return True
+    if input_format != "vtt":
+        return False
+    header, _, rest = stripped.partition("\n")
+    if not header.upper().startswith("WEBVTT"):
+        return False
+    # After the header only metadata may follow: "Key: value" header lines,
+    # then NOTE/STYLE/REGION blocks (blank-line separated). A block starting
+    # with anything else is cue text that lost its timing line -- corrupt.
+    blocks = [block for block in rest.strip().split("\n\n") if block.strip()]
+    for index, block in enumerate(blocks):
+        first_line = block.strip().split("\n", 1)[0].strip()
+        if first_line.startswith(("NOTE", "STYLE", "REGION")):
+            continue
+        if index == 0 and all(":" in line for line in block.strip().splitlines()):
+            continue
+        return False
+    return True
 
 
 def _render_subtitle_cues(cues: list[SubtitleCue], output_format: str) -> str:
@@ -2929,6 +2998,8 @@ def _convert_content(content: str, from_format: str, to_format: str) -> str:
     if from_format in ("vtt", "srt"):
         cues = _parse_subtitle_cues(content, from_format)
         if to_format in ("vtt", "srt"):
+            if not cues:
+                raise ValueError(f"input has no cues; cannot produce {to_format.upper()}")
             return _render_subtitle_cues(cues, to_format)
         pairs = [
             (_format_subtitle_timestamp(cue.start_ms, "vtt").split(".")[0], " ".join(cue.text.split())) for cue in cues
@@ -2938,8 +3009,8 @@ def _convert_content(content: str, from_format: str, to_format: str) -> str:
     else:
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         pairs = [(None, line) for line in lines]
-    if not pairs:
-        raise ValueError("input is empty")
+    if not pairs and to_format in ("vtt", "srt"):
+        raise ValueError(f"input has no cues; cannot produce {to_format.upper()}")
 
     if to_format == "text":
         return normalize_pasted_text(" ".join(text for _timestamp, text in pairs))
@@ -2952,7 +3023,6 @@ def _convert_content(content: str, from_format: str, to_format: str) -> str:
 
 def cmd_convert(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     """Converts between subtitle/text formats (vtt, srt, timestamps, text)."""
-    from pathlib import Path
 
     from_format = args.from_format
     if args.input == "-":
@@ -3068,7 +3138,7 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
             )
             if response_format == "timestamps":
                 result = _convert_content(result, "vtt", "timestamps")
-            temp_file.write_text(result + "\n")
+            temp_file.write_text(_with_final_newline(result))
             temp_file.replace(output_file)
             succeeded += 1
             elapsed = time.perf_counter() - start
@@ -3128,7 +3198,6 @@ def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str,
 
 
 def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    from pathlib import Path
 
     if resolve_backend(config) == "remote":
         print("Error: benchmark creates local containers; it is not available with backend 'remote'", file=sys.stderr)
@@ -3141,7 +3210,7 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
             return 1
     else:
         audio_path = Path("/tmp/digue-bench.wav")
-        record_benchmark_audio(audio_path)
+        record_benchmark_audio(audio_path, config=config)
         print(file=sys.stderr)
 
     run_benchmark(audio_path, config)
@@ -3151,8 +3220,7 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
 def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import json
 
-    output_format = getattr(args, "output_format", "json")
-    if output_format == "toml":
+    if args.output_format == "toml":
         print(_config_as_toml(config), end="")
     else:
         print(json.dumps(config, default=str, ensure_ascii=False, indent=2))
@@ -3161,7 +3229,6 @@ def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
 
 def _config_init(args: argparse.Namespace) -> int:
     """Creates the config file from the template. Refuses to overwrite without --force."""
-    from pathlib import Path
 
     selected_path = args.output or vars(args).get("config")
     path = Path(selected_path).expanduser() if selected_path else _config_path()
@@ -3177,14 +3244,36 @@ def _config_init(args: argparse.Namespace) -> int:
     return 0
 
 
+DICTATION_RECORDING_SUFFIXES = frozenset((".wav", ".flac", ".opus"))
+
+
+def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
+    """Lists <audio_dir>/YYYY/MM/<timestamp>.<suffix> files created by dictation.
+
+    Only that exact layout qualifies: audio-dir is user-configurable, and a
+    recursive *.wav/*.flac/*.txt glob pointed at a music folder would remove
+    the library. The stem is the now_timestamp() format, YYYYMMDD-HHMMSS.
+    """
+    import re
+
+    stem_pattern = re.compile(r"^\d{8}-\d{6}$")
+    found = []
+    for year_dir in audio_dir.glob("[0-9][0-9][0-9][0-9]"):
+        for month_dir in year_dir.glob("[0-9][0-9]"):
+            if not month_dir.is_dir():
+                continue
+            for path in month_dir.iterdir():
+                if path.is_file() and path.suffix.lower() in suffixes and stem_pattern.match(path.stem):
+                    found.append(path)
+    return sorted(found)
+
+
 def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     """Removes dictation recordings and/or transcripts from the audio directory.
 
     Lists what it found and asks for confirmation; --force removes right away.
     --what selects what is removed: recordings, transcripts, or both (default).
     """
-    import contextlib
-    from pathlib import Path
 
     audio_dir = Path(config["dictate"]["audio_dir"])
     if not audio_dir.exists():
@@ -3192,20 +3281,8 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
         return 0
 
     what = args.what
-    recordings = (
-        sorted(path for pattern in ("*.wav", "*.flac", "*.opus") for path in audio_dir.rglob(pattern) if path.is_file())
-        if what in ("recordings", "both")
-        else []
-    )
-    transcripts = (
-        sorted(path for path in audio_dir.rglob("*.txt") if path.is_file())
-        if what
-        in (
-            "transcripts",
-            "both",
-        )
-        else []
-    )
+    recordings = _dictation_files(audio_dir, DICTATION_RECORDING_SUFFIXES) if what in ("recordings", "both") else []
+    transcripts = _dictation_files(audio_dir, frozenset((".txt",))) if what in ("transcripts", "both") else []
 
     total_mb = sum(path.stat().st_size for path in recordings) / (1024 * 1024)
     print(f"Audio directory: {audio_dir}", file=sys.stderr)
@@ -3218,6 +3295,8 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
 
     total = len(recordings) + len(transcripts)
     if not args.force:
+        for path in sorted(recordings + transcripts):
+            print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
         answer = input(f"Remove all {total} file(s)? [y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
             print("Aborted.", file=sys.stderr)
@@ -3246,7 +3325,6 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
     """Checks system dependencies and tests which Docker images work."""
     import shutil
     import subprocess
-    from pathlib import Path
 
     ok_mark = "OK"
     fail_mark = "FAIL"
@@ -3256,6 +3334,7 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
     tools = {
         "docker": "Docker runtime",
         "pw-record": "PipeWire audio recording (dictation)",
+        "arecord": "ALSA audio recording (dictation fallback, alsa-utils)",
         "notify-send": "Desktop notifications (libnotify-bin)",
         "xclip": "X11 clipboard",
         "xdotool": "X11 key simulation",
@@ -3351,19 +3430,28 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
     return 0
 
 
-def main():
+def main() -> None:
     parser = create_parser()
     args = parser.parse_args()
 
+    if args.command is None:
+        # No default command on purpose: an accidental bare `digue` (wrong
+        # keybinding, typo) would otherwise toggle recording out of nowhere.
+        parser.print_help()
+        sys.exit(1)
+
     command = args.command
-    if command is None:
-        command = "dictate"
 
     if command == "detect":
         sys.exit(cmd_detect(args))
 
-    if command == "config" and getattr(args, "config_action", None) == "init":
-        sys.exit(_config_init(args))
+    if command == "config":
+        if args.config_action is None:
+            # No default action, like the bare `digue`: show what is available.
+            args.config_parser.print_help()
+            sys.exit(1)
+        if args.config_action == "init":
+            sys.exit(_config_init(args))
 
     try:
         config = load_config(args.config)
