@@ -3807,8 +3807,7 @@ def _convert_content(content: str, from_format: str, to_format: str) -> str:
     if from_format in ("vtt", "srt"):
         cues = _parse_subtitle_cues(content, from_format)
         if to_format in ("vtt", "srt"):
-            if not cues:
-                raise ValueError(f"input has no cues; cannot produce {to_format.upper()}")
+            # Header-only VTT (silent audio) is an empty subtitle, not an error.
             return _render_subtitle_cues(cues, to_format)
         pairs = [
             (_format_subtitle_timestamp(cue.start_ms, "vtt").split(".")[0], " ".join(cue.text.split())) for cue in cues

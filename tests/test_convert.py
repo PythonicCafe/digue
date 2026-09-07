@@ -221,9 +221,10 @@ class TestSilentAudioTimestamps:
     def test_convert_header_only_vtt_to_text_gives_empty_text(self):
         assert digue._convert_content("WEBVTT\n", "vtt", "text") == ""
 
-    def test_convert_header_only_vtt_to_srt_still_fails(self):
-        with pytest.raises(ValueError, match="no cues"):
-            digue._convert_content("WEBVTT\n\n", "vtt", "srt")
+    def test_convert_header_only_vtt_to_srt_gives_empty_srt(self):
+        """Silent audio is an empty subtitle, not a conversion error: SRT must
+        degrade the same way timestamps and text already do."""
+        assert digue._convert_content("WEBVTT\n\n", "vtt", "srt") == "\n"
 
     def test_non_subtitle_content_is_still_rejected(self):
         with pytest.raises(ValueError, match="does not look like a VTT"):
