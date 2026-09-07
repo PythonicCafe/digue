@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import digue
+from digue import delivery as delivery_mod
 from digue.config import _default_config
 
 
@@ -16,18 +17,18 @@ class TestSendText:
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
         with pytest.raises(RuntimeError, match="No DISPLAY"):
-            digue.send_text("hello", display_server="auto")
+            delivery_mod.send_text("hello", display_server="auto")
 
     @patch("subprocess.run")
     def test_x11_uses_xclip(self, mock_run):
-        digue.send_text("hello", display_server="x11")
+        delivery_mod.send_text("hello", display_server="x11")
         cmds = [recorded_call[0][0] for recorded_call in mock_run.call_args_list]
         assert cmds[0][0] == "xclip"
         assert cmds[1][0] == "xdotool"
 
     @patch("subprocess.run")
     def test_wayland_uses_wl_copy(self, mock_run):
-        digue.send_text("hello", display_server="wayland")
+        delivery_mod.send_text("hello", display_server="wayland")
         cmds = [recorded_call[0][0] for recorded_call in mock_run.call_args_list]
         assert cmds[0][0] == "wl-copy"
         assert cmds[1][0] == "wtype"
@@ -35,11 +36,11 @@ class TestSendText:
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_missing_tool_gives_install_hint(self, mock_run):
         with pytest.raises(RuntimeError, match="sudo apt install"):
-            digue.send_text("hello", display_server="x11")
+            delivery_mod.send_text("hello", display_server="x11")
 
     @patch("subprocess.run")
     def test_type_x11_uses_xdotool_type_reading_stdin(self, mock_run):
-        digue.send_text("olá mundo", display_server="x11", input_mode="type")
+        delivery_mod.send_text("olá mundo", display_server="x11", input_mode="type")
         cmd = mock_run.call_args[0][0]
         assert cmd == ["xdotool", "type", "--clearmodifiers", "--file", "-"]
         assert mock_run.call_args[1]["input"] == "olá mundo".encode()
@@ -48,7 +49,7 @@ class TestSendText:
     def test_type_wayland_uses_wtype_reading_stdin(self, mock_run):
         # wtype has no --no-newline flag: any unknown -option makes it fail with
         # "Unknown parameter" (checked main.c of atx/wtype, the Debian package).
-        digue.send_text("olá mundo", display_server="wayland", input_mode="type")
+        delivery_mod.send_text("olá mundo", display_server="wayland", input_mode="type")
         cmd = mock_run.call_args[0][0]
         assert cmd == ["wtype", "-"]
         assert "--no-newline" not in cmd
@@ -57,7 +58,7 @@ class TestSendText:
     @pytest.mark.parametrize("display_server", ["x11", "wayland"])
     @patch("subprocess.run")
     def test_type_text_starting_with_dash_never_lands_in_argv(self, mock_run, display_server):
-        digue.send_text("- item one", display_server=display_server, input_mode="type")
+        delivery_mod.send_text("- item one", display_server=display_server, input_mode="type")
         cmd = mock_run.call_args[0][0]
         assert "- item one" not in cmd
         assert mock_run.call_args[1]["input"] == b"- item one"
@@ -65,12 +66,12 @@ class TestSendText:
     @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("xdotool", 120))
     def test_type_command_timeout_raises(self, mock_run):
         with pytest.raises(RuntimeError, match="xdotool timed out"):
-            digue.send_text("hello", display_server="x11", input_mode="type")
+            delivery_mod.send_text("hello", display_server="x11", input_mode="type")
 
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_type_missing_tool_gives_install_hint(self, mock_run):
         with pytest.raises(RuntimeError, match="sudo apt install"):
-            digue.send_text("hello", display_server="x11", input_mode="type")
+            delivery_mod.send_text("hello", display_server="x11", input_mode="type")
 
     @patch("subprocess.run")
     def test_paste_command_failure_raises(self, mock_run):
@@ -80,14 +81,14 @@ class TestSendText:
         ]
 
         with pytest.raises(RuntimeError, match="xdotool failed: no window"):
-            digue.send_text("hello", display_server="x11")
+            delivery_mod.send_text("hello", display_server="x11")
 
     @patch("subprocess.run")
     def test_paste_command_timeout_raises(self, mock_run):
         mock_run.side_effect = [MagicMock(returncode=0), subprocess.TimeoutExpired("xdotool", 5)]
 
         with pytest.raises(RuntimeError, match="xdotool timed out"):
-            digue.send_text("hello", display_server="x11")
+            delivery_mod.send_text("hello", display_server="x11")
 
     def test_input_mode_default_is_paste(self):
         config = _default_config()
@@ -111,11 +112,11 @@ class TestSendTextDeliveryLock:
 
         def deliver(which):
             current.which = which
-            digue.send_text("text")
+            delivery_mod.send_text("text")
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.detect_display_server", return_value="x11"),
+            patch("digue.delivery.detect_display_server", return_value="x11"),
             patch("subprocess.run", side_effect=slow_run),
         ):
             first = threading.Thread(target=deliver, args=("first",))
@@ -139,10 +140,10 @@ class TestSendTextDeliveryLock:
         the lock while another delivery is pasting."""
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.detect_display_server", return_value="x11") as mock_detect,
+            patch("digue.delivery.detect_display_server", return_value="x11") as mock_detect,
             patch("subprocess.run"),
         ):
-            digue.send_text("text")
+            delivery_mod.send_text("text")
 
         assert mock_detect.call_count == 1
 
@@ -151,27 +152,27 @@ class TestDetectDisplayServer:
     def test_wayland(self, monkeypatch):
         monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
         monkeypatch.delenv("DISPLAY", raising=False)
-        assert digue.detect_display_server() == "wayland"
+        assert delivery_mod.detect_display_server() == "wayland"
 
     def test_x11(self, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.setenv("DISPLAY", ":0")
-        assert digue.detect_display_server() == "x11"
+        assert delivery_mod.detect_display_server() == "x11"
 
     def test_wayland_takes_priority(self, monkeypatch):
         monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
         monkeypatch.setenv("DISPLAY", ":0")
-        assert digue.detect_display_server() == "wayland"
+        assert delivery_mod.detect_display_server() == "wayland"
 
     def test_none_when_no_display(self, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
-        assert digue.detect_display_server() is None
+        assert delivery_mod.detect_display_server() is None
 
 
 class TestNormalizePastedText:
     def test_collapses_newlines_and_spaces(self):
-        assert digue.normalize_pasted_text("olá\n\nmundo \t aqui") == "olá mundo aqui"
+        assert delivery_mod.normalize_pasted_text("olá\n\nmundo \t aqui") == "olá mundo aqui"
 
     def test_joins_whisper_wrapped_lines(self):
         sample = (
@@ -180,16 +181,16 @@ class TestNormalizePastedText:
             "Então tem que ver o que está acontecendo aqui para ele não\n"
             "estar desaparecendo."
         )
-        assert digue.normalize_pasted_text(sample) == (
+        assert delivery_mod.normalize_pasted_text(sample) == (
             "Eu queria fazer um teste aqui e aí por algum motivo o trans crevendo não sumiu. "
             "Então tem que ver o que está acontecendo aqui para ele não estar desaparecendo."
         )
 
     def test_strips_edges(self):
-        assert digue.normalize_pasted_text("  text  ") == "text"
+        assert delivery_mod.normalize_pasted_text("  text  ") == "text"
 
     def test_empty(self):
-        assert digue.normalize_pasted_text("") == ""
+        assert delivery_mod.normalize_pasted_text("") == ""
 
 
 class TestDeliveryResult:
@@ -212,7 +213,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
             result = digue.finish_dictation(config, rec_file)
@@ -225,7 +226,7 @@ class TestDeliveryResult:
         rec_file = self.make_rec_file(tmp_path)
         config = self.make_config(tmp_path)
 
-        with patch("digue.send_text"), patch("digue.transcribe.transcribe", return_value=""):
+        with patch("digue.delivery.send_text"), patch("digue.transcribe.transcribe", return_value=""):
             result = digue.finish_dictation(config, rec_file)
 
         assert result.outcome == "empty"
@@ -246,7 +247,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down")),
         ):
             result = digue.finish_dictation(config, rec_file)
@@ -262,7 +263,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down")),
             patch("digue.rescue_recording", return_value=None),
         ):
@@ -278,7 +279,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text", side_effect=RuntimeError("no display")),
+            patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
             result = digue.finish_dictation(config, rec_file)
@@ -294,7 +295,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.save_audio", side_effect=OSError("disk full")),
         ):
@@ -313,7 +314,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.save_audio", side_effect=OSError("disk full")),
             patch("digue.rescue_recording", return_value=None),
@@ -332,7 +333,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text", side_effect=RuntimeError("no display")),
+            patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.save_audio", side_effect=OSError("disk full")),
             patch("digue.rescue_recording", return_value=None),
@@ -348,7 +349,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text", side_effect=RuntimeError("no display")),
+            patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.save_audio", side_effect=OSError("disk full")),
         ):
@@ -363,7 +364,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with (
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value=""),
             patch("digue.save_audio", side_effect=OSError("disk full")),
             patch("digue.rescue_recording", return_value=None),
@@ -397,7 +398,7 @@ class TestDeliveryResult:
 
 
 class TestFinishDictationBackend:
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_finish_dictation_passes_resolved_backend(self, mock_save, mock_transcribe, mock_send, tmp_path):
@@ -414,7 +415,7 @@ class TestFinishDictationBackend:
         assert mock_save.call_args[1]["backend"] == "remote"
         mock_detect.assert_not_called()  # only remote-or-not matters here: no nvidia-smi/lspci per delivery
 
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_finish_dictation_does_not_detect_hardware_for_a_local_backend(
@@ -434,7 +435,7 @@ class TestFinishDictationBackend:
 
 class TestDictateArchivesAfterDelivery:
     @patch("digue.notify.send_notification")
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     def test_limit_warning_remains_in_transcription_progress(self, mock_transcribe, mock_send, mock_notify, tmp_path):
         rec_file = tmp_path / "rec.wav"
@@ -448,7 +449,7 @@ class TestDictateArchivesAfterDelivery:
         assert "Limit reached" in first_message
         assert "transcribing" in first_message
 
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     def test_transcribes_and_pastes_before_archiving(self, mock_save, mock_transcribe, mock_send, tmp_path):
@@ -467,7 +468,7 @@ class TestDictateArchivesAfterDelivery:
         assert result.exit_code == 0
         assert [call_record[0] for call_record in order.mock_calls] == ["transcribe", "send_text", "save_audio"]
 
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down"))
     def test_transcribe_failure_archives_recording(self, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
@@ -485,7 +486,7 @@ class TestDictateArchivesAfterDelivery:
         assert saved[0].read_bytes() == b"audio"
         assert "Transcription failed" in capsys.readouterr().err
 
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down"))
     def test_transcribe_failure_keeps_recording_even_with_save_audio_off(
         self, mock_transcribe, mock_send, tmp_path, capsys
@@ -509,7 +510,7 @@ class TestDictateArchivesAfterDelivery:
         assert "Recording kept at" in capsys.readouterr().err
 
     @patch("digue.save_audio", side_effect=OSError("disk full"))
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     def test_save_audio_failure_after_paste_keeps_uncompressed_recording(
         self, mock_transcribe, mock_send, mock_save, tmp_path, capsys
@@ -546,7 +547,7 @@ class TestDictateAudioTranscriptPairing:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue.now_timestamp", side_effect=["20260904-120000", "20260904-120005"]),
-            patch("digue.send_text"),
+            patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
             result = digue.finish_dictation(config, rec_file)

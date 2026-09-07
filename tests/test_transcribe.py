@@ -561,7 +561,7 @@ class TestDetectLanguageVerbose:
 
 
 class TestCmdTranscribeInput:
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="text")
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)

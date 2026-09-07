@@ -472,7 +472,7 @@ class TestSaveAudioConfig:
         mock_compress.assert_called_once()
         assert mock_compress.call_args[1]["backend"] == "amd"
 
-    @patch("digue.send_text")
+    @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")
     @patch("digue.save_audio")
     def test_save_audio_false_skips_wav_but_writes_txt(self, mock_save, mock_transcribe, mock_send, tmp_path):

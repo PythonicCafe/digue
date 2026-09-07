@@ -482,7 +482,7 @@ def _finalize_output(
     result: str, response_format: str, max_line_length: int, max_lines: int, wrap_cues: bool = True
 ) -> str:
     """Applies format-specific normalization to the server response."""
-    from digue import normalize_pasted_text
+    from digue.delivery import normalize_pasted_text
 
     if response_format == "text":
         return normalize_pasted_text(result)

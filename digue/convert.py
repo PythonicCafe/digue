@@ -189,7 +189,7 @@ def _timestamp_pairs_to_cues(pairs: list[tuple[str | None, str]], output_format:
 
 def _convert_content(content: str, from_format: str, to_format: str) -> str:
     """Converts content between vtt/srt/timestamps/text formats."""
-    from digue import normalize_pasted_text
+    from digue.delivery import normalize_pasted_text
 
     pairs: list[tuple[str | None, str]]
     if from_format in ("vtt", "srt"):
