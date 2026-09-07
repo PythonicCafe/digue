@@ -492,7 +492,7 @@ class TestStartRecordingPublishesTakeState:
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
         finish_take_ids = []
 
-        def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
+        def fake_finish(_config, rec_file, limit_reached=False, take_id=None, timestamp=None):
             finish_take_ids.append(take_id)
             # the take state follows the daemon file: "delivering" is written
             # before the recorder is stopped, so it is what the delivery sees
@@ -1195,7 +1195,7 @@ class TestOrphanTakeClaim:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         finish_calls = []
 
-        def fake_finish(_config, file, limit_reached=False, take_id=None):
+        def fake_finish(_config, file, limit_reached=False, take_id=None, timestamp=None):
             finish_calls.append((file, take_id))
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
@@ -1230,7 +1230,7 @@ class TestOrphanTakeClaim:
         config = _default_config()
         seen: dict[str, object] = {}
 
-        def fake_finish(_config, file, limit_reached=False, take_id=None):
+        def fake_finish(_config, file, limit_reached=False, take_id=None, timestamp=None):
             with patch("digue.recording._runtime_dir", return_value=tmp_path):
                 seen["daemon_state_during_recovery"] = dictate_mod._daemon_state()
                 seen["claim_during_recovery"] = recording_mod._claim_orphan_take()
@@ -1384,7 +1384,7 @@ class TestRecoverClaimedTake:
         )
         delivered = []
 
-        def fake_finish(_config, file, limit_reached=False, take_id=None):
+        def fake_finish(_config, file, limit_reached=False, take_id=None, timestamp=None):
             delivered.append((file, take_id))
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
@@ -1408,7 +1408,7 @@ class TestRecoverClaimedTake:
         take = self.make_recovering_take(tmp_path, rec_file=rec_file)
         delivered = []
 
-        def fake_finish(_config, file, limit_reached=False, take_id=None):
+        def fake_finish(_config, file, limit_reached=False, take_id=None, timestamp=None):
             delivered.append(file)
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
@@ -1551,7 +1551,7 @@ class TestRecoverClaimedTake:
         take = self.make_recovering_take(tmp_path, rec_file=rec_file, recorder_pid=os.getpid(), recorder_starttime=111)
         delivered = []
 
-        def fake_finish(_config, file, limit_reached=False, take_id=None):
+        def fake_finish(_config, file, limit_reached=False, take_id=None, timestamp=None):
             delivered.append(file)
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
@@ -1684,7 +1684,7 @@ class TestSurplusOrphanRescue:
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
         finish_take_ids = []
 
-        def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
+        def fake_finish(_config, rec_file, limit_reached=False, take_id=None, timestamp=None):
             finish_take_ids.append(take_id)
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
@@ -1710,7 +1710,8 @@ class TestSurplusOrphanRescue:
         assert finish_take_ids == [oldest.take_id]
         assert surplus_take_a.take_id not in finish_take_ids
         assert surplus_take_b.take_id not in finish_take_ids
-        month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
+        # rescued files are named after the take's start (created_at_ns in 1970 here)
+        month = tmp_path / "audio" / audio_mod.month_dir_for("19700101-000000")
         for take, original_bytes in (
             (surplus_take_a, b"audio a"),
             (surplus_take_b, b"audio b"),
@@ -1730,6 +1731,42 @@ class TestSurplusOrphanRescue:
         message = rescued_notifies[0].args[0]
         assert "2 recordings rescued to" in message
         assert str(tmp_path / "audio") in message
+
+    def test_rescued_take_is_named_after_its_start_time(self, tmp_path):
+        """A rescue that runs hours after the crash must name the audio with
+        the take's own start, not the rescue time; created_at_ns is kept for
+        exactly that."""
+        import datetime
+
+        started = datetime.datetime(2026, 9, 5, 10, 15, 0)
+        rec_file = tmp_path / "digue-surplus.wav"
+        rec_file.write_bytes(b"audio")
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch(
+                "digue.recording.stop_recording_pid",
+                side_effect=lambda pid, rec_file, expected_starttime=None: rec_file,
+            ),
+            patch("digue.notify.notify_close"),
+        ):
+            take = self.make_take(
+                tmp_path,
+                "aaaaaaaaaaaaaaaa",
+                int(started.timestamp() * 1e9),
+                rec_file=rec_file,
+                recorder_pid=999_999,
+                recorder_starttime=1,
+            )
+            claimed = recording_mod.TakeState(
+                **{**take.__dict__, "state": "recovering", "recoverer_pid": os.getpid(), "recoverer_starttime": 1}
+            )
+            rescued = recording_mod._rescue_surplus_take(config, claimed)
+
+        assert rescued == tmp_path / "audio" / "2026" / "09" / "20260905-101500-aaaaaaaaaaaaaaaa.wav"
+        assert rescued.with_suffix(".json").exists()
 
     def test_surplus_take_with_live_recorder_is_stopped_before_rescue(self, tmp_path):
         oldest_wav = tmp_path / "digue-oldest.wav"
@@ -1770,7 +1807,8 @@ class TestSurplusOrphanRescue:
                 assert dictate_mod.dictate_toggle(config) == 0
 
             assert surplus_recorder.poll() is not None
-            month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
+            # created_at_ns=200 (1970): the rescue is named after the take's start
+            month = tmp_path / "audio" / audio_mod.month_dir_for("19700101-000000")
             rescued = list(month.glob("*-aaaaaaaaaaaaaaaa.wav"))
             assert len(rescued) == 1 and rescued[0].read_bytes() == b"audio surplus"
             assert list(month.glob("*-aaaaaaaaaaaaaaaa.json"))

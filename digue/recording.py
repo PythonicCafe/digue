@@ -444,6 +444,15 @@ def _take_states() -> list[TakeState]:
 ORPHAN_MIN_AGE_SECONDS = 60
 
 
+def _take_timestamp(take: TakeState) -> str:
+    """The filename timestamp of a recovered take: when it started recording
+    (created_at_ns), not when some later toggle found it. A rescue hours
+    after a crash must not name the audio with the rescue time."""
+    import datetime
+
+    return datetime.datetime.fromtimestamp(take.created_at_ns / 1e9).strftime("%Y%m%d-%H%M%S")
+
+
 def _take_age_seconds(take: TakeState) -> float:
     import time
 
@@ -462,7 +471,7 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     writing). Returns the rescued path or None.
     """
 
-    from digue.audio import now_timestamp, rescue_recording
+    from digue.audio import rescue_recording
     from digue.notify import send_notification
 
     if _take_identity_alive(take.daemon_pid, take.daemon_starttime):
@@ -474,7 +483,7 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
         take.rec_file.unlink(missing_ok=True)
         state_file.unlink(missing_ok=True)
         return None
-    timestamp = now_timestamp()
+    timestamp = _take_timestamp(take)
     rescued = rescue_recording(take.rec_file, config["dictate"]["audio_dir"], timestamp, take.take_id)
     if rescued is None:
         return None  # origin preserved, state kept: the next toggle retries
@@ -586,7 +595,7 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         # the archive): archive the audio, never paste twice
         result = _archive_recovered_take(config, rec_file, transcript)
     else:
-        result = finish_dictation(config, rec_file, take_id=take.take_id)
+        result = finish_dictation(config, rec_file, take_id=take.take_id, timestamp=_take_timestamp(take))
     if result.outcome not in TERMINAL_OUTCOMES:
         return result.exit_code
     _take_state_file(take.take_id).unlink(missing_ok=True)
@@ -639,7 +648,7 @@ def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> 
     JSON is archived next to it. Returns the rescued path, or None when there
     was nothing to rescue (the state is then removed) or the rescue failed
     (the state is kept, so the next toggle retries)."""
-    from digue.audio import now_timestamp, rescue_recording
+    from digue.audio import rescue_recording
     from digue.notify import notify_close
 
     notify_close(take.daemon_pid)
@@ -653,7 +662,7 @@ def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> 
         _take_state_file(take.take_id).unlink(missing_ok=True)
         return None
     audio_dir = Path(config["dictate"]["audio_dir"])
-    timestamp = now_timestamp()
+    timestamp = _take_timestamp(take)
     rescued = rescue_recording(rec_file, audio_dir, timestamp, take.take_id)
     if rescued is None:
         return None

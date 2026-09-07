@@ -135,13 +135,19 @@ class DeliveryResult:
 
 
 def finish_dictation(
-    config: dict[str, dict[str, Any]], rec_file: Path | None, limit_reached: bool = False, take_id: str | None = None
+    config: dict[str, dict[str, Any]],
+    rec_file: Path | None,
+    limit_reached: bool = False,
+    take_id: str | None = None,
+    timestamp: str | None = None,
 ) -> DeliveryResult:
     """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
 
     Called by the daemon once the recorder is dead: manual stop (second toggle
     signaled the daemon, which stopped the recorder) or duration limit (the
-    watchdog safety killer stopped it).
+    watchdog safety killer stopped it). timestamp names the saved files; the
+    daemon leaves it to now (the take just stopped), a recovery passes the
+    take's start time.
     """
     from digue.audio import _archive_recording, _write_transcript, now_timestamp, rescue_recording
     from digue.container import server_url
@@ -154,7 +160,7 @@ def finish_dictation(
         return DeliveryResult(outcome="empty", exit_code=1)
 
     audio_dir = Path(config["dictate"]["audio_dir"])
-    timestamp = now_timestamp()
+    timestamp = timestamp or now_timestamp()
     rescued_path: Path | None = None
 
     def archive_audio() -> bool:
