@@ -14,8 +14,8 @@ import argparse
 import json
 import sys
 import time
-import urllib.request
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -24,75 +24,81 @@ import digue
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
 SAMPLE_PATH = Path("/tmp/digue-bench-jfk.wav")
 ALL_MODELS = ("small", "medium", "large-v3-turbo")
+# Approximate GGML model sizes (MB), to warn before benchmarking triggers downloads
+MODEL_SIZES_MB = {"tiny": 75, "base": 142, "small": 466, "medium": 1500, "large-v3-turbo": 1620, "large-v3": 3100}
 RUNS = 3
 
 
-def download_sample():
+def download_sample() -> None:
     if SAMPLE_PATH.exists():
         print(f"Sample: {SAMPLE_PATH}", file=sys.stderr)
         return
     print("Downloading sample audio...", file=sys.stderr, flush=True)
-    urllib.request.urlretrieve(SAMPLE_URL, SAMPLE_PATH)
+    digue._download_file(SAMPLE_URL, SAMPLE_PATH, SAMPLE_PATH.name)
     print(f"Saved: {SAMPLE_PATH} ({SAMPLE_PATH.stat().st_size / 1024:.0f} KB)", file=sys.stderr)
 
 
-def benchmark_case(config, backend, model):
+def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) -> dict[str, Any] | None:
     """Benchmarks a single backend+model combination. Returns dict or None."""
     label = f"{backend} / {model}"
     print(f"\n=== {label} ===", file=sys.stderr)
 
-    bench_config = {**config, "models": {**config["models"], backend: model}}
+    models_dir = Path(config["server"]["data_dir"]) / "models"
+    model_path = models_dir / f"ggml-{model}.bin"
+    if not model_path.exists():
+        print(
+            f"  Model {model} not found locally - it will be downloaded first (~{MODEL_SIZES_MB.get(model, '?')} MB).",
+            file=sys.stderr,
+        )
 
-    digue.remove_container()
-    time.sleep(2)
+    bench_config = {**config, "models": {**config["models"], backend: model}}
 
     print("  Starting server...", file=sys.stderr, flush=True)
     try:
-        digue.create_container(bench_config, backend)
-    except RuntimeError as exc:
-        print(f"  Skipped: {exc}", file=sys.stderr)
-        return None
+        try:
+            digue.create_container(bench_config, backend)
+        except RuntimeError as exc:
+            print(f"  Skipped: {exc}", file=sys.stderr)
+            return None
 
-    if not digue._wait_for_server(config, verbose=True):
-        print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
-        digue.remove_container()
-        return None
+        if not digue._wait_for_server(config, verbose=True):
+            print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
+            return None
 
-    url = digue.server_url(config)
+        url = digue.server_url(config)
 
-    # Warm-up (not measured)
-    try:
-        digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
-    except Exception as exc:
-        print(f"  Skipped: warm-up transcription failed: {exc}", file=sys.stderr)
-        digue.remove_container()
-        return None
+        try:
+            digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
+        except Exception as exc:
+            print(f"  Skipped: warm-up transcription failed: {exc}", file=sys.stderr)
+            return None
 
-    results = []
-    text = ""
-    for run_idx in range(1, RUNS + 1):
-        start = time.perf_counter()
-        text = digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
-        elapsed = time.perf_counter() - start
-        results.append(elapsed)
-        print(f"  run {run_idx}: {elapsed:.2f}s", file=sys.stderr)
+        results = []
+        text = ""
+        for run_idx in range(1, RUNS + 1):
+            start = time.perf_counter()
+            text = digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
+            elapsed = time.perf_counter() - start
+            results.append(elapsed)
+            print(f"  run {run_idx}: {elapsed:.2f}s", file=sys.stderr)
 
-    avg = sum(results) / len(results)
-    print(f"  avg: {avg:.2f}s", file=sys.stderr)
-    print(f"  text: {text}", file=sys.stderr)
+        avg = sum(results) / len(results)
+        print(f"  avg: {avg:.2f}s", file=sys.stderr)
+        print(f"  text: {text}", file=sys.stderr)
 
-    digue.remove_container()
-
-    return {
-        "backend": backend,
-        "model": model,
-        "avg_s": round(avg, 2),
-        "runs": [round(r, 2) for r in results],
-        "text": text,
-    }
+        return {
+            "backend": backend,
+            "model": model,
+            "avg_s": round(avg, 2),
+            "runs": [round(result, 2) for result in results],
+            "text": text,
+        }
+    finally:
+        if digue.container_exists():
+            digue.remove_container()
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark digue with different models and backends")
     parser.add_argument(
         "-b",
@@ -119,7 +125,7 @@ def create_parser():
     return parser
 
 
-def main():
+def main() -> None:
     global RUNS
 
     parser = create_parser()
@@ -141,23 +147,24 @@ def main():
     print(f"Models: {', '.join(args.models)}", file=sys.stderr)
     print(f"Runs per case: {RUNS}", file=sys.stderr)
 
+    # Warn up front about models that will be downloaded (can take minutes)
+    models_dir = Path(config["server"]["data_dir"]) / "models"
+    missing = [model for model in args.models if not (models_dir / f"ggml-{model}.bin").exists()]
+    if missing:
+        total_mb = sum(MODEL_SIZES_MB.get(model, 0) for model in missing)
+        listing = ", ".join(f"{model} (~{MODEL_SIZES_MB.get(model, '?')} MB)" for model in missing)
+        print(f"Missing models (will download, ~{total_mb} MB total): {listing}", file=sys.stderr)
+
     all_results = []
     try:
-        for backend in backends:
-            for model in args.models:
-                result = benchmark_case(config, backend, model)
-                if result:
-                    all_results.append(result)
+        with digue.preserve_container_for_benchmark():
+            for backend in backends:
+                for model in args.models:
+                    result = benchmark_case(config, backend, model)
+                    if result:
+                        all_results.append(result)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
-
-    # Restore default container
-    print("\nRestoring default container...", file=sys.stderr, flush=True)
-    try:
-        digue.create_container(config)
-        digue._wait_for_server(config, verbose=True)
-    except RuntimeError as exc:
-        print(f"  Could not restore default container: {exc}", file=sys.stderr)
 
     print(f"\n{'=' * 60}", file=sys.stderr)
     print("Summary", file=sys.stderr)

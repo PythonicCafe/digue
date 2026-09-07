@@ -14,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import benchmark_models
 import digue
 
 # -- Config -------------------------------------------------------------------
@@ -2005,6 +2006,140 @@ class TestCmdDoctor:
         assert result == 0
         err = capsys.readouterr().err
         assert "Language: auto" in err
+
+
+class TestBenchmarkContainerState:
+    def test_absent_container_is_only_cleaned_up(self):
+        with (
+            patch("digue.container_status", return_value=None),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            digue.preserve_container_for_benchmark(),
+        ):
+            pass
+
+        mock_remove.assert_called_once_with()
+        mock_rename.assert_not_called()
+        mock_stop.assert_not_called()
+        mock_start.assert_not_called()
+
+    def test_stopped_container_is_restored_stopped_after_exception(self):
+        statuses = iter(["exited"])
+        existence = iter([True])
+        with (
+            patch("digue.container_status", side_effect=lambda: next(statuses)),
+            patch("digue.container_exists", side_effect=lambda: next(existence)),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            patch("digue.os.getpid", return_value=123),
+            pytest.raises(KeyboardInterrupt),
+            digue.preserve_container_for_benchmark(),
+        ):
+            raise KeyboardInterrupt
+
+        assert mock_rename.call_args_list == [
+            ((digue.CONTAINER_NAME, "digue-benchmark-backup-123"),),
+            (("digue-benchmark-backup-123", digue.CONTAINER_NAME),),
+        ]
+        mock_remove.assert_called_once_with()
+        mock_stop.assert_not_called()
+        mock_start.assert_not_called()
+
+    def test_running_container_is_stopped_then_restored_running(self):
+        with (
+            patch("digue.container_status", return_value="running"),
+            patch("digue.container_exists", return_value=False),
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            patch("digue.os.getpid", return_value=456),
+            digue.preserve_container_for_benchmark(),
+        ):
+            pass
+
+        mock_stop.assert_called_once_with()
+        assert mock_rename.call_args_list == [
+            ((digue.CONTAINER_NAME, "digue-benchmark-backup-456"),),
+            (("digue-benchmark-backup-456", digue.CONTAINER_NAME),),
+        ]
+        mock_start.assert_called_once_with()
+
+
+class TestRunBenchmarkLanguage:
+    def test_language_default_comes_from_transcribe_section(self, tmp_path, capsys):
+        config = digue._default_config()
+        with (
+            patch("digue.download_model"),
+            patch("digue.preserve_container_for_benchmark"),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container"),
+            patch("digue.create_container"),
+            patch("digue._wait_for_server", return_value=True),
+            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.detect_backend", return_value="cpu"),
+        ):
+            digue.run_benchmark(tmp_path / "no-audio.wav", config)
+        err = capsys.readouterr().err
+        assert "digue benchmark" in err
+
+    def test_removes_benchmark_container_when_transcription_is_interrupted(self, tmp_path):
+        config = digue._default_config()
+        with (
+            patch("digue.download_model"),
+            patch("digue.preserve_container_for_benchmark"),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue.create_container"),
+            patch("digue._wait_for_server", return_value=True),
+            patch("digue._benchmark_run", side_effect=KeyboardInterrupt),
+            patch("digue.detect_backend", return_value="cpu"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            digue.run_benchmark(tmp_path / "audio.wav", config)
+
+        mock_remove.assert_called_once_with()
+
+
+class TestBenchmarkModels:
+    def test_case_removes_container_when_transcription_is_interrupted(self, tmp_path):
+        config = digue._default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        with (
+            patch("benchmark_models.digue.create_container"),
+            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.digue.transcribe", side_effect=KeyboardInterrupt),
+            patch("benchmark_models.digue.container_exists", return_value=True),
+            patch("benchmark_models.digue.remove_container") as mock_remove,
+            pytest.raises(KeyboardInterrupt),
+        ):
+            benchmark_models.benchmark_case(config, "cpu", "small")
+
+        mock_remove.assert_called_once_with()
+
+    def test_main_preserves_previous_container_on_interrupt(self):
+        config = digue._default_config()
+        manager = MagicMock()
+        manager.__enter__.return_value = None
+        manager.__exit__.return_value = False
+        with (
+            patch("benchmark_models.create_parser") as mock_parser,
+            patch("benchmark_models.download_sample"),
+            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.digue.detect_backend", return_value="cpu"),
+            patch("benchmark_models.digue.preserve_container_for_benchmark", return_value=manager),
+            patch("benchmark_models.benchmark_case", side_effect=KeyboardInterrupt),
+        ):
+            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
+                backends=["cpu"], models=["small"], runs=1
+            )
+            benchmark_models.main()
+
+        manager.__exit__.assert_called_once()
 
 
 class TestCmdClean:

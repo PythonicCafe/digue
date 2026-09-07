@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -547,6 +550,74 @@ def start_container():
 def stop_container():
     """Stops the running container."""
     _docker_run(["stop", CONTAINER_NAME], timeout=15)
+
+
+def _rename_container(old_name: str, new_name: str) -> None:
+    result = _docker_run(["rename", old_name, new_name])
+    _raise_for_docker_failure(result, "rename container")
+
+
+@contextlib.contextmanager
+def preserve_container_for_benchmark() -> Iterator[None]:
+    """Makes room for benchmark containers, then restores the prior container and running state."""
+    previous_status = container_status()
+    backup_name = f"{CONTAINER_NAME}-benchmark-backup-{os.getpid()}"
+
+    if previous_status is not None:
+        if previous_status == "running":
+            stop_container()
+        try:
+            _rename_container(CONTAINER_NAME, backup_name)
+        except BaseException:
+            if previous_status == "running":
+                start_container()
+            raise
+
+    try:
+        yield
+    finally:
+        try:
+            if container_exists():
+                remove_container()
+        finally:
+            if previous_status is not None:
+                _rename_container(backup_name, CONTAINER_NAME)
+                if previous_status == "running":
+                    start_container()
+
+
+def _rename_container(old_name: str, new_name: str) -> None:
+    result = _docker_run(["rename", old_name, new_name])
+    _raise_for_docker_failure(result, "rename container")
+
+
+@contextlib.contextmanager
+def preserve_container_for_benchmark() -> Iterator[None]:
+    """Makes room for benchmark containers, then restores the prior container and running state."""
+    previous_status = container_status()
+    backup_name = f"{CONTAINER_NAME}-benchmark-backup-{os.getpid()}"
+
+    if previous_status is not None:
+        if previous_status == "running":
+            stop_container()
+        try:
+            _rename_container(CONTAINER_NAME, backup_name)
+        except BaseException:
+            if previous_status == "running":
+                start_container()
+            raise
+
+    try:
+        yield
+    finally:
+        try:
+            if container_exists():
+                remove_container()
+        finally:
+            if previous_status is not None:
+                _rename_container(backup_name, CONTAINER_NAME)
+                if previous_status == "running":
+                    start_container()
 
 
 # -- Notifications ------------------------------------------------------------
@@ -2128,7 +2199,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
 # -- Benchmark ----------------------------------------------------------------
 
 
-def _benchmark_run(url, audio_path, language, runs):
+def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -> list[tuple[int, str]]:
     """Runs N transcription requests and returns list of (elapsed_ms, text)."""
     import contextlib
     import time
@@ -2145,14 +2216,13 @@ def _benchmark_run(url, audio_path, language, runs):
     return results
 
 
-def run_benchmark(audio_path, config):
+def run_benchmark(audio_path: str | Path, config: dict[str, dict[str, Any]]) -> None:
     """Benchmarks different backend/model combinations with the same audio."""
-    import time
     from pathlib import Path
 
     models_dir = Path(config["server"]["data_dir"]) / "models"
     url = server_url(config)
-    language = config["dictation"]["language"]
+    language = config["transcribe"]["language"]
     detected = detect_backend()
 
     print("digue benchmark", file=sys.stderr)
@@ -2176,41 +2246,35 @@ def run_benchmark(audio_path, config):
         test_cases.append((f"{detected.upper()} / large-v3-turbo", detected, "large-v3-turbo"))
 
     all_results = []
-    for label, backend, model in test_cases:
-        print(f"=== {label} ===", file=sys.stderr)
+    with preserve_container_for_benchmark():
+        for label, backend, model in test_cases:
+            print(f"=== {label} ===", file=sys.stderr)
 
-        remove_container()
-        time.sleep(2)
+            bench_config = {**config, "models": {**config["models"], backend: model}}
+            try:
+                try:
+                    create_container(bench_config, backend)
+                except RuntimeError as exc:
+                    print(f"  Skipped: {exc}", file=sys.stderr)
+                    continue
 
-        bench_config = {**config, "models": {**config["models"], backend: model}}
-        try:
-            create_container(bench_config, backend)
-        except RuntimeError as exc:
-            print(f"  Skipped: {exc}", file=sys.stderr)
-            continue
+                print("  Waiting for server...", file=sys.stderr, flush=True)
+                if not _wait_for_server(config, verbose=True):
+                    print("  Server failed to start, skipping", file=sys.stderr)
+                    continue
 
-        print("  Waiting for server...", file=sys.stderr, flush=True)
-        if not _wait_for_server(config, verbose=True):
-            print("  Server failed to start, skipping", file=sys.stderr)
-            remove_container()
-            continue
-
-        results = _benchmark_run(url, audio_path, language, BENCHMARK_RUNS)
-        for idx, (elapsed_ms, text) in enumerate(results, 1):
-            print(f"  run {idx}: {elapsed_ms}ms", file=sys.stderr)
-        if results:
-            avg_ms = sum(elapsed for elapsed, _ in results) // len(results)
-            print(f"  avg: {avg_ms}ms", file=sys.stderr)
-            print(f"  text: {results[-1][1]}", file=sys.stderr)
-            all_results.append((label, avg_ms))
-        print(file=sys.stderr)
-
-        remove_container()
-
-    # Restore default container
-    print("Restoring default container...", file=sys.stderr, flush=True)
-    create_container(config)
-    _wait_for_server(config, verbose=True)
+                results = _benchmark_run(url, audio_path, language, BENCHMARK_RUNS)
+                for idx, (elapsed_ms, text) in enumerate(results, 1):
+                    print(f"  run {idx}: {elapsed_ms}ms", file=sys.stderr)
+                if results:
+                    avg_ms = sum(elapsed for elapsed, _ in results) // len(results)
+                    print(f"  avg: {avg_ms}ms", file=sys.stderr)
+                    print(f"  text: {results[-1][1]}", file=sys.stderr)
+                    all_results.append((label, avg_ms))
+                print(file=sys.stderr)
+            finally:
+                if container_exists():
+                    remove_container()
 
     print(f"\n{'=' * 50}", file=sys.stderr)
     print("Summary", file=sys.stderr)
@@ -2219,7 +2283,7 @@ def run_benchmark(audio_path, config):
         print(f"  {label:<35} {avg_ms}ms", file=sys.stderr)
 
 
-def record_benchmark_audio(output_path, duration_seconds=10):
+def record_benchmark_audio(output_path: str | Path, duration_seconds: int = 10) -> None:
     """Records audio from microphone for benchmark."""
     import subprocess
     import time
@@ -2240,7 +2304,7 @@ def record_benchmark_audio(output_path, duration_seconds=10):
 # -- CLI ----------------------------------------------------------------------
 
 
-def _existing_dir(value):
+def _existing_dir(value: str) -> Path:
     """argparse type: validates that the path is an existing directory."""
     from pathlib import Path
 
@@ -2250,7 +2314,7 @@ def _existing_dir(value):
     return path
 
 
-def _ensure_dir(value):
+def _ensure_dir(value: str) -> Path:
     """argparse type: creates the directory if it doesn't exist."""
     from pathlib import Path
 
@@ -2262,7 +2326,7 @@ def _ensure_dir(value):
 CONFIG_TEMPLATE = """\
 # -- Server -------------------------------------------------------------------
 [server]
-port = {port}                     # host port for the whisper-server container
+# port = 8178                   # host port for the whisper-server container
 # bind-ip = "127.0.0.1"         # IP Docker binds the port to; 127.0.0.1 = local only.
                                 #   Set to a LAN IP to expose it to that network
                                 #   (the server has no authentication; prefer SSH tunnels)
@@ -2271,15 +2335,26 @@ port = {port}                     # host port for the whisper-server container
                                 #   unset, in which case: ~/.local/share/digue)
 # backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
                                 # or "remote" (server on another machine via SSH tunnel)
+# remote-host = ""              # for backend = "remote": the server host (LAN IP,
+                                #   hostname, or empty = 127.0.0.1 via SSH tunnel)
 # image = ""                    # override Docker image (see README for compatibility matrix)
 
+# -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
+[transcribe]
+# language = "auto"             # language for transcription: "auto", "pt", "en", etc.
+# prompt = ""                   # initial prompt to steer spelling of names/acronyms,
+                                #   e.g. "KINAI, Turicas, Pythonic Café"
+# output-format = "text"        # transcribe output: "vtt", "srt", "timestamps"
+                                #   ([00:00:12] text lines) or "text" (plain)
+# max-line-length = 42          # subtitle cue wrapping (vtt/srt): max chars per line
+# max-lines = 2                 # max lines per cue when wrapping
+
 # -- Dictation ----------------------------------------------------------------
-[dictation]
-language = "auto"               # language for transcription: "auto", "pt", "en", etc.
-# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio)
+[dictate]
+# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio/YYYY/MM)
 # display-server = "auto"       # "auto" (detect), "x11", or "wayland"
 # input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
-                                #   keystrokes; useful in terminals)
+                                #   keystrokes; use "type" in terminals)
 # save-audio = true             # save the recording as a backup
 # audio-format = "flac"         # format of the saved recording: "flac" (lossless,
                                 #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
@@ -2289,10 +2364,10 @@ language = "auto"               # language for transcription: "auto", "pt", "en"
 
 # -- Models per backend -------------------------------------------------------
 [models]
-nvidia = "large-v3-turbo"
-amd = "large-v3-turbo"
-intel = "large-v3-turbo"
-cpu = "small"
+# nvidia = "large-v3-turbo"
+# amd = "large-v3-turbo"
+# intel = "large-v3-turbo"
+# cpu = "small"
 # Available models: tiny, base, small, medium, large-v3-turbo, large-v3
 
 # -- Per-host overrides (version this file in your dotfiles) -------------------
@@ -2307,7 +2382,7 @@ cpu = "small"
 # [host.thinkpad.server]
 # backend = "cpu"
 #
-# [host.thinkpad.dictation]
+# [host.thinkpad.dictate]
 # max-duration = 120
 """
 
@@ -3052,7 +3127,7 @@ def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str,
     return 1 if failed else 0
 
 
-def cmd_benchmark(args, config):
+def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     from pathlib import Path
 
     if resolve_backend(config) == "remote":
@@ -3073,7 +3148,7 @@ def cmd_benchmark(args, config):
     return 0
 
 
-def cmd_config(args, config):
+def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import json
 
     output_format = getattr(args, "output_format", "json")
@@ -3167,7 +3242,7 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
     return 0
 
 
-def cmd_doctor(args, config):
+def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     """Checks system dependencies and tests which Docker images work."""
     import shutil
     import subprocess
@@ -3259,18 +3334,19 @@ def cmd_doctor(args, config):
         print(f"  Models directory not found: {models_dir}", file=sys.stderr)
 
     print("\n=== Config ===", file=sys.stderr)
-    config_path = _config_path()
+    selected_path = vars(args).get("config")
+    config_path = Path(selected_path).expanduser() if selected_path else _config_path()
     if config_path.exists():
         print(f"  {config_path}", file=sys.stderr)
     else:
-        print("  No config file (using defaults)", file=sys.stderr)
+        print(f"  {config_path} (not found; using defaults)", file=sys.stderr)
     print(f"  Backend: {resolved}", file=sys.stderr)
     if resolved == "remote":
         print("  Model: (on the remote machine)", file=sys.stderr)
     else:
         print(f"  Model: {model_for_backend(resolved, config)}", file=sys.stderr)
     print(f"  Image: {image}", file=sys.stderr)
-    print(f"  Language: {config['dictation']['language']}", file=sys.stderr)
+    print(f"  Language: {config['transcribe']['language']}", file=sys.stderr)
 
     return 0
 
