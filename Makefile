@@ -43,7 +43,13 @@ smoke-wheel: build			# Install wheel without dependencies and smoke-test its CLI
 	"$$tmp_dir/venv/bin/digue" --version; \
 	"$$tmp_dir/venv/bin/digue" config show >/dev/null
 
-build-check: smoke-wheel		# Build, smoke-test, and validate packages with twine
+smoke-sdist: build			# Run the test suite from the published sdist (needs tests/ + conftest.py in it)
+	@tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	tar xzf dist/*.tar.gz -C "$$tmp_dir"; \
+	cd "$$tmp_dir"/digue-*/ && $(PYTHON) -m pytest tests/ -q --tb=short
+
+build-check: smoke-wheel smoke-sdist	# Build, smoke-test (wheel CLI + sdist suite), and validate with twine
 	$(PYTHON) -m twine check dist/*
 
 publish: build-check			# Upload packages to PyPI (requires credentials)
