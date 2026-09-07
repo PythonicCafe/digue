@@ -183,7 +183,8 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 [server]
 port = 8178                     # host port for the whisper-server container
 # data-dir = "~/digue/data"     # where models are stored (default: ./data next to digue.py)
-# backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", or "cpu"
+# backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
+                                # or "remote" (server on another machine via SSH tunnel)
 # image = ""                    # override Docker image; leave empty for auto-selection
                                 #   NVIDIA: ghcr.io/ggml-org/whisper.cpp:main-cuda
                                 #   AMD/Intel: ghcr.io/ggml-org/whisper.cpp:main-vulkan
@@ -217,7 +218,16 @@ The server binds to `127.0.0.1` and is not exposed to the network. To use a remo
 ssh -NfL 8178:127.0.0.1:8178 user@desktop
 ```
 
-With the tunnel active, `digue` works normally on the client -- the default URL already points to `localhost:8178`.
+Then set `backend = "remote"` in the client's config:
+
+```toml
+[server]
+backend = "remote"
+```
+
+With the tunnel active, `digue` works normally on the client. The `remote` backend also tells `digue` to never create, start, or stop a local container: `digue start`, `stop`, and `destroy` refuse to run, `digue status` only checks the port, and a failed transcription points you to the tunnel instead of suggesting `digue start`. Without this setting, `digue` would try to spin up a local container if it could not reach the port.
+
+To manage the container itself, run the commands (`digue download`, `start`, `destroy`) on the remote machine.
 
 For a persistent tunnel, add to `~/.ssh/config`:
 

@@ -12,7 +12,7 @@ DEFAULT_PORT = 8178
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
 AVAILABLE_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
-BACKENDS = ("nvidia", "amd", "intel", "cpu")
+BACKENDS = ("nvidia", "amd", "intel", "cpu", "remote")
 DOCKER_IMAGES = {
     "nvidia": "ghcr.io/ggml-org/whisper.cpp:main-cuda",
     "amd": "ghcr.io/ggml-org/whisper.cpp:main-vulkan",
@@ -231,6 +231,8 @@ def resolve_backend(config):
 
 def resolve_image(backend, config):
     """Returns the Docker image to use, respecting config override."""
+    if backend == "remote":
+        return ""
     configured = config["server"].get("image", "")
     if configured:
         return configured
@@ -247,6 +249,9 @@ def create_container(config, backend=None):
 
     if backend is None:
         backend = resolve_backend(config)
+
+    if backend == "remote":
+        raise RuntimeError("backend 'remote' uses a remote server; there is no local container to create")
 
     port = config["server"]["port"]
     data_dir = Path(config["server"]["data_dir"])
@@ -439,8 +444,18 @@ def ensure_server(config, silent=False):
     """Ensures server is running, creating/starting the container if needed.
 
     Returns the backend used, or None if the server was already running.
+    With backend 'remote' no local container is ever touched; the server is
+    expected to be reachable through an SSH tunnel.
     """
     if is_server_running(config):
+        return None
+
+    if resolve_backend(config) == "remote":
+        if not silent:
+            notify(
+                f"Remote server not responding on port {config['server']['port']}. Is your SSH tunnel active?",
+                timeout_ms=10000,
+            )
         return None
 
     status = container_status()
@@ -468,6 +483,17 @@ def ensure_server(config, silent=False):
     if not silent:
         notify("Server failed to start (see: docker logs digue)", timeout_ms=10000)
     return None
+
+
+def server_not_running_hint(config):
+    """Returns the actionable hint shown when the server is not responding."""
+    if resolve_backend(config) == "remote":
+        return (
+            f"Backend is 'remote': no local container to start. Forward port {config['server']['port']} with "
+            f"ssh -NfL {config['server']['port']}:127.0.0.1:{config['server']['port']} user@host "
+            "(see README, Remote access)."
+        )
+    return "Run: digue start"
 
 
 # -- HTTP helpers -------------------------------------------------------------
@@ -1103,6 +1129,13 @@ def cmd_download(args, config):
         model = args.model
     else:
         backend = resolve_backend(config)
+        if backend == "remote":
+            print(
+                "Backend is 'remote': models are stored on the remote machine. "
+                "Use 'digue download <model>' to force a specific model.",
+                file=sys.stderr,
+            )
+            return 1
         model = model_for_backend(backend, config)
         print(f"Backend: {backend}, downloading model: {model}", file=sys.stderr)
 
@@ -1114,6 +1147,10 @@ def cmd_start(args, config):
     if is_server_running(config):
         print("server is already running", file=sys.stderr)
         return 0
+
+    if resolve_backend(config) == "remote":
+        print(server_not_running_hint(config), file=sys.stderr)
+        return 1
 
     status = container_status()
     if status == "exited":
@@ -1137,20 +1174,30 @@ def cmd_start(args, config):
 
 
 def cmd_stop(args, config):
+    if resolve_backend(config) == "remote":
+        print("Backend is 'remote': there is no local container to stop", file=sys.stderr)
+        return 1
     stop_container()
     print("Server stopped", file=sys.stderr)
     return 0
 
 
 def cmd_destroy(args, config):
+    if resolve_backend(config) == "remote":
+        print("Backend is 'remote': there is no local container to remove", file=sys.stderr)
+        return 1
     remove_container()
     print("Container removed", file=sys.stderr)
     return 0
 
 
 def cmd_status(args, config):
-    status = container_status()
     port = config["server"]["port"]
+    if resolve_backend(config) == "remote":
+        http_ok = is_server_running(config)
+        print(f"digue: remote backend, {'responding' if http_ok else 'not responding'} on port {port}", file=sys.stderr)
+        return 0 if http_ok else 1
+    status = container_status()
     if status is None:
         print("Container does not exist", file=sys.stderr)
         return 1
@@ -1169,7 +1216,7 @@ def cmd_transcribe(args, config):
 
     ensure_server(config, silent=True)
     if not is_server_running(config):
-        print("Error: server is not running. Run: digue start", file=sys.stderr)
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
         return 1
 
     audio_path = args.audio
@@ -1226,7 +1273,7 @@ def cmd_batch_transcribe(args, config):
 
     ensure_server(config, silent=True)
     if not is_server_running(config):
-        print("Error: server is not running. Run: digue start", file=sys.stderr)
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
         return 1
 
     language = args.language or config["dictation"]["language"]
@@ -1302,6 +1349,10 @@ def cmd_batch_simplify_vtt(args, config):
 def cmd_benchmark(args, config):
     from pathlib import Path
 
+    if resolve_backend(config) == "remote":
+        print("Error: benchmark creates local containers; it is not available with backend 'remote'", file=sys.stderr)
+        return 1
+
     if args.audio:
         audio_path = args.audio
         if not audio_path.exists():
@@ -1358,48 +1409,51 @@ def cmd_doctor(args, config):
     print(f"  Auto-detected: {detected}", file=sys.stderr)
     if resolved != detected:
         print(f"  Config override: {resolved}", file=sys.stderr)
-    image = resolve_image(resolved, config)
+    image = resolve_image(resolved, config) or "(remote server)"
     print(f"  Image: {image}", file=sys.stderr)
 
     print("\n=== Docker images ===", file=sys.stderr)
-    test_images = [
-        ("ghcr.io/ggml-org/whisper.cpp:main", "CPU (main)"),
-        ("ghcr.io/ggml-org/whisper.cpp:main-vulkan", "Vulkan/CPU (main-vulkan)"),
-    ]
-    if shutil.which("nvidia-smi"):
-        test_images.append(("ghcr.io/ggml-org/whisper.cpp:main-cuda", "CUDA (main-cuda)"))
+    if resolved == "remote":
+        print("  Skipped (backend is 'remote'; the server runs on another machine)", file=sys.stderr)
+    else:
+        test_images = [
+            ("ghcr.io/ggml-org/whisper.cpp:main", "CPU (main)"),
+            ("ghcr.io/ggml-org/whisper.cpp:main-vulkan", "Vulkan/CPU (main-vulkan)"),
+        ]
+        if shutil.which("nvidia-smi"):
+            test_images.append(("ghcr.io/ggml-org/whisper.cpp:main-cuda", "CUDA (main-cuda)"))
 
-    for test_image, label in test_images:
-        print(f"  Testing {label}...", end="", file=sys.stderr, flush=True)
-        if not image_exists(test_image):
-            print(f" [{skip_mark}] not pulled", file=sys.stderr)
-            continue
-        try:
-            result = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--entrypoint",
-                    "whisper-server",
-                    test_image,
-                    "--help",
-                ],
-                capture_output=True,
-                timeout=15,
-            )
-            if result.returncode == 0:
-                print(f" [{ok_mark}]", file=sys.stderr)
-            else:
-                exit_info = f"exit {result.returncode}"
-                if result.returncode > 128:
-                    sig = result.returncode - 128
-                    exit_info = f"signal {sig} (exit {result.returncode})"
-                    if sig == 4:
-                        exit_info += " -- SIGILL: CPU does not support this image's instructions"
-                print(f" [{fail_mark}] {exit_info}", file=sys.stderr)
-        except subprocess.TimeoutExpired:
-            print(f" [{fail_mark}] timed out", file=sys.stderr)
+        for test_image, label in test_images:
+            print(f"  Testing {label}...", end="", file=sys.stderr, flush=True)
+            if not image_exists(test_image):
+                print(f" [{skip_mark}] not pulled", file=sys.stderr)
+                continue
+            try:
+                result = subprocess.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--entrypoint",
+                        "whisper-server",
+                        test_image,
+                        "--help",
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if result.returncode == 0:
+                    print(f" [{ok_mark}]", file=sys.stderr)
+                else:
+                    exit_info = f"exit {result.returncode}"
+                    if result.returncode > 128:
+                        sig = result.returncode - 128
+                        exit_info = f"signal {sig} (exit {result.returncode})"
+                        if sig == 4:
+                            exit_info += " -- SIGILL: CPU does not support this image's instructions"
+                    print(f" [{fail_mark}] {exit_info}", file=sys.stderr)
+            except subprocess.TimeoutExpired:
+                print(f" [{fail_mark}] timed out", file=sys.stderr)
 
     print("\n=== Models ===", file=sys.stderr)
     models_dir = Path(config["server"]["data_dir"]) / "models"
@@ -1417,7 +1471,10 @@ def cmd_doctor(args, config):
     else:
         print("  No config file (using defaults)", file=sys.stderr)
     print(f"  Backend: {resolved}", file=sys.stderr)
-    print(f"  Model: {model_for_backend(resolved, config)}", file=sys.stderr)
+    if resolved == "remote":
+        print("  Model: (on the remote machine)", file=sys.stderr)
+    else:
+        print(f"  Model: {model_for_backend(resolved, config)}", file=sys.stderr)
     print(f"  Image: {image}", file=sys.stderr)
     print(f"  Language: {config['dictation']['language']}", file=sys.stderr)
 

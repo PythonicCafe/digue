@@ -435,10 +435,56 @@ class TestRecording:
         assert digue.is_recording() is False
 
 
-# -- CLI parser ---------------------------------------------------------------
+# -- Remote backend -----------------------------------------------------------
 
 
-class TestCreateParser:
+class TestRemoteBackend:
+    def test_resolve_backend_from_config(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        assert digue.resolve_backend(config) == "remote"
+
+    @patch("digue.is_server_running", return_value=False)
+    @patch("digue.container_status")
+    def test_ensure_server_remote_never_touches_container(self, mock_status, mock_running):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        assert digue.ensure_server(config, silent=True) is None
+        mock_status.assert_not_called()
+
+    @patch("digue._docker_run")
+    def test_create_container_remote_raises(self, mock_docker):
+        config = digue._default_config()
+        with pytest.raises(RuntimeError, match="remote"):
+            digue.create_container(config, "remote")
+        mock_docker.assert_not_called()
+
+    def test_hint_remote_mentions_tunnel(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        hint = digue.server_not_running_hint(config)
+        assert "ssh -NfL" in hint
+        assert "8178" in hint
+
+    def test_hint_local_suggests_start(self):
+        config = digue._default_config()
+        assert digue.server_not_running_hint(config) == "Run: digue start"
+
+    @patch("digue.is_server_running", return_value=True)
+    def test_cmd_status_remote(self, mock_running, capsys):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        assert digue.cmd_status(MagicMock(), config) == 0
+        assert "remote" in capsys.readouterr().err
+
+    @patch("digue.is_server_running", return_value=False)
+    def test_cmd_status_remote_not_responding(self, mock_running, capsys):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        assert digue.cmd_status(MagicMock(), config) == 1
+
+
+# -- CLI parser ---------------------------------------------------------------class TestCreateParser:
     def test_all_subcommands_parse(self):
         parser = digue.create_parser()
         for cmd in ("detect", "download", "start", "stop", "destroy", "status", "dictate", "config", "benchmark"):
