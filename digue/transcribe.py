@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from digue import DEFAULT_TRANSCRIPTION_TIMEOUT
+
 # Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3,
 # Ogg/Vorbis, AIFF). Verified empirically against whisper-server (ghcr.io main-vulkan
 # image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3, ogg-vorbis and aiff
@@ -17,7 +19,7 @@ NATIVE_FORMATS = frozenset((".wav", ".flac", ".mp3", ".ogg", ".aiff", ".aif"))
 
 RESPONSE_FORMATS = ("text", "vtt", "srt", "timestamps")
 
-TRANSCRIPTION_TIMEOUT = 120
+TRANSCRIPTION_TIMEOUT = DEFAULT_TRANSCRIPTION_TIMEOUT
 
 # whisper.cpp g_lang (src/whisper.cpp): full names the server's JSON "language"
 # field may carry, mapped to the two-letter codes.
@@ -625,6 +627,7 @@ def transcribe_file(
         max_line_length=int(transcribe_cfg.get("max_line_length", 42)),
         max_lines=int(transcribe_cfg.get("max_lines", 2)),
         wrap_cues=wrap_subtitles,
+        timeout=int(transcribe_cfg.get("timeout", TRANSCRIPTION_TIMEOUT)),
     )
     if fmt == "timestamps":
         return _convert_content(result, "vtt", "timestamps")
@@ -649,15 +652,16 @@ def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, An
         return 1
 
     url = server_url(config)
+    timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
     try:
         if args.json:
             import json
 
-            probs = language_probabilities(url, audio_path, verbose=args.verbose)
+            probs = language_probabilities(url, audio_path, timeout=timeout, verbose=args.verbose)
             detected_code, detected_prob = probs["detected"]
             print(json.dumps({"language": detected_code, "probability": detected_prob, "all": probs["all"]}, indent=2))
         else:
-            print(detect_language(url, audio_path, verbose=args.verbose))
+            print(detect_language(url, audio_path, timeout=timeout, verbose=args.verbose))
     except Exception as exc:
         print(f"Error: language detection failed: {exc}", file=sys.stderr)
         return 1
@@ -686,6 +690,7 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
     response_format = args.response_format or config["transcribe"].get("output_format", "text")
     max_line_length = int(config["transcribe"].get("max_line_length", 42))
     max_lines = int(config["transcribe"].get("max_lines", 2))
+    timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
     url = server_url(config)
 
     # timestamps output is meant for reading on one screen: cues are not
@@ -702,6 +707,7 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
             max_line_length=max_line_length,
             max_lines=max_lines,
             wrap_cues=wrap_subtitles,
+            timeout=timeout,
         )
 
         if response_format == "timestamps":
@@ -733,6 +739,7 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
     prompt = config["transcribe"]["prompt"]
     max_line_length = config["transcribe"]["max_line_length"]
     max_lines = config["transcribe"]["max_lines"]
+    timeout = config["transcribe"]["timeout"]
     url = server_url(config)
     ext = _format_extension(response_format)
 
@@ -778,6 +785,7 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
                 max_line_length=max_line_length,
                 max_lines=max_lines,
                 wrap_cues=wrap_subtitles,
+                timeout=timeout,
             )
             if response_format == "timestamps":
                 result = _convert_content(result, "vtt", "timestamps")

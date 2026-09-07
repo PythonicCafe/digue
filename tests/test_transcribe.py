@@ -679,6 +679,20 @@ class TestCmdTranscribeInput:
         assert transcribe_mod.cmd_transcribe(args, config) == 0
         assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic Café"
 
+    @patch("digue.transcribe.transcribe", return_value="text")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    def test_uses_config_timeout(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
+        """The server answers only after transcribing the whole file, so the
+        wait is a per-file budget the user can raise for long audio on CPU."""
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"audio")
+        args = MagicMock(audio=audio, language=None, response_format=None, verbose=False, prompt=None, output=None)
+        config = _default_config()
+        config["transcribe"]["timeout"] = 1800
+        assert transcribe_mod.cmd_transcribe(args, config) == 0
+        assert mock_transcribe.call_args.kwargs["timeout"] == 1800
+
 
 class TestOutputFilesEndWithOneNewline:
     VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n"

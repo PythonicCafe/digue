@@ -14,6 +14,7 @@ from digue import (
     DEFAULT_MAX_RECORD_SECONDS,
     DEFAULT_MODELS,
     DEFAULT_PORT,
+    DEFAULT_TRANSCRIPTION_TIMEOUT,
 )
 
 # -- Config -------------------------------------------------------------------
@@ -47,6 +48,7 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "output_format": "text",
             "max_line_length": 42,
             "max_lines": 2,
+            "timeout": DEFAULT_TRANSCRIPTION_TIMEOUT,
         },
         "dictate": {
             "audio_dir": "",
@@ -129,7 +131,7 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
     for key in ("language", "prompt"):
         require_type("transcribe", key, str)
     require_choice("transcribe", "output_format", ("text", "vtt", "srt", "timestamps"))
-    for key in ("max_line_length", "max_lines"):
+    for key in ("max_line_length", "max_lines", "timeout"):
         value = require_type("transcribe", key, int)
         if value < 1:
             raise ValueError(f"Invalid transcribe.{key}: {value}; expected an integer greater than zero")
@@ -302,6 +304,9 @@ CONFIG_TEMPLATE = """\
                                 #   ([00:00:12] text lines) or "text" (plain)
 # max-line-length = 42          # subtitle cue wrapping (vtt/srt): max chars per line
 # max-lines = 2                 # max lines per cue when wrapping
+# timeout = 600                 # seconds to wait for the server's answer (the server
+                                #   only replies after transcribing the whole file:
+                                #   long files on CPU need more)
 
 # -- Dictation ----------------------------------------------------------------
 [dictate]

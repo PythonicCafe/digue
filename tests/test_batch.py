@@ -256,4 +256,5 @@ class TestCmdBatchTranscribe:
             "max_line_length": 50,
             "max_lines": 3,
             "wrap_cues": True,
+            "timeout": 600,
         }

@@ -9,6 +9,9 @@ DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
 AVAILABLE_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 DEFAULT_MAX_RECORD_SECONDS = 300
+# whisper-server answers only after transcribing the whole file, so this bounds
+# the file length a CPU can handle; [transcribe] timeout overrides it.
+DEFAULT_TRANSCRIPTION_TIMEOUT = 600
 
 from digue.config import load_config  # noqa: E402
 from digue.recording import record_to  # noqa: E402

@@ -266,6 +266,9 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
                                 #   ([00:00:12] text lines) or "text" (plain)
 # max-line-length = 42          # subtitle cue wrapping (vtt/srt): max chars per line
 # max-lines = 2                 # max lines per cue when wrapping
+# timeout = 600                 # seconds to wait for the server's answer (the server
+                                #   only replies after transcribing the whole file:
+                                #   long files on CPU need more)
 
 # -- Dictation ----------------------------------------------------------------
 [dictate]
@@ -318,7 +321,7 @@ Paths support `~` (expanded to home directory).
 
 ## Shared and per-host configuration
 
-`[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe`, and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, and `max-lines` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
+`[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe`, and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, `max-lines`, and `timeout` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
 
 One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `transcribe`, `dictate`, `models`); keys there override the global sections when the hostname matches, and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved. Hostnames containing dots must be quoted (`[host."minipc.local".server]`); unquoted, TOML parses each dot as a nested table and the file is rejected.
 

@@ -147,7 +147,7 @@ def finish_dictation(
     from digue.container import server_url
     from digue.delivery import normalize_pasted_text, send_text
     from digue.notify import _stderr_is_tty, send_notification
-    from digue.transcribe import transcribe
+    from digue.transcribe import TRANSCRIPTION_TIMEOUT, transcribe
 
     if rec_file is None:
         send_notification("Empty or missing audio file", timeout_ms=5000)
@@ -180,7 +180,8 @@ def finish_dictation(
         url = server_url(config)
         language = config["transcribe"]["language"]
         prompt = config["transcribe"].get("prompt") or None
-        text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt))
+        timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
+        text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt, timeout=timeout))
     except Exception as exc:
         archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         send_notification(f"Transcription failed: {exc}", timeout_ms=10000)

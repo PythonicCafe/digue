@@ -25,6 +25,7 @@ class TestTranscribeFile:
         mock_ensure.assert_called_once()
         assert mock_transcribe.call_args.args[2] == "pt"
         assert mock_transcribe.call_args.kwargs["prompt"] == "KINAI"
+        assert mock_transcribe.call_args.kwargs["timeout"] == 600
 
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=False)

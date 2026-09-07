@@ -424,6 +424,8 @@ class TestConfigValueValidation:
             ("[server]\ndata-dir = 42\n", "server.data_dir"),
             ("[dictate]\ndevice = 42\n", "dictate.device"),
             ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
+            ("[transcribe]\ntimeout = 0\n", "transcribe.timeout"),
+            ('[transcribe]\ntimeout = "120"\n', "transcribe.timeout"),
         ),
     )
     def test_load_config_validates_resolved_values(self, tmp_path, toml, message):
