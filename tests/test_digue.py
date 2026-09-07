@@ -925,29 +925,6 @@ class TestSimplifyVtt:
 # -- Recording ----------------------------------------------------------------
 
 
-class TestRecording:
-    @patch("digue._pid_file")
-    def test_is_recording_false_when_no_pid_file(self, mock_pid_file, tmp_path):
-        mock_pid_file.return_value = tmp_path / "nonexistent.pid"
-        assert digue.is_recording() is False
-
-    @patch("digue._pid_alive", return_value=False)
-    @patch("digue._pid_file")
-    def test_is_recording_false_when_pid_dead(self, mock_pid_file, mock_alive, tmp_path):
-        pid_file = tmp_path / "whisper.pid"
-        pid_file.write_text("99999")
-        mock_pid_file.return_value = pid_file
-        assert digue.is_recording() is False
-
-    @patch("digue._pid_file")
-    def test_is_recording_false_when_pid_file_is_empty(self, mock_pid_file, tmp_path):
-        """A truncated pid file (writer interrupted) must not crash the toggle."""
-        pid_file = tmp_path / "digue.pid"
-        pid_file.write_text("")
-        mock_pid_file.return_value = pid_file
-        assert digue.is_recording() is False
-
-
 class TestTakeState:
     def make_state(self, tmp_path, **changes):
         values = {
@@ -1033,9 +1010,9 @@ class TestTakeState:
 
 class TestStateFilesAreWrittenAtomically:
     """Path.write_text truncates before writing: a concurrent toggle reading in
-    between sees an empty file. For the daemon file that reads as "no daemon",
-    so the toggle falls back to is_recording() and stops the live daemon's
-    recorder; both then deliver the same take. The state must appear in one
+    between sees an empty file. For the daemon file that reads as "no daemon"
+    (the toggle starts a new take) and for a take state that reads as a corrupt
+    "unreadable" state (reported, never removed). The state must appear in one
     step (temp sibling + rename), never through a truncating open."""
 
     @staticmethod
@@ -1064,15 +1041,17 @@ class TestStateFilesAreWrittenAtomically:
 
     @patch("digue._spawn_limit_watchdog")
     @patch("subprocess.Popen")
-    def test_recorder_pid_file_is_never_truncated_in_place(self, mock_popen, mock_watchdog, tmp_path, monkeypatch):
-        mock_popen.return_value = MagicMock(pid=777)
-        opened = self._truncating_writes(monkeypatch)
-        pid_file = tmp_path / "digue.pid"
-        with patch("digue._runtime_dir", return_value=tmp_path):
-            digue.start_recording(digue._default_config())
+    def test_take_state_is_never_truncated_in_place(self, mock_popen, mock_watchdog, tmp_path, monkeypatch):
+        import os
 
-        assert pid_file not in opened
-        assert pid_file.read_text() == "777"
+        mock_popen.return_value = MagicMock(pid=os.getpid())
+        opened = self._truncating_writes(monkeypatch)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            processes = digue.start_recording(digue._default_config())
+
+        state_file = tmp_path / f"digue-take-{processes.take_id}.json"
+        assert state_file not in opened
+        assert json.loads(state_file.read_text())["state"] == "recording"
 
 
 class TestRecordingCommand:
@@ -1105,16 +1084,15 @@ class TestRecordingCommand:
 
 
 class TestStartRecording:
-    @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_returns_owned_recorder_handle(self, mock_popen, mock_pid_file, tmp_path):
+    def test_returns_owned_recorder_handle(self, mock_popen, tmp_path):
         recorder = MagicMock(pid=1234)
         mock_popen.return_value = recorder
-        mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
         config["dictate"]["max_duration"] = 0
 
-        processes = digue.start_recording(config)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            processes = digue.start_recording(config)
 
         assert processes.recorder is recorder
         assert processes.watchdog is None
@@ -1124,22 +1102,21 @@ class TestStartRecording:
         assert mock_popen.call_args[1].get("start_new_session") is True
 
     @patch("digue._spawn_limit_watchdog")
-    @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_max_duration_returns_watchdog_handle(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
-        recorder = MagicMock(pid=777)
+    def test_max_duration_returns_watchdog_handle(self, mock_popen, mock_watchdog, tmp_path):
+        recorder = MagicMock(pid=os.getpid())
         watchdog = MagicMock(pid=778)
         mock_popen.return_value = recorder
         mock_watchdog.return_value = watchdog
-        mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
         config["dictate"]["max_duration"] = 300
 
-        processes = digue.start_recording(config)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            processes = digue.start_recording(config)
 
         assert processes.recorder is recorder
         assert processes.watchdog is watchdog
-        mock_watchdog.assert_called_once_with(777, 300)
+        mock_watchdog.assert_called_once_with(recorder.pid, 300)
 
 
 class TestStartRecordingPublishesTakeState:
@@ -1150,9 +1127,8 @@ class TestStartRecordingPublishesTakeState:
     that is exposed the soonest."""
 
     @patch("digue._spawn_limit_watchdog")
-    @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_publishes_starting_before_popen(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
+    def test_publishes_starting_before_popen(self, mock_popen, mock_watchdog, tmp_path):
         import os
 
         states_at_popen = []
@@ -1163,7 +1139,6 @@ class TestStartRecordingPublishesTakeState:
             return recorder
 
         mock_popen.side_effect = fake_popen
-        mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
         config["dictate"]["max_duration"] = 0
 
@@ -1174,9 +1149,8 @@ class TestStartRecordingPublishesTakeState:
         assert processes.take_id == states_at_popen[0].take_id
         assert processes.rec_file == states_at_popen[0].rec_file
 
-    @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_publishes_recording_with_identity_before_watchdog(self, mock_popen, mock_pid_file, tmp_path):
+    def test_publishes_recording_with_identity_before_watchdog(self, mock_popen, tmp_path):
         import os
 
         states_at_watchdog = []
@@ -1187,7 +1161,6 @@ class TestStartRecordingPublishesTakeState:
             return MagicMock(pid=9999)
 
         mock_popen.return_value = recorder
-        mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
         config["dictate"]["max_duration"] = 300
 
@@ -1203,10 +1176,8 @@ class TestStartRecordingPublishesTakeState:
         assert take.recorder_pid == recorder.pid
         assert take.recorder_starttime == int(digue._process_starttime(os.getpid()))
 
-    @patch("digue._pid_file")
     @patch("subprocess.Popen", side_effect=FileNotFoundError("pw-record"))
-    def test_popen_failure_removes_state(self, mock_popen, mock_pid_file, tmp_path):
-        mock_pid_file.return_value = tmp_path / "digue.pid"
+    def test_popen_failure_removes_state(self, mock_popen, tmp_path):
         config = digue._default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), pytest.raises(FileNotFoundError):
@@ -1232,9 +1203,7 @@ class TestStartRecordingPublishesTakeState:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("digue.notify"),
@@ -1342,9 +1311,7 @@ class TestOrphanStartingTake:
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
             patch("digue.notify"),
@@ -1527,7 +1494,6 @@ class TestOrphanTakeClaim:
             patch("digue.stop_recording_pid", return_value=rec_file) as mock_stop,
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.notify"),
             patch("digue.notify_close"),
@@ -1831,7 +1797,6 @@ class TestSurplusOrphanRescue:
             patch("digue.stop_recording_pid", side_effect=lambda pid, rec_file, expected_starttime=None: rec_file),
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.notify") as mock_notify,
             patch("digue.notify_close"),
@@ -1893,7 +1858,6 @@ class TestSurplusOrphanRescue:
                 patch("digue.is_server_running", return_value=True),
                 patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
                 patch("subprocess.Popen", return_value=recorder),
-                patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
                 patch("digue._wait_recorder_end_daemon", return_value="ended"),
                 patch("digue.notify"),
                 patch("digue.notify_close"),
@@ -1967,7 +1931,6 @@ class TestSurplusOrphanRescue:
             patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
             patch("digue.rescue_recording", return_value=None),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.notify"),
             patch("digue.notify_close"),
@@ -2076,50 +2039,31 @@ class TestCancelWatchdog:
         digue._cancel_watchdog(None)
 
 
-class TestStopRecording:
-    @patch("os.killpg")
-    @patch("digue._group_alive", return_value=False)
-    @patch("digue._pid_file")
-    def test_kills_process_group_and_returns_file(self, mock_pid_file, mock_alive, mock_killpg, tmp_path):
-        pid_file = tmp_path / "digue.pid"
-        pid_file.write_text("4242")
-        rec_file = tmp_path / "digue-20260904T120000.wav"
-        rec_file.write_bytes(b"audio data")
-        mock_pid_file.return_value = pid_file
+class TestGlobalRecordingStateRemoved:
+    """Take states superseded the global pid file: `is_recording` /
+    `stop_recording` had no per-take identity (a global stop would kill
+    another take's recorder), and `_recorder_pid_file` duplicated the
+    recorder identity already published in the take state."""
 
-        with patch.object(digue, "_recording_file_of", return_value=rec_file) as mock_source:
-            result = digue.stop_recording()
+    @pytest.mark.parametrize(
+        "name",
+        ["_pid_file", "is_recording", "stop_recording", "_recorder_pid_file"],
+    )
+    def test_superseded_global_state_functions_are_gone(self, name):
+        assert not hasattr(digue, name)
 
-        assert result == rec_file
-        mock_source.assert_called_once_with(4242)
-        mock_killpg.assert_called_once_with(4242, 15)
-        assert not pid_file.exists()
+    def test_stop_recording_pid_has_no_newest_wav_fallback(self, tmp_path):
+        """With concurrent takes, the newest-runtime-wav fallback could grab
+        another daemon's recording: without a captured rec_file and with an fd
+        scan that finds nothing (recorder already dead, descriptors closed),
+        there is nothing to deliver."""
+        newest = tmp_path / "digue-newest.wav"
+        newest.write_bytes(b"audio")
 
-    @patch("digue._pid_file")
-    def test_returns_none_without_pid_file(self, mock_pid_file, tmp_path):
-        mock_pid_file.return_value = tmp_path / "nope.pid"
-        assert digue.stop_recording() is None
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            assert digue.stop_recording_pid(999999, expected_starttime=None) is None
 
-    def test_stop_returns_as_soon_as_the_group_is_gone(self, tmp_path):
-        """The stop slept a fixed 0.5s before checking the group, and the
-        exited-but-unreaped recorder (a zombie still answers signal 0) made it
-        escalate to SIGKILL and sleep again: a full second on every dictation
-        (measured 1.00s). A recorder that exits on SIGTERM within
-        milliseconds must be reported gone within milliseconds."""
-        import time
-
-        recorder = subprocess.Popen(["sleep", "60"], start_new_session=True)
-        rec_file = tmp_path / "take.wav"
-        rec_file.write_bytes(b"audio")
-        try:
-            start = time.perf_counter()
-            result = digue.stop_recording_pid(recorder.pid, rec_file)
-            elapsed = time.perf_counter() - start
-        finally:
-            recorder.wait(timeout=5)
-
-        assert result == rec_file
-        assert elapsed < 0.3
+        assert newest.exists()
 
 
 class TestStopRecordingPidIdentity:
@@ -2180,6 +2124,27 @@ class TestStopRecordingPidIdentity:
 
         assert list(mock_killpg.call_args_list) == [call(4242, 15)]
         assert result == rec_file
+
+    def test_stop_returns_as_soon_as_the_group_is_gone(self, tmp_path):
+        """The stop slept a fixed 0.5s before checking the group, and the
+        exited-but-unreaped recorder (a zombie still answers signal 0) made it
+        escalate to SIGKILL and sleep again: a full second on every dictation
+        (measured 1.00s). A recorder that exits on SIGTERM within
+        milliseconds must be reported gone within milliseconds."""
+        import time
+
+        recorder = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        rec_file = tmp_path / "take.wav"
+        rec_file.write_bytes(b"audio")
+        try:
+            start = time.perf_counter()
+            result = digue.stop_recording_pid(recorder.pid, rec_file)
+            elapsed = time.perf_counter() - start
+        finally:
+            recorder.wait(timeout=5)
+
+        assert result == rec_file
+        assert elapsed < 0.3
 
 
 # -- Remote backend -----------------------------------------------------------
@@ -2785,14 +2750,13 @@ class TestRuntimeIsolation:
         runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
 
         assert digue._runtime_dir() == runtime_dir
-        assert digue._pid_file().parent == runtime_dir
         assert digue._daemon_pid_file().parent == runtime_dir
-        assert digue._recorder_pid_file(123).parent == runtime_dir
+        assert digue._take_state_file("0123456789abcdef").parent == runtime_dir
         with digue._dictate_lock():
             assert (runtime_dir / "digue.lock").exists()
 
     def test_toggle_does_not_read_state_outside_isolated_runtime(self, tmp_path):
-        """A stale recorder state outside the isolated runtime must not be recovered."""
+        """A stale daemon state outside the isolated runtime must not be signaled."""
         sentinel_dir = tmp_path / "sentinel"
         sentinel_dir.mkdir()
         (sentinel_dir / "digue-daemon.pid").write_text("4242 recording 555")
@@ -2801,7 +2765,6 @@ class TestRuntimeIsolation:
         with (
             patch("digue._process_starttime", return_value="555"),
             patch("digue.ensure_server", side_effect=RuntimeError("stop after state lookup")),
-            patch("digue.is_recording", return_value=False),
             patch("digue.notify"),
             patch("os.kill") as mock_kill,
         ):
@@ -3052,7 +3015,6 @@ class TestDictateDaemon:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=ensure_server),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch(
                 "digue.start_recording",
                 return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None),
@@ -3095,7 +3057,6 @@ class TestDictateDaemon:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch("digue.start_recording", return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None)),
             patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
@@ -3112,14 +3073,13 @@ class TestDictateDaemon:
         def fail_after_reservation(_config):
             import os
 
-            assert daemon_file.read_text() == f"{os.getpid()} starting"
+            assert daemon_file.read_text().split()[:2] == [str(os.getpid()), "starting"]
             raise RuntimeError("boom")
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch("digue.start_recording", side_effect=fail_after_reservation),
             patch("digue.notify"),
             patch("signal.signal"),
@@ -3142,16 +3102,13 @@ class TestDictateDaemon:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=replace_reservation_then_fail),
-            patch("digue.is_recording", return_value=False),
             patch("digue.notify"),
         ):
             assert digue.dictate_toggle(config) == 1
 
         assert daemon_file.read_text() == "4242 recording 1"
 
-    @patch("digue.stop_recording", return_value=None)
-    @patch("digue.is_recording", return_value=True)
-    def test_second_toggle_signals_daemon_and_exits_fast(self, mock_recording, mock_stop, tmp_path, capsys):
+    def test_second_toggle_signals_daemon_and_exits_fast(self, tmp_path, capsys):
         """The second dictate sends SIGTERM to the daemon and exits immediately;
         the daemon (not this process) runs the transcription flow."""
         daemon_pid = tmp_path / "digue-daemon.pid"
@@ -3164,14 +3121,14 @@ class TestDictateDaemon:
             patch("digue._pid_alive", return_value=True),
             patch("digue._process_starttime", return_value="555"),
             patch("os.kill") as mock_kill,
-            patch("digue.stop_recording") as mock_stop_in_toggle,
+            patch("digue.finish_dictation") as mock_finish,
         ):
             result = digue.dictate_toggle(config)
 
         assert result == 0
         mock_kill.assert_called_once_with(4242, 15)
         # the toggle must NOT run the transcription logic itself
-        mock_stop_in_toggle.assert_not_called()
+        mock_finish.assert_not_called()
 
     def test_daemon_pid_file_removed_when_daemon_dead(self, tmp_path):
         """A stale daemon pid file (crashed daemon) must not block a new recording."""
@@ -3182,14 +3139,13 @@ class TestDictateDaemon:
         with (
             patch("digue._daemon_pid_file", return_value=daemon_pid),
             patch("digue._pid_alive", return_value=False),
-            patch("digue.is_recording", return_value=False),
             patch("digue.ensure_server", return_value=None),
             patch("digue.is_server_running", return_value=True),
             patch(
                 "digue.start_recording",
                 return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
             ) as mock_start,
-            patch("digue.stop_recording", return_value=None),
+            patch("digue.notify"),
         ):
             result = digue.dictate_toggle(config)
 
@@ -3330,7 +3286,6 @@ class TestDictateDaemon:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.is_recording", return_value=False),
             patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
             patch("digue.notify"),
             patch("os.kill") as mock_kill,
@@ -3398,7 +3353,6 @@ class TestDictateDaemon:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.is_recording", return_value=False),
             patch("digue.ensure_server", side_effect=capture_state),
             patch("digue.notify"),
         ):
@@ -3416,12 +3370,11 @@ class TestDictateDaemon:
 
 class TestDictateInterrupt:
     @patch("digue.stop_recording_pid", return_value=None)
-    @patch("digue.is_recording", side_effect=[False, True, True])
     @patch("digue.ensure_server")
     @patch("digue.is_server_running", return_value=True)
     @patch("digue.start_recording")
     def test_sigint_during_daemon_wait_stops_and_delivers(
-        self, mock_start, mock_running, mock_ensure, mock_recording, mock_stop_pid, tmp_path, capsys
+        self, mock_start, mock_running, mock_ensure, mock_stop_pid, tmp_path, capsys
     ):
         """Ctrl+c (SIGINT) in a terminal dictation must stop the recording and
         deliver the take, not discard it (the global KeyboardInterrupt handler
@@ -3448,7 +3401,6 @@ class TestDictateInterrupt:
             ) as mock_finish,
             patch("signal.signal", side_effect=lambda sig, handler: handlers.append((sig, handler))),
         ):
-            digue._pid_file().write_text("777")  # the fake recorder's pid
             result = digue.dictate_toggle(config)
 
         assert result == 0
@@ -4691,45 +4643,31 @@ class TestSaveAudioConfig:
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    def test_finish_dictation_passes_resolved_backend(
-        self, mock_save, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path
-    ):
+    def test_finish_dictation_passes_resolved_backend(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         config = digue._default_config()
         config["server"]["backend"] = "remote"
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        digue.finish_dictation(config, mock_stop.return_value)
+        digue.finish_dictation(config, rec_file)
 
         mock_save.assert_called_once()
         assert mock_save.call_args[1]["backend"] == "remote"
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     @patch("digue.save_audio")
-    def test_save_audio_false_skips_wav_but_writes_txt(
-        self, mock_save, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path
-    ):
+    def test_save_audio_false_skips_wav_but_writes_txt(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         audio_dir = tmp_path / "audio"
         config = digue._default_config()
         config["dictate"]["save_audio"] = False
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.finish_dictation(config, mock_stop.return_value)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         mock_save.assert_not_called()
@@ -4881,9 +4819,7 @@ class TestDeliveryResult:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("digue.is_recording", return_value=False),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=result),
             patch("digue.notify"),
@@ -4911,17 +4847,10 @@ class TestDictateArchivesAfterDelivery:
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    def test_transcribes_and_pastes_before_archiving(
-        self, mock_save, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path
-    ):
+    def test_transcribes_and_pastes_before_archiving(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
@@ -4930,30 +4859,21 @@ class TestDictateArchivesAfterDelivery:
         order.attach_mock(mock_send, "send_text")
         order.attach_mock(mock_save, "save_audio")
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         assert [call_record[0] for call_record in order.mock_calls] == ["transcribe", "send_text", "save_audio"]
 
     @patch("digue.send_text")
     @patch("digue.transcribe", side_effect=RuntimeError("server down"))
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
-    def test_transcribe_failure_archives_recording(
-        self, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path, capsys
-    ):
+    def test_transcribe_failure_archives_recording(self, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         audio_dir = tmp_path / "audio"
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         assert not rec_file.exists()
@@ -4988,31 +4908,16 @@ class TestDictateArchivesAfterDelivery:
     @patch("digue.save_audio", side_effect=OSError("disk full"))
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     def test_save_audio_failure_after_paste_keeps_uncompressed_recording(
-        self,
-        mock_recording,
-        mock_stop,
-        mock_running,
-        mock_ensure,
-        mock_transcribe,
-        mock_send,
-        mock_save,
-        tmp_path,
-        capsys,
+        self, mock_transcribe, mock_send, mock_save, tmp_path, capsys
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         audio_dir = tmp_path / "audio"
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         assert not rec_file.exists()
@@ -5040,12 +4945,8 @@ class TestDictateAudioTranscriptPairing:
             patch("digue.now_timestamp", side_effect=["20260904-120000", "20260904-120005"]),
             patch("digue.send_text"),
             patch("digue.transcribe", return_value="hello"),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
-            patch("digue.stop_recording", return_value=rec_file) as mock_stop,
-            patch("digue.is_recording", return_value=True),
         ):
-            result = digue.finish_dictation(config, mock_stop.return_value)
+            result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         month = tmp_path / "audio" / "2026" / "09"
@@ -5078,64 +4979,32 @@ class TestNormalizePastedText:
 class TestNotifyLifecycle:
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify_close")
     def test_successful_dictation_closes_notification(
-        self,
-        mock_close,
-        mock_save,
-        mock_recording,
-        mock_stop,
-        mock_running,
-        mock_ensure,
-        mock_transcribe,
-        mock_send,
-        tmp_path,
+        self, mock_close, mock_save, mock_transcribe, mock_send, tmp_path
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         audio_dir = tmp_path / "audio"
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         mock_close.assert_called_once()
 
     @patch("digue.send_text", side_effect=RuntimeError("no display"))
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    def test_paste_failure_notifies_with_timeout(
-        self,
-        mock_save,
-        mock_recording,
-        mock_stop,
-        mock_running,
-        mock_ensure,
-        mock_transcribe,
-        mock_send,
-        tmp_path,
-        capsys,
-    ):
+    def test_paste_failure_notifies_with_timeout(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err
@@ -5144,31 +5013,14 @@ class TestNotifyLifecycle:
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
     @patch("digue.save_audio", side_effect=OSError("disk full"))
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
-    def test_save_failure_notifies_and_does_not_crash(
-        self,
-        mock_recording,
-        mock_stop,
-        mock_save,
-        mock_running,
-        mock_ensure,
-        mock_transcribe,
-        mock_send,
-        tmp_path,
-        capsys,
-    ):
+    def test_save_failure_notifies_and_does_not_crash(self, mock_save, mock_transcribe, mock_send, tmp_path, capsys):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err
@@ -5177,26 +5029,12 @@ class TestNotifyLifecycle:
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    @patch("digue.stop_recording")
-    @patch("digue.is_recording", return_value=True)
     def test_transcript_write_failure_notifies_and_prints_text(
-        self,
-        mock_recording,
-        mock_stop,
-        mock_save,
-        mock_running,
-        mock_ensure,
-        mock_transcribe,
-        mock_send,
-        tmp_path,
-        capsys,
+        self, mock_save, mock_transcribe, mock_send, tmp_path, capsys
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
-        mock_stop.return_value = rec_file
         config = digue._default_config()
         config["dictate"]["save_audio"] = False
         # point audio_dir at a file so the transcript write fails
@@ -5204,8 +5042,7 @@ class TestNotifyLifecycle:
         blocker.write_text("not a dir")
         config["dictate"]["audio_dir"] = str(blocker)
 
-        rec_file_result = mock_stop.return_value
-        result = digue.finish_dictation(config, rec_file_result)
+        result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err

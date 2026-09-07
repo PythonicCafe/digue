@@ -1385,10 +1385,6 @@ def _runtime_dir() -> Path:
     return runtime_dir
 
 
-def _pid_file() -> Path:
-    return _runtime_dir() / "digue.pid"
-
-
 def _write_state_file(path: Path, content: str) -> None:
     """Publishes a small state file in one step (temp sibling + rename).
 
@@ -1428,17 +1424,6 @@ def _rec_file() -> Path:
     import secrets
 
     return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}.wav"
-
-
-def is_recording() -> bool:
-    pid_file = _pid_file()
-    if not pid_file.exists():
-        return False
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (OSError, ValueError):
-        return False
-    return _pid_alive(pid)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1837,9 +1822,9 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     the watchdog is fork+exec (~10 ms), so identity -- the thing recovery knows
     how to act on -- is exposed the soonest. On a Popen failure the state is
     removed (no WAV, no process). The recorder runs in a new process group so
-    it survives a killed daemon; the PID file remains the recovery contract for
-    a later invocation, while the live daemon retains Popen handles so it can
-    reap both children.
+    it survives a killed daemon; the take state carries the recorder identity
+    as the recovery contract for a later invocation, while the live daemon
+    retains Popen handles so it can reap both children.
     """
     import dataclasses
     import subprocess
@@ -1847,7 +1832,6 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
 
     rec_file = _rec_file()
     take_id = new_take_id()
-    pid_file = _pid_file()
     max_duration = config["dictate"]["max_duration"]
     daemon_starttime = _process_starttime(os.getpid())
     if daemon_starttime is None:
@@ -1873,7 +1857,6 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     except Exception:
         _take_state_file(take_id).unlink(missing_ok=True)
         raise
-    _write_state_file(pid_file, str(recorder.pid))
     recorder_starttime = _process_starttime(recorder.pid)
     if recorder_starttime is None:
         # The recorder died before its identity could be read: without a
@@ -2066,12 +2049,13 @@ def stop_recording_pid(
 ) -> Path | None:
     """Stops the recorder process group `pid` and returns its audio file or None.
 
-    Used by the take's owner (the daemon that started this recorder). Never
-    touches the global pid file: with overlapping takes each daemon stops only
-    its own recorder -- a global stop would kill another take's recorder. The
-    owner passes the rec_file captured while the recorder was alive; without
-    it, the newest-runtime-wav fallback runs (single-take recovery only: with
-    concurrent takes it could grab another daemon's file). expected_starttime
+    Used by the take's owner (the daemon that started this recorder). With
+    overlapping takes each daemon stops only its own recorder -- there is no
+    global recorder state to stop, so a stop can never act on another take.
+    The owner passes the rec_file captured while the recorder was alive;
+    without it, the /proc/<pid>/fd scan (_recording_file_of) is the only
+    confirmation, and when it finds nothing (recorder already dead, its
+    descriptors closed) there is nothing to deliver. expected_starttime
     (recovery paths) revalidates before every killpg that the pid still is the
     recorder (same /proc starttime and still a process-group leader); a
     diverged identity is never signaled and the validated WAV is returned.
@@ -2094,14 +2078,6 @@ def stop_recording_pid(
         if not _group_alive(pid):
             break
 
-    if rec_file is None:
-        # fd scan found nothing (recorder already dead and descriptors closed);
-        # fall back to the newest digue-*.wav left in the runtime dir. Only for
-        # callers without a captured file: with concurrent takes this could
-        # grab another daemon's recording.
-        runtime_dir = _runtime_dir()
-        candidates = sorted(runtime_dir.glob("digue-*.wav"), key=lambda path: path.stat().st_mtime)
-        rec_file = candidates[-1] if candidates else None
     return _validate_recording_file(rec_file)
 
 
@@ -2112,23 +2088,6 @@ def _finish_owned_recorder(recorder: subprocess.Popen[bytes], rec_file: Path | N
         recorder.wait(timeout=5)
         return result
     return _validate_recording_file(rec_file)
-
-
-def stop_recording() -> Path | None:
-    """Stops the current recording (from the global pid file). Returns the audio file or None.
-
-    Recovery/legacy path: the daemon stops its own recorder via
-    stop_recording_pid; this reads the global pid file (last started recorder)
-    for callers outside the daemon flow.
-    """
-    pid_file = _pid_file()
-
-    if not pid_file.exists():
-        return None
-
-    pid = int(pid_file.read_text().strip())
-    pid_file.unlink(missing_ok=True)
-    return stop_recording_pid(pid)
 
 
 # -- Clipboard ----------------------------------------------------------------
@@ -2469,17 +2428,6 @@ def _write_daemon_state(daemon_pid: int, state: str) -> None:
     _write_state_file(_daemon_pid_file(), f"{daemon_pid} {state} {starttime}")
 
 
-def _recorder_pid_file(daemon_pid: int) -> Path:
-    """Per-take recorder pid file: this daemon owns exactly this recorder.
-
-    With overlapping takes a global recorder pid file would make one daemon's
-    wait/stop logic act on another daemon's recorder (seen in the wild: two
-    daemons waiting on the same pid; one delivered "Empty or missing audio
-    file" after the other overwrote the global pid file).
-    """
-    return _runtime_dir() / f"digue-recorder-{daemon_pid}.pid"
-
-
 def _daemon_state() -> tuple[int, str, str] | None:
     """Returns (pid, state, starttime) from the daemon file, or None.
 
@@ -2683,7 +2631,6 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     """
 
     daemon_pid = os.getpid()
-    daemon_file = _daemon_pid_file()
     with _dictate_lock():
         entry = _daemon_state()
         if entry is not None and _daemon_alive(entry):
@@ -2700,12 +2647,6 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
                 return 0
             # A delivering daemon owns its old take. A new recording may replace
             # the global state; the old daemon removes it only if it still owns it.
-        elif is_recording():
-            # Recorder alive but no daemon at all (the daemon was killed, e.g.
-            # pkill digue): recover -- stop and deliver what kept recording.
-            rec_file = stop_recording()
-            daemon_file.unlink(missing_ok=True)
-            return finish_dictation(config, rec_file).exit_code
         # Only with no current recording does the toggle look at orphan takes:
         # an old orphan must never keep the user from stopping the live one.
         claimed = _claim_orphan_take()
@@ -2784,12 +2725,9 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         _remove_daemon_state(daemon_pid)
         return 1
     recorder_pid = processes.recorder.pid
-    recorder_file = _recorder_pid_file(daemon_pid)
-    _write_state_file(recorder_file, str(recorder_pid))
     _write_daemon_state(daemon_pid, "recording")
     # capture the recording file while the recorder is alive: the fd scan is
-    # deterministic here; after death the fallback could grab another
-    # concurrent take's file (overlap scenario C).
+    # deterministic here and identifies the file after an unexpected death.
     rec_file = processes.rec_file or _recording_file_of(recorder_pid)
     outcome = _wait_recorder_end_daemon(processes.recorder, limit)
     _got_sigterm = False
@@ -2801,9 +2739,6 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     notify_close()
     rec_file = _finish_owned_recorder(processes.recorder, rec_file)
     _cancel_watchdog(processes.watchdog)
-    recorder_file.unlink(missing_ok=True)
-    if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
-        _pid_file().unlink(missing_ok=True)
     try:
         own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
