@@ -5070,6 +5070,23 @@ class TestSaveAudioConfig:
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
+    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    def test_finish_dictation_does_not_detect_hardware_for_a_local_backend(
+        self, mock_save, mock_transcribe, mock_send, tmp_path
+    ):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        with patch("digue.detect_backend") as mock_detect:
+            digue.finish_dictation(config, rec_file)
+
+        mock_detect.assert_not_called()
+        assert mock_save.call_args[1]["backend"] != "remote"
+
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
     @patch("digue.save_audio")
     def test_save_audio_false_skips_wav_but_writes_txt(self, mock_save, mock_transcribe, mock_send, tmp_path):
         rec_file = tmp_path / "rec.wav"
