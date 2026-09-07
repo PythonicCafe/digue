@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
+from digue import cli as cli_mod
 from digue import config as config_mod
 from digue import container as container_mod
 
@@ -69,7 +69,7 @@ class TestLoadConfig:
             patch.object(sys, "argv", ["digue", "--config", str(config_path), "config", "show"]),
             pytest.raises(SystemExit) as exc_info,
         ):
-            digue.main()
+            cli_mod.main()
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
@@ -355,7 +355,7 @@ class TestConfigStructureValidation:
             patch.object(sys, "argv", ["digue", "--config", str(config_path), "config", "show"]),
             pytest.raises(SystemExit) as exc_info,
         ):
-            digue.main()
+            cli_mod.main()
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "Error: failed to load configuration" in err

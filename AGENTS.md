@@ -7,14 +7,14 @@
 - Test: `pytest tests/ -v --tb=short` (or `make test`)
 - Type check: `mypy` (strict, configured in pyproject; or `make mypy`)
 - Lint: `ruff check . --fix && ruff format --line-length 120` (or `make lint`)
-- Run: `python -m digue dictate` (toggle dictation), `python -m digue detect` etc.
+- Run: `python -m digue dictate` (toggle dictation), `python -m digue detect` etc. Console script entry: `digue.cli:main`.
 - Smoke test after building a wheel: `make smoke-wheel`. It installs the wheel into a temporary virtual environment, with no runtime dependencies, and runs the installed `digue --version` and `digue config show` entrypoint.
 - All of the above have `make` targets (`make help`); `make check` runs lint-check + mypy + test.
 
 ## Conventions
 
 - **Stdlib only.** No external runtime dependencies. `tomllib` (3.11+), `urllib.request`, `subprocess`, `pathlib`.
-- **Package.** Submodules live under `digue/`. Version is `digue.__version__`. Run via `python -m digue` or the `digue` console script. Current modules: `__init__.py` (remaining logic), `config.py` (load/validate/config command), `notify.py` (`send_notification`, `notify_close`, `_stderr_is_tty`), `container.py` (backend, Docker, download, server, doctor), `transcribe.py` (HTTP, language, VTT, transcribe/batch commands), `convert.py` (subtitle format conversion), `recording.py` (capture, take state, orphan recovery), `delivery.py` (clipboard paste/type), `audio.py` (compress/save/rescue/clean), `dictate.py` (daemon, toggle, delivery flow), `benchmark.py` (backend comparison), `__main__.py`.
+- **Package.** Submodules live under `digue/`. Version is `digue.__version__`. Run via `python -m digue` or the `digue` console script. Current modules: `__init__.py` (remaining logic), `config.py` (load/validate/config command), `notify.py` (`send_notification`, `notify_close`, `_stderr_is_tty`), `container.py` (backend, Docker, download, server, doctor), `transcribe.py` (HTTP, language, VTT, transcribe/batch commands), `convert.py` (subtitle format conversion), `recording.py` (capture, take state, orphan recovery), `delivery.py` (clipboard paste/type), `audio.py` (compress/save/rescue/clean), `dictate.py` (daemon, toggle, delivery flow), `benchmark.py` (backend comparison), `cli.py` (parser and `main`), `__main__.py`.
 - **English everywhere.** README, docstrings, comments, CLI help text, notifications, commit messages -- all English.
 - **`pathlib.Path` always.** Never `os.path`.
 - **Modern type hints.** `str | None`, `list[Path]` -- not `Optional`, `List`.

@@ -36,7 +36,7 @@ Repository = "https://github.com/turicas/digue"
 Issues = "https://github.com/turicas/digue/issues"
 
 [project.scripts]
-digue = "digue:main"
+digue = "digue.cli:main"
 
 [tool.setuptools]
 packages = ["digue"]

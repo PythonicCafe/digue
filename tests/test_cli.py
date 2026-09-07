@@ -8,12 +8,13 @@ from pathlib import Path
 import pytest
 
 import digue
+from digue import cli as cli_mod
 from digue.config import load_config
 
 
 class TestCreateParser:
     def test_all_subcommands_parse(self):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         for cmd in ("detect", "download", "dictate", "config", "benchmark"):
             args = parser.parse_args([cmd])
             assert args.command == cmd
@@ -22,14 +23,14 @@ class TestCreateParser:
             assert args.command == "server" and args.server_action == action
 
     def test_version_flag(self, capsys):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         with pytest.raises(SystemExit) as excinfo:
             parser.parse_args(["--version"])
         assert excinfo.value.code == 0
         assert digue.__version__ in capsys.readouterr().out
 
     def test_convert_subcommand(self):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         args = parser.parse_args(["convert", "a.vtt", "b.txt"])
         assert args.command == "convert"
         assert args.input == "a.vtt"
@@ -39,19 +40,19 @@ class TestCreateParser:
 
     @pytest.mark.parametrize("output_format", ("vtt", "srt"))
     def test_convert_to_format_accepts_subtitle_formats(self, output_format):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         args = parser.parse_args(["convert", "a.txt", "--to-format", output_format])
         assert args.to_format == output_format
 
     def test_convert_to_format_help_lists_all_real_formats(self, capsys):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         with pytest.raises(SystemExit) as excinfo:
             parser.parse_args(["convert", "--help"])
         assert excinfo.value.code == 0
         assert "vtt, srt, timestamps, text" in capsys.readouterr().out
 
     def test_transcribe_subcommand(self, tmp_path):
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         args = parser.parse_args(["transcribe", "test.wav", "-f", "vtt", "-o", "out.vtt"])
         assert args.command == "transcribe"
         assert args.response_format == "vtt"
@@ -74,13 +75,13 @@ class TestCreateParser:
         assert config["transcribe"]["language"] == "it"
 
         # argparse-level: the global option precedes the subcommand
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         args = parser.parse_args(["-c", str(config_path), "transcribe", "audio.wav"])
         assert args.config == str(config_path)
 
     def test_custom_config_before_subcommand_only(self, tmp_path):
         # After the subcommand, -c belongs to the subcommand (argparse default)
-        parser = digue.create_parser()
+        parser = cli_mod.create_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["transcribe", "-c", "/tmp/x.toml", "audio.wav"])
 
@@ -89,7 +90,7 @@ class TestCreateParser:
         # help instead of toggling recording out of nowhere.
         monkeypatch.setattr("sys.argv", ["digue"])
         with pytest.raises(SystemExit) as excinfo:
-            digue.main()
+            cli_mod.main()
         assert excinfo.value.code == 1
         assert "usage" in capsys.readouterr().out.lower()
 
@@ -98,7 +99,7 @@ class TestCreateParser:
         # TOML); with no action it must show the config subcommand help.
         monkeypatch.setattr("sys.argv", ["digue", "-c", str(tmp_path / "none.toml"), "config"])
         with pytest.raises(SystemExit) as excinfo:
-            digue.main()
+            cli_mod.main()
         assert excinfo.value.code == 1
         out = capsys.readouterr().out
         assert "usage: digue config" in out
@@ -171,17 +172,17 @@ class TestModuleImports:
 
 class TestExistingDir:
     def test_valid_dir(self, tmp_path):
-        result = digue._existing_dir(str(tmp_path))
+        result = cli_mod._existing_dir(str(tmp_path))
         assert result == tmp_path
 
     def test_invalid_dir(self):
         with pytest.raises(argparse.ArgumentTypeError, match="not found"):
-            digue._existing_dir("/nonexistent/path")
+            cli_mod._existing_dir("/nonexistent/path")
 
 
 class TestFormatExtension:
     def test_all_formats(self):
-        assert digue._format_extension("text") == ".txt"
-        assert digue._format_extension("vtt") == ".vtt"
-        assert digue._format_extension("srt") == ".srt"
-        assert digue._format_extension("timestamps") == ".txt"
+        assert cli_mod._format_extension("text") == ".txt"
+        assert cli_mod._format_extension("vtt") == ".vtt"
+        assert cli_mod._format_extension("srt") == ".srt"
+        assert cli_mod._format_extension("timestamps") == ".txt"

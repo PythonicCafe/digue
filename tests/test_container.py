@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-import digue
+from digue import cli as cli_mod
 from digue import container as container_mod
 from digue import dictate as dictate_mod
 from digue import notify as notify_mod
@@ -106,7 +106,7 @@ class TestDockerMissing:
             patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", "docker")),
             pytest.raises(SystemExit) as exc_info,
         ):
-            digue.main()
+            cli_mod.main()
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "Error: docker not found" in err

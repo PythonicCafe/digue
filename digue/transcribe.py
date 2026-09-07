@@ -718,7 +718,7 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
 def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import time
 
-    from digue import _format_extension
+    from digue.cli import _format_extension
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
     from digue.convert import _convert_content
 
