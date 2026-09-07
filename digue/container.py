@@ -337,23 +337,34 @@ def is_server_running(config: dict[str, dict[str, Any]]) -> bool:
 def _wait_for_server(config: dict[str, dict[str, Any]], verbose: bool = False) -> bool:
     """Waits for server to respond. Returns True if successful.
 
-    When verbose=True, prints elapsed time to stderr every 10 seconds.
+    When verbose=True, prints elapsed time to stderr every 10 seconds: one
+    redrawn line on a TTY, plain lines on a captured stderr (the same
+    contract as the download progress and `send_notification`).
     """
     import time
 
+    from digue.notify import _stderr_is_tty
+
+    tty = _stderr_is_tty()
     start = time.perf_counter()
     for attempt in range(SERVER_STARTUP_TIMEOUT):
         time.sleep(1)
         if is_server_running(config):
             if verbose:
                 elapsed = time.perf_counter() - start
-                print(f"\rServer ready ({elapsed:.0f}s)          ", file=sys.stderr)
+                prefix = "\r" if tty else ""
+                padding = " " * 10 if tty else ""
+                print(f"{prefix}Server ready ({elapsed:.0f}s){padding}", file=sys.stderr)
             return True
         if verbose and attempt > 0 and attempt % 10 == 0:
             elapsed = time.perf_counter() - start
-            print(f"\r  Waiting for model to load... {elapsed:.0f}s", end="", file=sys.stderr, flush=True)
+            message = f"  Waiting for model to load... {elapsed:.0f}s"
+            if tty:
+                print(f"\r{message}", end="", file=sys.stderr, flush=True)
+            else:
+                print(message, file=sys.stderr, flush=True)
 
-    if verbose:
+    if verbose and tty:
         print(file=sys.stderr)
     return False
 

@@ -433,6 +433,32 @@ class TestIsServerRunning:
         assert container_mod.is_server_running(config) is False
 
 
+class TestWaitForServerOutput:
+    """Same contract as every other progress print: \\r redraws only on a
+    TTY; a captured stderr (hotkey daemon, journal) gets plain lines."""
+
+    def run_wait(self, tty, capsys):
+        answers = iter([False] * 12 + [True])
+        with (
+            patch("digue.container.is_server_running", side_effect=lambda _config: next(answers)),
+            patch("digue.notify._stderr_is_tty", return_value=tty),
+            patch("time.sleep"),
+        ):
+            assert container_mod._wait_for_server(_default_config(), verbose=True) is True
+        return capsys.readouterr().err
+
+    def test_captured_stderr_gets_plain_lines(self, capsys):
+        err = self.run_wait(tty=False, capsys=capsys)
+        assert "\r" not in err
+        assert err.endswith("\n")
+        assert "Waiting for model to load" in err and "Server ready" in err
+
+    def test_tty_redraws_the_same_line(self, capsys):
+        err = self.run_wait(tty=True, capsys=capsys)
+        assert "\r  Waiting for model to load" in err
+        assert "\rServer ready" in err
+
+
 class TestServerHost:
     @pytest.mark.parametrize(
         ("bind_ip", "expected"),
