@@ -9,8 +9,6 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import digue
 
 # -- Recording ----------------------------------------------------------------

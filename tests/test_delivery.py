@@ -1,14 +1,10 @@
 """Tests for send_text, delivery lock, paste normalization, and post-delivery archive."""
 
 import subprocess
-import sys
 import threading
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import digue
 

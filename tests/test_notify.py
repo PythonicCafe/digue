@@ -1,11 +1,7 @@
 """Tests for desktop notifications and their lifecycle."""
 
 import subprocess
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import digue
 

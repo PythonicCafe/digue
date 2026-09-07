@@ -2,13 +2,10 @@
 
 import math
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import digue
 
