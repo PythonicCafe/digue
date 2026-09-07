@@ -1478,6 +1478,7 @@ class RecordingProcesses:
     recorder: subprocess.Popen[bytes]
     watchdog: subprocess.Popen[bytes] | None
     rec_file: Path | None = None
+    take_id: str | None = None
 
 
 TAKE_STATE_VERSION = 1
@@ -1640,28 +1641,101 @@ def _take_states() -> list[TakeState]:
     return sorted(states, key=lambda take: (take.created_at_ns, take.take_id))
 
 
+ORPHAN_STARTING_MIN_AGE_SECONDS = 60
+
+
+def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) -> Path | None:
+    """Conservative recovery for a "starting" take whose daemon died (e.g. it
+    was killed between publishing the state and registering the recorder).
+
+    No /proc/*/fd scanning (complex, racy, and it yields no identity). Rules:
+    while the daemon is alive or the state is younger than
+    ORPHAN_STARTING_MIN_AGE_SECONDS, nothing happens; after that, a missing or
+    empty WAV expires together with its state, and a non-empty WAV is rescued
+    (never transcribed/pasted automatically: the recorder may still be
+    writing). Returns the rescued path or None.
+    """
+    import time
+
+    if _pid_alive(take.daemon_pid) and _process_starttime(take.daemon_pid) == str(take.daemon_starttime):
+        return None
+    age_seconds = (time.time_ns() - take.created_at_ns) / 1e9
+    if age_seconds < ORPHAN_STARTING_MIN_AGE_SECONDS:
+        return None
+    state_file = _take_state_file(take.take_id)
+    if not take.rec_file.exists() or take.rec_file.stat().st_size == 0:
+        take.rec_file.unlink(missing_ok=True)
+        state_file.unlink(missing_ok=True)
+        return None
+    rescued = rescue_recording(take.rec_file, config["dictate"]["audio_dir"], now_timestamp(), take.take_id)
+    state_file.unlink(missing_ok=True)
+    if rescued is not None:
+        notify(
+            f"A recording whose daemon died while starting was recovered; audio kept at {rescued}",
+            timeout_ms=10000,
+        )
+    return rescued
+
+
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     """Starts the recorder and safety watchdog, returning their owned handles.
 
-    The recorder runs in a new process group so it survives a killed daemon.
-    The PID file remains the recovery contract for a later invocation, while
-    the live daemon retains Popen handles so it can reap both children.
+    The take identity is published before the recorder exists (starting), and
+    the recorder identity is published before the watchdog is spawned
+    (recording): publishing the state is two syscalls (~50 us) while spawning
+    the watchdog is fork+exec (~10 ms), so identity -- the thing recovery knows
+    how to act on -- is exposed the soonest. On a Popen failure the state is
+    removed (no WAV, no process). The recorder runs in a new process group so
+    it survives a killed daemon; the PID file remains the recovery contract for
+    a later invocation, while the live daemon retains Popen handles so it can
+    reap both children.
     """
+    import dataclasses
     import subprocess
+    import time
 
     rec_file = _rec_file()
+    take_id = new_take_id()
     pid_file = _pid_file()
     max_duration = config["dictate"]["max_duration"]
-    argv = recording_command(rec_file, recorder=config["dictate"]["recorder"])
-    recorder = subprocess.Popen(
-        argv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    daemon_starttime = _process_starttime(os.getpid())
+    if daemon_starttime is None:
+        raise RuntimeError("Cannot identify the current process via /proc")
+    state = TakeState(
+        version=TAKE_STATE_VERSION,
+        take_id=take_id,
+        created_at_ns=time.time_ns(),
+        state="starting",
+        rec_file=rec_file,
+        daemon_pid=os.getpid(),
+        daemon_starttime=int(daemon_starttime),
     )
+    _write_take_state(state)
+    argv = recording_command(rec_file, recorder=config["dictate"]["recorder"])
+    try:
+        recorder = subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        _take_state_file(take_id).unlink(missing_ok=True)
+        raise
     _write_state_file(pid_file, str(recorder.pid))
+    recorder_starttime = _process_starttime(recorder.pid)
+    if recorder_starttime is None:
+        # The recorder died before its identity could be read: without a
+        # verifiable recorder identity the state cannot move to "recording".
+        _take_state_file(take_id).unlink(missing_ok=True)
+    else:
+        _write_take_state(
+            dataclasses.replace(
+                state, state="recording", recorder_pid=recorder.pid, recorder_starttime=int(recorder_starttime)
+            )
+        )
     watchdog = _spawn_limit_watchdog(recorder.pid, max_duration) if max_duration > 0 else None
-    return RecordingProcesses(recorder=recorder, watchdog=watchdog, rec_file=rec_file)
+    return RecordingProcesses(recorder=recorder, watchdog=watchdog, rec_file=rec_file, take_id=take_id)
 
 
 def _process_starttime(pid: int, stat_path: Path | None = None) -> str | None:
@@ -2415,6 +2489,10 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             return finish_dictation(config, rec_file)
         _write_daemon_state(daemon_pid, "starting")
 
+    for take in _take_states():
+        if take.state == "starting":
+            _expire_orphan_starting(config, take)
+
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
@@ -2476,9 +2554,11 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
         _pid_file().unlink(missing_ok=True)
     try:
-        return finish_dictation(config, rec_file, limit_reached=outcome == "limit")
+        return finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
+        if processes.take_id is not None:
+            _take_state_file(processes.take_id).unlink(missing_ok=True)
 
 
 # -- Benchmark ----------------------------------------------------------------

@@ -1142,6 +1142,217 @@ class TestStartRecording:
         mock_watchdog.assert_called_once_with(777, 300)
 
 
+class TestStartRecordingPublishesTakeState:
+    """The take identity is published before the recorder exists and gains the
+    recorder identity before the watchdog is spawned: publishing the state is
+    two syscalls (~50 us) while spawning the watchdog is fork+exec (~10 ms), so
+    a recorder with identity (which recovery knows how to stop) is the state
+    that is exposed the soonest."""
+
+    @patch("digue._spawn_limit_watchdog")
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen")
+    def test_publishes_starting_before_popen(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
+        import os
+
+        states_at_popen = []
+        recorder = MagicMock(pid=os.getpid())
+
+        def fake_popen(*args, **kwargs):
+            states_at_popen.extend(digue._take_states())
+            return recorder
+
+        mock_popen.side_effect = fake_popen
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+        config["dictate"]["max_duration"] = 0
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            processes = digue.start_recording(config)
+
+        assert [take.state for take in states_at_popen] == ["starting"]
+        assert processes.take_id == states_at_popen[0].take_id
+        assert processes.rec_file == states_at_popen[0].rec_file
+
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen")
+    def test_publishes_recording_with_identity_before_watchdog(self, mock_popen, mock_pid_file, tmp_path):
+        import os
+
+        states_at_watchdog = []
+        recorder = MagicMock(pid=os.getpid())
+
+        def fake_watchdog(pgid, max_duration):
+            states_at_watchdog.extend(digue._take_states())
+            return MagicMock(pid=9999)
+
+        mock_popen.return_value = recorder
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+        config["dictate"]["max_duration"] = 300
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._spawn_limit_watchdog", side_effect=fake_watchdog),
+        ):
+            processes = digue.start_recording(config)
+
+        assert processes.take_id is not None
+        assert [take.state for take in states_at_watchdog] == ["recording"]
+        take = states_at_watchdog[0]
+        assert take.recorder_pid == recorder.pid
+        assert take.recorder_starttime == int(digue._process_starttime(os.getpid()))
+
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen", side_effect=FileNotFoundError("pw-record"))
+    def test_popen_failure_removes_state(self, mock_popen, mock_pid_file, tmp_path):
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+
+        with patch("digue._runtime_dir", return_value=tmp_path), pytest.raises(FileNotFoundError):
+            digue.start_recording(config)
+
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_toggle_publishes_take_state_and_removes_it_after_delivery(self, tmp_path):
+        import os
+
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["max_duration"] = 0
+        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+        finish_take_ids = []
+
+        def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
+            finish_take_ids.append(take_id)
+            assert [take.state for take in digue._take_states()] == ["recording"]
+            return 0
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.is_recording", return_value=False),
+            patch("subprocess.Popen", return_value=recorder),
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.notify"),
+            patch("digue.notify_close"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        assert len(finish_take_ids) == 1 and finish_take_ids[0] is not None
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+
+class TestOrphanStartingTake:
+    """A daemon that died between publishing 'starting' and registering the
+    recorder leaves an orphaned state. Recovery is conservative (no /proc fd
+    scanning): recent states are left alone, a missing/empty WAV expires with
+    its state, and a non-empty WAV is rescued (never transcribed/pasted
+    automatically -- the recorder may still be writing)."""
+
+    def make_starting_take(self, tmp_path, age_seconds, rec_file=None, daemon_pid=999999, daemon_starttime=1):
+        import time
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            take = digue.TakeState(
+                version=digue.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=time.time_ns() - int(age_seconds * 1e9),
+                state="starting",
+                rec_file=rec_file or tmp_path / "digue-recording.wav",
+                daemon_pid=daemon_pid,
+                daemon_starttime=daemon_starttime,
+            )
+            digue._write_take_state(take)
+        return take
+
+    def test_expired_orphan_without_wav_is_removed(self, tmp_path):
+
+        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1)
+        config = digue._default_config()
+
+        with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
+            rescued = digue._expire_orphan_starting(config, take)
+
+        assert rescued is None
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_expired_orphan_with_wav_is_rescued(self, tmp_path):
+
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
+            rescued = digue._expire_orphan_starting(config, take)
+
+        assert rescued is not None and rescued.read_bytes() == b"audio"
+        assert rescued.name.endswith("-0123456789abcdef.wav")
+        assert not rec_file.exists()
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_recent_orphan_is_left_alone(self, tmp_path):
+        take = self.make_starting_take(tmp_path, age_seconds=1)
+        config = digue._default_config()
+
+        with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
+            assert digue._expire_orphan_starting(config, take) is None
+
+        assert len(list(tmp_path.glob("digue-take-*.json"))) == 1
+
+    def test_orphan_with_alive_daemon_is_left_alone(self, tmp_path):
+
+        take = self.make_starting_take(
+            tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1, daemon_starttime=555
+        )
+        config = digue._default_config()
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", return_value=True),
+            patch("digue._process_starttime", return_value="555"),
+        ):
+            assert digue._expire_orphan_starting(config, take) is None
+
+        assert len(list(tmp_path.glob("digue-take-*.json"))) == 1
+
+    def test_toggle_rescues_expired_orphan_starting_take(self, tmp_path):
+        import os
+
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1, rec_file=rec_file)
+        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.is_recording", return_value=False),
+            patch("subprocess.Popen", return_value=recorder),
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.finish_dictation", return_value=0),
+            patch("digue.notify"),
+            patch("digue.notify_close"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        rescued = list((tmp_path / "audio").rglob("*-0123456789abcdef.wav"))
+        assert len(rescued) == 1
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+
 class TestSpawnLimitWatchdog:
     @patch("digue._process_starttime", return_value="98765")
     @patch("subprocess.Popen")
