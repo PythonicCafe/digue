@@ -40,7 +40,7 @@ class TestCreateParser:
             False,
         )
 
-        args = parser.parse_args(["benchmark", "--sample", "-b", "amd", "cpu", "-m", "medium", "-n", "2", "--json"])
+        args = parser.parse_args(["benchmark", "--sample", "-b", "amd", "cpu", "-m", "medium", "-r", "2", "--json"])
         assert args.sample is True and args.backends == ["amd", "cpu"] and args.models == ["medium"]
         assert args.runs == 2 and args.json is True
 
@@ -48,7 +48,7 @@ class TestCreateParser:
 
     def test_benchmark_rejects_bad_values(self, capsys):
         parser = cli_mod.create_parser()
-        for argv in (["-m", "giant"], ["-b", "gpu"], ["-n", "0"], ["-n", "x"], ["--sample", "audio.wav"]):
+        for argv in (["-m", "giant"], ["-b", "gpu"], ["-r", "0"], ["-r", "x"], ["--sample", "audio.wav"]):
             with pytest.raises(SystemExit):
                 parser.parse_args(["benchmark", *argv])
         assert "remote" not in parser.parse_args(["benchmark", "-b", "cpu"]).backends

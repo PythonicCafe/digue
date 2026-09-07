@@ -71,7 +71,7 @@ cpu = "small-q8_0"              # same family as the cpu default, half the file
 The model is a file in `<data-dir>/models` mounted into the container, but its name is fixed in the container's command line, so after changing `[models]` recreate the container: `digue server destroy && digue server start` (the missing file is downloaded first). To compare before committing to a change:
 
 ```bash
-digue benchmark --sample -b amd -m large-v3-turbo large-v3-turbo-q8_0 large-v3-turbo-q5_0 -n 5
+digue benchmark --sample -b amd -m large-v3-turbo large-v3-turbo-q8_0 large-v3-turbo-q5_0 -r 5
 digue benchmark --sample -b cpu -m small small-q8_0 medium-q8_0 medium-q5_0
 ```
 
@@ -249,7 +249,7 @@ digue benchmark                      # quick: resolved backend + cpu, small + la
 digue benchmark audio.wav            # same, with an existing audio file
 digue benchmark --sample             # same, with the whisper.cpp JFK sample (downloaded once)
 digue benchmark --sample -m all      # every model on the default backends
-digue benchmark -b amd cpu -m medium -n 5 --json   # pick backends/models/runs; JSON results on stdout
+digue benchmark -b amd cpu -m medium -r 5 --json   # pick backends/models/runs; JSON results on stdout
 ```
 
 

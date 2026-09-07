@@ -97,7 +97,7 @@ def create_parser() -> argparse.ArgumentParser:
     sub_server_start.add_argument(
         "-n",
         "--container-name",
-        metavar="name",
+        metavar="NAME",
         default=None,
         help="Docker container name (overrides server.container-name; default: digue-whisper.cpp)",
     )
@@ -245,7 +245,7 @@ def create_parser() -> argparse.ArgumentParser:
         'or "all" for every model',
     )
     sub_benchmark.add_argument(
-        "-n",
+        "-r",
         "--runs",
         type=_positive_int,
         default=BENCHMARK_RUNS,

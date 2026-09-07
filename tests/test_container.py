@@ -289,15 +289,19 @@ class TestCmdModels:
         models_dir.mkdir()
         (models_dir / "ggml-small.bin").write_bytes(b"x")
 
+        config["server"]["backend"] = "cpu"  # resolves to small-q8_0: the starred line
+
         assert container_mod.cmd_models(MagicMock(), config) == 0
 
         out = capsys.readouterr().out
-        by_name = {line.split()[0]: line for line in out.splitlines() if line.strip()}
+        by_name = {line[2:].split()[0]: line for line in out.splitlines() if line.strip()}
         assert list(by_name) == list(AVAILABLE_MODELS)
         assert "downloaded" in by_name["small"]
         assert "downloaded" not in by_name["tiny"]
         assert "74 MB" in by_name["tiny"]
         assert "547 MB" in by_name["large-v3-turbo-q5_0"]
+        assert by_name["small-q8_0"].startswith("* ")
+        assert all(line.startswith("  ") for name, line in by_name.items() if name != "small-q8_0")
 
 
 class TestImageExists:

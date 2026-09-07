@@ -605,17 +605,21 @@ def cmd_detect(args: argparse.Namespace) -> int:
 
 
 def cmd_models(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    """Lists every model `digue` accepts, with size and whether it is already downloaded."""
+    """Lists every model `digue` accepts, with size, whether it is already
+    downloaded, and a `*` on the one this machine's backend resolves to."""
     from digue import AVAILABLE_MODELS
     from digue.benchmark import MODEL_SIZES_MB
 
     models_dir = Path(config["server"]["data_dir"]) / "models"
+    backend = resolve_backend(config)
+    selected = model_for_backend(backend, config) if backend != "remote" else None
     width = max(len(name) for name in AVAILABLE_MODELS)
     for name in AVAILABLE_MODELS:
-        size = MODEL_SIZES_MB.get(name)
-        size_text = f"{size} MB" if isinstance(size, int) else "?"
-        marker = "  downloaded" if (models_dir / f"ggml-{name}.bin").exists() else ""
-        print(f"{name:<{width}}  {size_text}{marker}")
+        marker = "*" if name == selected else " "
+        downloaded = "  downloaded" if (models_dir / f"ggml-{name}.bin").exists() else ""
+        print(f"{marker} {name:<{width}}  {MODEL_SIZES_MB[name]:>5} MB{downloaded}")
+    if selected is not None:
+        print(f"\n* selected for backend {backend} ([models] {backend})", file=sys.stderr)
     return 0
 
 
