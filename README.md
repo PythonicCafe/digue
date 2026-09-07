@@ -294,7 +294,9 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # -- Per-host overrides (version this file in your dotfiles) -------------------
 # [host.<hostname>][section] tables override the global sections of the same
 # name on that machine only (defaults < global < host). The hostname matches
-# exactly, or without the domain part (thinkpad matches thinkpad.local).
+# exactly, or without the domain part on either side (thinkpad matches
+# "thinkpad.local" and vice versa; two tables differing only by domain are
+# rejected as ambiguous).
 # Hostnames containing dots must be quoted, or TOML parses each dot as a
 # nested table and the file is rejected: [host."minipc.local".server]
 # Example:

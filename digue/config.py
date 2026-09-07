@@ -71,9 +71,13 @@ def _merge_section(target: dict[str, Any], source: dict[str, Any]) -> None:
 def _host_overrides(user_config: dict[str, Any]) -> dict[str, Any]:
     """Returns the [host.<this-hostname>] tables from the user config, or {}.
 
-    Matches the exact hostname first; then tries without the domain part
-    (e.g. "thinkpad" matches "thinkpad.local"). gethostname() is in-memory
-    (microseconds), so calling it on every run adds no startup delay.
+    Matched with or without the domain part, in both directions: the exact
+    hostname first, then the hostname without its domain as an exact table
+    name, then a table name whose own first label equals the short hostname
+    (a dotfile written with the FQDN, a machine whose gethostname() returns
+    the short name). Two tables matching only by short name is ambiguous and
+    rejected. gethostname() is in-memory (microseconds), so calling it on
+    every run adds no startup delay.
     """
     hosts = user_config.get("host")
     if not isinstance(hosts, dict):
@@ -81,10 +85,20 @@ def _host_overrides(user_config: dict[str, Any]) -> dict[str, Any]:
     import socket
 
     hostname = socket.gethostname()
-    for candidate in (hostname, hostname.split(".")[0]):
+    short_hostname = hostname.split(".")[0]
+    for candidate in (hostname, short_hostname):
         if candidate in hosts and isinstance(hosts[candidate], dict):
             override: dict[str, Any] = hosts[candidate]
             return override
+    by_short_name = [
+        name for name, table in hosts.items() if isinstance(table, dict) and name.split(".")[0] == short_hostname
+    ]
+    if len(by_short_name) > 1:
+        listing = ", ".join(f'"{name}"' for name in by_short_name)
+        raise ValueError(f'Hostname "{hostname}" is ambiguous between [host] tables {listing}; use the exact name')
+    if by_short_name:
+        short_override: dict[str, Any] = hosts[by_short_name[0]]
+        return short_override
     return {}
 
 
@@ -318,7 +332,9 @@ CONFIG_TEMPLATE = """\
 # -- Per-host overrides (version this file in your dotfiles) -------------------
 # [host.<hostname>][section] tables override the global sections of the same
 # name on that machine only (defaults < global < host). The hostname matches
-# exactly, or without the domain part (thinkpad matches thinkpad.local).
+# exactly, or without the domain part on either side (thinkpad matches
+# "thinkpad.local" and vice versa; two tables differing only by domain are
+# rejected as ambiguous).
 # Hostnames containing dots must be quoted, or TOML parses each dot as a
 # nested table and the file is rejected: [host."minipc.local".server]
 # Example:

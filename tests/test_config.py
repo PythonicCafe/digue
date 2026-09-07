@@ -140,6 +140,50 @@ class TestHostOverrides:
             cfg = config.load_config(config_path)
         assert cfg["server"]["backend"] == "remote"
 
+    def test_matches_a_qualified_table_name_from_a_short_hostname(self, tmp_path):
+        """The documented rule is "with or without its domain part" in both
+        directions: a dotfile written with the FQDN must apply on a machine
+        whose gethostname() returns only the short name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host."laptop.company.com".server]
+            backend = "remote"
+        """)
+        )
+        with patch("socket.gethostname", return_value="laptop"):
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "remote"
+
+    def test_exact_table_wins_over_a_short_name_match(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host."laptop.company.com".server]
+            backend = "remote"
+
+            [host.laptop.server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="laptop.company.com"):
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "remote"
+
+    def test_ambiguous_short_name_match_is_an_error(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host."laptop.home".server]
+            backend = "remote"
+
+            [host."laptop.work".server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="laptop"), pytest.raises(ValueError, match="ambiguous"):
+            config.load_config(config_path)
+
     def test_ignores_other_hosts(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text(
