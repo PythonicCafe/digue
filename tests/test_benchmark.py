@@ -246,6 +246,20 @@ class TestBenchmarkRespectsConfig:
         assert f"Image: {container_mod.DOCKER_IMAGES['cpu']}" in err
         assert "Image: x" in err
 
+    @patch("subprocess.Popen")
+    def test_ctrl_c_during_the_countdown_stops_the_recorder(self, mock_popen, tmp_path):
+        """The recorder here is not in its own session group (unlike a
+        dictation take), so a KeyboardInterrupt in the sleep used to leave
+        pw-record recording with nobody to stop it."""
+        recorder = MagicMock()
+        mock_popen.return_value = recorder
+
+        with patch("time.sleep", side_effect=KeyboardInterrupt), pytest.raises(KeyboardInterrupt):
+            benchmark_mod.record_benchmark_audio(tmp_path / "bench.wav", config=_default_config())
+
+        recorder.terminate.assert_called_once()
+        recorder.wait.assert_called_once()
+
     @patch("time.sleep")
     @patch("subprocess.Popen")
     def test_microphone_recording_uses_the_configured_recorder(self, mock_popen, mock_sleep, tmp_path):

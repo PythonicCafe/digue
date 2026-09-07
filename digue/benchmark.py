@@ -261,9 +261,16 @@ def record_benchmark_audio(
         recording_command(output_path, recorder=recorder, device=device),
         start_new_session=False,
     )
-    time.sleep(duration_seconds)
+    try:
+        time.sleep(duration_seconds)
+    except BaseException:
+        # Ctrl+c during the countdown: the recorder is not in our session
+        # group here, so nothing else would stop it
+        proc.terminate()
+        proc.wait(timeout=5)
+        raise
     proc.terminate()
-    time.sleep(0.5)
+    proc.wait(timeout=5)
     print(f"Recorded: {output_path}", file=sys.stderr)
 
 
