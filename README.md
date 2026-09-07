@@ -458,7 +458,7 @@ text = digue.transcribe_file("meeting.wav")  # starts the server if needed
 digue.record_to("take.flac", seconds=8, config=config)
 ```
 
-`transcribe_file` uses `[transcribe]` (language, prompt, output-format). `record_to` uses `[dictate]` `recorder` / `device`, and writes FLAC natively when the path ends in `.flac` and `pw-record` supports that container. A recorder that exits at start raises `RuntimeError` with its stderr.
+`transcribe_file` uses `[transcribe]` (language, prompt, output-format). `record_to` uses `[dictate]` `recorder` / `device`, and writes FLAC natively when the path ends in `.flac` and `pw-record` supports that container; otherwise (arecord, or a `pw-record` without the flac container) it records WAV under the same stem, says so on stderr, and returns the `.wav` path -- always use the returned path. A recorder that exits at start raises `RuntimeError` with its stderr.
 
 ## Tests
 

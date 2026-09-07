@@ -134,6 +134,12 @@ def _pw_record_supports_flac() -> bool:
     return "flac" in containers
 
 
+def _native_flac_available(config: dict[str, dict[str, Any]]) -> bool:
+    """True when the configured recorder can write the flac container itself
+    (pw-record with a libsndfile that has it; arecord never can)."""
+    return _resolve_recorder(config["dictate"]["recorder"]) == "pw-record" and _pw_record_supports_flac()
+
+
 def _live_recording_suffix(config: dict[str, dict[str, Any]]) -> str:
     """Suffix of the live take file: .flac when pw-record can write it, else .wav.
 
@@ -142,11 +148,7 @@ def _live_recording_suffix(config: dict[str, dict[str, Any]]) -> str:
     """
     if config["dictate"]["audio_format"] != "flac":
         return ".wav"
-    if _resolve_recorder(config["dictate"]["recorder"]) != "pw-record":
-        return ".wav"
-    if _pw_record_supports_flac():
-        return ".flac"
-    return ".wav"
+    return ".flac" if _native_flac_available(config) else ".wav"
 
 
 def recording_command(
@@ -962,8 +964,12 @@ def record_to(
     """Records from the microphone into output_path for seconds, then returns it.
 
     Honors [dictate] recorder, device and (for a .flac path) native FLAC when
-    pw-record supports it. Raises RuntimeError if the recorder exits at start
-    (bad --target, missing PCM, ...). Does not transcribe or paste.
+    pw-record supports it; when it does not (arecord, or a pw-record whose
+    libsndfile lacks the container), the take is recorded as WAV under the
+    same stem and the returned path ends in .wav -- arecord would otherwise
+    write WAV data into a file named .flac. Raises RuntimeError if the
+    recorder exits at start (bad --target, missing PCM, ...). Does not
+    transcribe or paste.
     """
     import time
 
@@ -974,6 +980,10 @@ def record_to(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     device = str(config["dictate"].get("device") or "")
     container = "flac" if output_path.suffix.lower() == ".flac" else None
+    if container == "flac" and not _native_flac_available(config):
+        output_path = output_path.with_suffix(".wav")
+        container = None
+        print(f"Native FLAC recording is not available with this recorder; recording to {output_path}", file=sys.stderr)
     argv = recording_command(
         output_path,
         recorder=config["dictate"]["recorder"],

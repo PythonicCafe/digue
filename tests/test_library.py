@@ -1,5 +1,6 @@
 """Tests for the library helpers (transcribe_file, record_to)."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,6 +59,56 @@ class TestRecordTo:
         assert result == output
         assert output.read_bytes() == b"audio"
         proc.terminate.assert_called()
+
+    def test_flac_path_falls_back_to_wav_when_the_recorder_cannot_write_flac(self, tmp_path, capsys):
+        """arecord ignores the container and would write WAV data into a file
+        named .flac; the returned path is what the caller must use."""
+        output = tmp_path / "take.flac"
+        config = _default_config()
+        config["dictate"]["recorder"] = "arecord"
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        argvs = []
+
+        def fake_popen(argv, stdout=None, stderr=None, start_new_session=False):
+            argvs.append(argv)
+            Path(argv[-1]).write_bytes(b"audio")
+            return proc
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("time.sleep"),
+        ):
+            result = recording_mod.record_to(output, seconds=1.5, config=config)
+
+        assert result == tmp_path / "take.wav"
+        assert result.read_bytes() == b"audio"
+        assert not output.exists()
+        assert argvs[0][-1] == str(result)
+        assert "recording to" in capsys.readouterr().err
+
+    def test_flac_path_records_flac_natively_when_supported(self, tmp_path):
+        output = tmp_path / "take.flac"
+        config = _default_config()
+        config["dictate"]["recorder"] = "pw-record"
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        argvs = []
+
+        def fake_popen(argv, stdout=None, stderr=None, start_new_session=False):
+            argvs.append(argv)
+            Path(argv[-1]).write_bytes(b"fLaC")
+            return proc
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("digue.recording._pw_record_supports_flac", return_value=True),
+            patch("time.sleep"),
+        ):
+            result = recording_mod.record_to(output, seconds=1.5, config=config)
+
+        assert result == output
+        assert "--container" in argvs[0] and "flac" in argvs[0]
 
     def test_propagates_recorder_startup_error(self, tmp_path):
         output = tmp_path / "take.wav"
