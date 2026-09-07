@@ -1,6 +1,7 @@
 """Tests for the dictate daemon, toggle, and interrupt handling."""
 
 import contextlib
+import os
 import sys
 import threading
 from pathlib import Path
@@ -94,7 +95,6 @@ class TestDictateDaemon:
     def run_daemon_delivery(self, tmp_path, finish):
         """Runs the daemon path with a published take state and a mocked
         delivery; returns (exit_code, take state file)."""
-        import os
 
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
@@ -170,7 +170,6 @@ class TestDictateDaemon:
         daemon_file = tmp_path / "digue-daemon.pid"
 
         def fail_after_reservation(_config):
-            import os
 
             assert daemon_file.read_text().split()[:2] == [str(os.getpid()), "starting"]
             raise RuntimeError("boom")
@@ -192,7 +191,6 @@ class TestDictateDaemon:
         daemon_file = tmp_path / "digue-daemon.pid"
 
         def replace_reservation_then_fail(_config):
-            import os
 
             assert daemon_file.read_text().split()[:2] == [str(os.getpid()), "starting"]
             daemon_file.write_text("4242 recording 1")
@@ -397,22 +395,17 @@ class TestDictateDaemon:
         try/finally). If the pid was reused by an unrelated process of the
         same user, a toggle must not SIGTERM it: liveness alone is not identity.
         The test process itself plays the unrelated process."""
-        import os
 
         signals = self._toggle_against_state(tmp_path, f"{os.getpid()} recording")
 
         assert signals == []
 
     def test_toggle_does_not_signal_when_starttime_differs(self, tmp_path):
-        import os
-
         signals = self._toggle_against_state(tmp_path, f"{os.getpid()} recording 1")
 
         assert signals == []
 
     def test_toggle_signals_the_daemon_whose_identity_matches(self, tmp_path):
-        import os
-
         starttime = digue._process_starttime(os.getpid())
         signals = self._toggle_against_state(tmp_path, f"{os.getpid()} recording {starttime}")
 
@@ -421,7 +414,6 @@ class TestDictateDaemon:
     def test_toggle_during_startup_tells_the_user_instead_of_silently_exiting(self, tmp_path):
         """ensure_server can take minutes on first use (image pull, model
         download). A second press during that window must give feedback."""
-        import os
 
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text(f"{os.getpid()} starting {digue._process_starttime(os.getpid())}")
@@ -440,8 +432,6 @@ class TestDictateDaemon:
         assert mock_notify.call_args.kwargs.get("timeout_ms", 0) > 0
 
     def test_daemon_state_records_the_process_starttime(self, tmp_path):
-        import os
-
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         seen = []

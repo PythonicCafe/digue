@@ -1,5 +1,6 @@
 """Tests for send_text, delivery lock, paste normalization, and post-delivery archive."""
 
+import os
 import subprocess
 import threading
 from unittest.mock import MagicMock, patch
@@ -374,8 +375,6 @@ class TestDeliveryResult:
 
     @pytest.mark.parametrize("exit_code", [0, 1])
     def test_toggle_maps_the_result_to_the_exit_code(self, exit_code, tmp_path):
-        import os
-
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0

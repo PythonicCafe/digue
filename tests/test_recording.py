@@ -118,8 +118,6 @@ class TestStateFilesAreWrittenAtomically:
         return opened
 
     def test_daemon_state_is_never_truncated_in_place(self, tmp_path, monkeypatch):
-        import os
-
         opened = self._truncating_writes(monkeypatch)
         daemon_file = tmp_path / "digue-daemon.pid"
         with patch("digue._runtime_dir", return_value=tmp_path):
@@ -131,8 +129,6 @@ class TestStateFilesAreWrittenAtomically:
     @patch("digue._spawn_limit_watchdog")
     @patch("subprocess.Popen")
     def test_take_state_is_never_truncated_in_place(self, mock_popen, mock_watchdog, tmp_path, monkeypatch):
-        import os
-
         mock_popen.return_value = MagicMock(pid=os.getpid())
         opened = self._truncating_writes(monkeypatch)
         with patch("digue._runtime_dir", return_value=tmp_path):
@@ -218,8 +214,6 @@ class TestStartRecordingPublishesTakeState:
     @patch("digue._spawn_limit_watchdog")
     @patch("subprocess.Popen")
     def test_publishes_starting_before_popen(self, mock_popen, mock_watchdog, tmp_path):
-        import os
-
         states_at_popen = []
         recorder = MagicMock(pid=os.getpid())
 
@@ -240,8 +234,6 @@ class TestStartRecordingPublishesTakeState:
 
     @patch("subprocess.Popen")
     def test_publishes_recording_with_identity_before_watchdog(self, mock_popen, tmp_path):
-        import os
-
         states_at_watchdog = []
         recorder = MagicMock(pid=os.getpid())
 
@@ -275,8 +267,6 @@ class TestStartRecordingPublishesTakeState:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_toggle_publishes_take_state_and_removes_it_after_delivery(self, tmp_path):
-        import os
-
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
@@ -542,7 +532,6 @@ class TestRecordingFileOf:
         """readlink returns the kernel's resolved path; a symlinked
         XDG_RUNTIME_DIR must not hide the recorder's file (TakeState already
         compares resolved paths)."""
-        import os
 
         real_dir = tmp_path / "real"
         real_dir.mkdir()

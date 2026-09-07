@@ -1,5 +1,6 @@
 """Tests for orphan take claiming, recovery, and surplus rescue."""
 
+import contextlib
 import json
 import os
 import subprocess
@@ -36,7 +37,6 @@ class TestOrphanStartingTake:
         return take
 
     def test_expired_orphan_without_wav_is_removed(self, tmp_path):
-
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
         config = digue._default_config()
 
@@ -47,7 +47,6 @@ class TestOrphanStartingTake:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_expired_orphan_with_wav_is_rescued(self, tmp_path):
-
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
@@ -79,7 +78,6 @@ class TestOrphanStartingTake:
         assert len(list(tmp_path.glob("digue-take-*.json"))) == 1
 
     def test_orphan_with_alive_daemon_is_left_alone(self, tmp_path):
-
         take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1, daemon_starttime=555)
         config = digue._default_config()
 
@@ -93,8 +91,6 @@ class TestOrphanStartingTake:
         assert len(list(tmp_path.glob("digue-take-*.json"))) == 1
 
     def test_toggle_rescues_expired_orphan_starting_take(self, tmp_path):
-        import os
-
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         rec_file = tmp_path / "digue-recording.wav"
@@ -148,8 +144,6 @@ class TestOrphanTakeClaim:
         return take
 
     def test_claims_the_oldest_orphan_and_records_the_recoverer_identity(self, tmp_path):
-        import os
-
         newer = self.make_take(tmp_path, take_id="ffffffffffffffff", created_at_ns=200)
         oldest = self.make_take(tmp_path)
 
@@ -168,16 +162,12 @@ class TestOrphanTakeClaim:
         assert states[newer.take_id].state == "recording"
 
     def test_take_with_live_daemon_is_not_claimed(self, tmp_path):
-        import os
-
         self.make_take(tmp_path, daemon_pid=os.getpid(), daemon_starttime=int(digue._process_starttime(os.getpid())))
 
         with patch("digue._runtime_dir", return_value=tmp_path):
             assert digue._claim_orphan_take() is None
 
     def test_recovering_take_with_live_recoverer_is_not_claimed(self, tmp_path):
-        import os
-
         self.make_take(
             tmp_path,
             state="recovering",
@@ -270,7 +260,6 @@ class TestOrphanTakeClaim:
         """The recovering toggle delivers the orphan and returns: recording
         here too would leave this take and a concurrent one competing for the
         same daemon state (two recorders, one stop)."""
-        import os
 
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
@@ -307,7 +296,6 @@ class TestOrphanTakeClaim:
         """Regression: while a toggle recovers an orphan, a second press must
         find a single consistent picture -- no daemon state (so it starts a new
         take) and the recovering toggle never records afterwards."""
-        import os
 
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
@@ -386,7 +374,6 @@ class TestOrphanTakeClaim:
     def test_toggle_during_slow_recovery_starts_a_new_take(self, tmp_path):
         """A recovering take with a live recoverer is like a delivering one:
         the toggle does not touch it and starts a new take."""
-        import os
 
         self.make_take(
             tmp_path,
@@ -600,8 +587,6 @@ class TestRecoverClaimedTake:
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_recycled_recorder_pid_is_not_signaled(self, tmp_path):
-        import os
-
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         take = self.make_recovering_take(tmp_path, rec_file=rec_file, recorder_pid=os.getpid(), recorder_starttime=111)
@@ -725,8 +710,6 @@ class TestSurplusOrphanRescue:
         return take
 
     def test_toggle_delivers_the_oldest_and_rescues_the_rest(self, tmp_path):
-        import os
-
         oldest_wav = tmp_path / "digue-oldest.wav"
         oldest_wav.write_bytes(b"audio oldest")
         surplus_a = tmp_path / "digue-surplus-a.wav"
@@ -785,8 +768,6 @@ class TestSurplusOrphanRescue:
         assert str(tmp_path / "audio") in message
 
     def test_surplus_take_with_live_recorder_is_stopped_before_rescue(self, tmp_path):
-        import os
-
         oldest_wav = tmp_path / "digue-oldest.wav"
         oldest_wav.write_bytes(b"audio oldest")
         surplus_wav = tmp_path / "digue-surplus.wav"
@@ -834,7 +815,6 @@ class TestSurplusOrphanRescue:
         """_claim_orphan_take requires the lock; the surplus loop runs outside
         the toggle's lock, so it must take it around every claim, or two
         toggles could claim the same surplus take."""
-        import contextlib
 
         lock_depth = 0
         claims_under_lock = []
@@ -866,8 +846,6 @@ class TestSurplusOrphanRescue:
         assert claims_under_lock == [True, True]
 
     def test_surplus_rescue_failure_preserves_state_and_wav(self, tmp_path):
-        import os
-
         oldest_wav = tmp_path / "digue-oldest.wav"
         oldest_wav.write_bytes(b"audio oldest")
         surplus_wav = tmp_path / "digue-surplus.wav"
