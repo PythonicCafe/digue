@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
+from digue import convert as convert_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
@@ -174,7 +174,7 @@ class TestTranscribe:
 
         with patch("digue.notify._stderr_is_tty", return_value=True):
             result = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="vtt")
-        converted = digue._convert_content(result, "vtt", "timestamps")
+        converted = convert_mod._convert_content(result, "vtt", "timestamps")
         assert "[00:00:00] Primeira frase." in converted
         assert "[00:00:02] Segunda frase com mais conteudo." in converted
 
@@ -192,7 +192,7 @@ class TestTranscribe:
         # Simulate the cmd_transcribe path: vtt with wrap disabled, then convert
         with patch("digue.notify._stderr_is_tty", return_value=True):
             vtt = transcribe_mod.transcribe("http://x", audio_file, "pt", response_format="vtt", wrap_cues=False)
-        result = digue._convert_content(vtt, "vtt", "timestamps")
+        result = convert_mod._convert_content(vtt, "vtt", "timestamps")
         lines = [line for line in result.splitlines() if line.strip()]
         assert len(lines) == 1  # same timestamp, single line
         assert lines[0] == "[00:00:00] uma frase bem comprida que passa do limite de quarenta e dois caracteres"

@@ -591,9 +591,9 @@ def transcribe_file(
     default to the [transcribe] section. Raises RuntimeError if the server
     cannot be reached.
     """
-    from digue import _convert_content
     from digue.config import load_config
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
+    from digue.convert import _convert_content
 
     config = load_config() if config is None else config
     ensure_server(config, silent=not verbose)
@@ -652,8 +652,8 @@ def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, An
 
 
 def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    from digue import _convert_content
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
+    from digue.convert import _convert_content
 
     audio_path = args.audio
     if not audio_path.exists():
@@ -711,8 +711,9 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
 def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import time
 
-    from digue import _convert_content, _format_extension
+    from digue import _format_extension
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
+    from digue.convert import _convert_content
 
     language = args.language or config["transcribe"]["language"]
     response_format = args.response_format or config["transcribe"]["output_format"]

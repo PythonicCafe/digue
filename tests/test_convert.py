@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
+from digue import convert as convert_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
@@ -25,7 +25,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = None
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         assert "Saved:" in capsys.readouterr().err
         content = (tmp_path / "b.txt").read_text()
@@ -40,7 +40,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = "text"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         assert capsys.readouterr().out.strip() == "Hello World"
 
@@ -51,7 +51,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = None
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 1
         assert "from-format is required" in capsys.readouterr().err
 
@@ -62,7 +62,7 @@ class TestCmdConvert:
         args.from_format = "vtt"
         args.to_format = "text"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 1
         err = capsys.readouterr().err
         assert "not a file" in err
@@ -76,7 +76,7 @@ class TestCmdConvert:
         args.from_format = "vtt"
         args.to_format = None
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         assert "[00:00:00] Hi" in (tmp_path / "b.txt").read_text()
 
@@ -89,7 +89,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = "text"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 1
         assert "from-format" in capsys.readouterr().err
 
@@ -103,7 +103,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = None
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         assert capsys.readouterr().out.strip() == "Hello World"
 
@@ -116,7 +116,7 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = "vtt"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         out = capsys.readouterr().out
         assert out.startswith("WEBVTT")
@@ -126,9 +126,9 @@ class TestCmdConvert:
 
     def test_multiline_vtt_cues_roundtrip_through_timestamps(self):
         vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nLinha 1\nLinha 2\n\n00:00:04.000 --> 00:00:06.000\nLinha 3\n"
-        timestamps = digue._convert_content(vtt, "vtt", "timestamps")
+        timestamps = convert_mod._convert_content(vtt, "vtt", "timestamps")
         assert "[00:00:01] Linha 1 Linha 2" in timestamps
-        result_vtt = digue._convert_content(timestamps, "timestamps", "vtt")
+        result_vtt = convert_mod._convert_content(timestamps, "timestamps", "vtt")
         assert "00:00:01.000 --> 00:00:04.000" in result_vtt
         assert "Linha 1 Linha 2" in result_vtt
 
@@ -138,7 +138,7 @@ class TestCmdConvert:
             "2\n01:02:03,007 --> 01:02:05,089\nAnother cue\n"
         )
 
-        result = digue._convert_content(content, "srt", "vtt")
+        result = convert_mod._convert_content(content, "srt", "vtt")
 
         assert result == (
             "WEBVTT\n\n"
@@ -153,7 +153,7 @@ class TestCmdConvert:
             "00:01:03.004 --> 00:01:04.999\nLast cue\n"
         )
 
-        result = digue._convert_content(content, "vtt", "srt")
+        result = convert_mod._convert_content(content, "vtt", "srt")
 
         assert result == (
             "1\n00:00:00,125 --> 00:00:02,750\nHello\nworld\n\n2\n00:01:03,004 --> 00:01:04,999\nLast cue\n"
@@ -162,7 +162,7 @@ class TestCmdConvert:
     def test_timestamp_end_is_next_start_and_last_cue_has_two_second_duration(self):
         content = "[00:00:01] First\n[00:00:03] Last\n"
 
-        result = digue._convert_content(content, "timestamps", "srt")
+        result = convert_mod._convert_content(content, "timestamps", "srt")
 
         assert "00:00:01,000 --> 00:00:03,000" in result
         assert "00:00:03,000 --> 00:00:05,000" in result
@@ -176,7 +176,7 @@ class TestCmdConvert:
         args.from_format = "text"
         args.to_format = "vtt"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 1
         assert "cannot convert" in capsys.readouterr().err
 
@@ -189,25 +189,25 @@ class TestCmdConvert:
         args.from_format = None
         args.to_format = "text"
         config = _default_config()
-        result = digue.cmd_convert(args, config)
+        result = convert_mod.cmd_convert(args, config)
         assert result == 0
         assert "Hello" in capsys.readouterr().out
 
 
 class TestParseSubtitleTimestamp:
     def test_parses_three_part_timestamp(self):
-        assert digue._parse_subtitle_timestamp("01:02:03.456") == 3723456
-        assert digue._parse_subtitle_timestamp("01:02:03,456") == 3723456
+        assert convert_mod._parse_subtitle_timestamp("01:02:03.456") == 3723456
+        assert convert_mod._parse_subtitle_timestamp("01:02:03,456") == 3723456
 
     def test_parses_two_part_vtt_timestamp_without_hours(self):
-        assert digue._parse_subtitle_timestamp("02:03.456") == 123456
-        assert digue._parse_subtitle_timestamp("00:05.100") == 5100
+        assert convert_mod._parse_subtitle_timestamp("02:03.456") == 123456
+        assert convert_mod._parse_subtitle_timestamp("00:05.100") == 5100
 
     def test_invalid_timestamps_raise_value_error(self):
         with pytest.raises(ValueError, match="invalid subtitle timestamp"):
-            digue._parse_subtitle_timestamp("invalid")
+            convert_mod._parse_subtitle_timestamp("invalid")
         with pytest.raises(ValueError, match="invalid subtitle timestamp"):
-            digue._parse_subtitle_timestamp("00:60:00.000")
+            convert_mod._parse_subtitle_timestamp("00:60:00.000")
 
 
 # -- Batch commands -----------------------------------------------------------
@@ -218,30 +218,30 @@ class TestSilentAudioTimestamps:
     cues); the timestamps format is built from that VTT and must not fail."""
 
     def test_convert_header_only_vtt_to_timestamps_gives_empty_text(self):
-        assert digue._convert_content("WEBVTT\n\n", "vtt", "timestamps") == ""
+        assert convert_mod._convert_content("WEBVTT\n\n", "vtt", "timestamps") == ""
 
     def test_convert_header_only_vtt_to_text_gives_empty_text(self):
-        assert digue._convert_content("WEBVTT\n", "vtt", "text") == ""
+        assert convert_mod._convert_content("WEBVTT\n", "vtt", "text") == ""
 
     def test_convert_header_only_vtt_to_srt_gives_empty_srt(self):
         """Silent audio is an empty subtitle, not a conversion error: SRT must
         degrade the same way timestamps and text already do."""
-        assert digue._convert_content("WEBVTT\n\n", "vtt", "srt") == "\n"
+        assert convert_mod._convert_content("WEBVTT\n\n", "vtt", "srt") == "\n"
 
     def test_non_subtitle_content_is_still_rejected(self):
         with pytest.raises(ValueError, match="does not look like a VTT"):
-            digue._convert_content("just some prose\n", "vtt", "timestamps")
+            convert_mod._convert_content("just some prose\n", "vtt", "timestamps")
 
     def test_header_followed_by_garbage_is_rejected(self):
         """A WEBVTT header does not make everything after it an empty file."""
         with pytest.raises(ValueError, match="does not look like a VTT"):
-            digue._convert_content("WEBVTT\n\nsome text without any timing line\n", "vtt", "timestamps")
+            convert_mod._convert_content("WEBVTT\n\nsome text without any timing line\n", "vtt", "timestamps")
 
     def test_header_with_metadata_blocks_only_is_empty(self):
         content = (
             "WEBVTT\nKind: captions\nLanguage: pt\n\nNOTE\nmade by digue\nsecond line\n\nSTYLE\n::cue { color: red }\n"
         )
-        assert digue._convert_content(content, "vtt", "timestamps") == ""
+        assert convert_mod._convert_content(content, "vtt", "timestamps") == ""
 
     @patch("digue.transcribe.transcribe", return_value="WEBVTT\n")
     @patch("digue.container.ensure_server")
