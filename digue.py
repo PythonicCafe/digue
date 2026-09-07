@@ -8,6 +8,8 @@ import sys
 
 CONTAINER_NAME = "digue"
 NOTIFY_REPLACE_ID = 48271
+NOTIFY_ID_SLOTS = 32  # concurrent takes: id = base + (pid % slots), so popups of
+# overlapping dictations do not replace or close each other.
 DEFAULT_PORT = 8178
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
@@ -36,6 +38,7 @@ RESPONSE_FORMATS = ("text", "vtt", "srt")
 SERVER_STARTUP_TIMEOUT = 180
 TRANSCRIPTION_TIMEOUT = 120
 BENCHMARK_TRANSCRIPTION_TIMEOUT = 300
+DOWNLOAD_TIMEOUT = 60
 BENCHMARK_RUNS = 3
 AUDIO_EXTENSIONS = frozenset(
     (
@@ -367,6 +370,7 @@ def stop_container():
 # -- Notifications ------------------------------------------------------------
 
 _notify_send_warned = False
+_last_notify_len = 0
 
 
 def notify(message, timeout_ms=0):
@@ -375,12 +379,23 @@ def notify(message, timeout_ms=0):
     The notification stays visible until replaced by the next one (timeout_ms=0).
     Pass a timeout for messages that should auto-dismiss (success, errors).
     If notify-send is not installed, prints a one-time warning and continues.
+
+    On a terminal the stderr line is redrawn (\r, padded to erase a previous
+    shorter message), so it coexists with single-line progress bars; on a
+    captured stderr it is a plain line with \n.
     """
+    import os
     import subprocess
 
-    global _notify_send_warned
+    global _notify_send_warned, _last_notify_len
 
-    print(f"[digue] {message}", file=sys.stderr, flush=True)
+    if _stderr_is_tty():
+        padding = " " * max(0, _last_notify_len - len(message))
+        print(f"\r[digue] {message}{padding}", end="", file=sys.stderr, flush=True)
+        _last_notify_len = len(message)
+    else:
+        print(f"[digue] {message}", file=sys.stderr, flush=True)
+        _last_notify_len = 0
 
     try:
         subprocess.run(
@@ -389,10 +404,10 @@ def notify(message, timeout_ms=0):
                 "-a",
                 "digue",
                 "--replace-id",
-                str(NOTIFY_REPLACE_ID),
+                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
                 "-t",
                 str(timeout_ms),
-                "Whisper",
+                "digue",
                 message,
             ],
             capture_output=True,
@@ -406,13 +421,19 @@ def notify(message, timeout_ms=0):
                 file=sys.stderr,
             )
             _notify_send_warned = True
-    except subprocess.SubprocessError:
-        pass
+    except subprocess.SubprocessError as exc:
+        if not _notify_send_warned:
+            print(
+                f"Warning: notify-send failed ({type(exc).__name__}); desktop notifications unavailable.",
+                file=sys.stderr,
+            )
+            _notify_send_warned = True
 
 
 def notify_close():
     """Closes the current digue notification via D-Bus."""
     import contextlib
+    import os
     import subprocess
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
@@ -427,7 +448,7 @@ def notify_close():
                 "/org/freedesktop/Notifications",
                 "--method",
                 "org.freedesktop.Notifications.CloseNotification",
-                str(NOTIFY_REPLACE_ID),
+                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
             ],
             capture_output=True,
             timeout=5,
@@ -718,14 +739,31 @@ def simplify_vtt(content):
 # -- Download -----------------------------------------------------------------
 
 
+def _stderr_is_tty() -> bool:
+    """Returns True if stderr is a terminal (dynamic progress makes sense).
+
+    With captured/piped stderr, \r has no visual effect and every update
+    becomes a full line in the log -- hence the sparse-line mode in progress
+    and notification prints.
+    """
+    return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+
+
 def _download_progress_hook(label, with_notification=False):
     """Returns a reporthook callback for urlretrieve that prints a progress bar.
 
-    When with_notification=True, also updates the desktop notification (~2x/s).
+    On a terminal, redraws one line with \r. On a captured/piped stderr, prints
+    one line every ~5% (no bar, no \r), so logs stay readable.
+    The downloaded MBs are padded to the total's width, so line size stays
+    stable across digit rollovers (9.9 -> 10.0 MB).
+    When with_notification=True, also updates the desktop notification (~2x/s);
+    the notification text never carries the bar nor \r.
     """
     import time
 
-    last_notify_time = [0.0]  # mutable for closure
+    last_notify_time = [0.0]
+    last_reported_pct = [-1]
+    tty = _stderr_is_tty()
 
     def hook(block_num, block_size, total_size):
         downloaded = block_num * block_size
@@ -733,28 +771,73 @@ def _download_progress_hook(label, with_notification=False):
             pct = min(100, downloaded * 100 // total_size)
             downloaded_mb = downloaded / (1024 * 1024)
             total_mb = total_size / (1024 * 1024)
-            bar_width = 30
-            filled = bar_width * pct // 100
-            bar = "=" * filled + " " * (bar_width - filled)
-            msg = f"{pct:3d}% [{bar}] {downloaded_mb:.1f}/{total_mb:.1f} MB"
-            print(f"\r  {label}: {msg}", end="", file=sys.stderr, flush=True)
+            total_mb_str = f"{total_mb:.1f}"
+            width = len(total_mb_str)
+            short_msg = f"{pct:3d}% {downloaded_mb:>{width}.1f}/{total_mb_str} MB"
+            if tty:
+                bar_width = 30
+                filled = bar_width * pct // 100
+                bar = "=" * filled + " " * (bar_width - filled)
+                msg = f"{short_msg.split('%', 1)[0]}% [{bar}] {downloaded_mb:>{width}.1f}/{total_mb_str} MB"
+                print(f"\r  {label}: {msg}", end="", file=sys.stderr, flush=True)
+            else:
+                # Sparse output for logs: one line every 5% (and at 100%)
+                if pct == 100 and last_reported_pct[0] != 100:
+                    last_reported_pct[0] = 100
+                    print(f"  {label}: {short_msg}", file=sys.stderr, flush=True)
+                elif pct >= last_reported_pct[0] + 5:
+                    last_reported_pct[0] = pct
+                    print(f"  {label}: {short_msg}", file=sys.stderr, flush=True)
         else:
             downloaded_mb = downloaded / (1024 * 1024)
-            msg = f"{downloaded_mb:.1f} MB"
-            print(f"\r  {label}: {msg}", end="", file=sys.stderr, flush=True)
+            short_msg = f"{downloaded_mb:9.1f} MB"
+            if tty:
+                print(f"\r  {label}: {short_msg}", end="", file=sys.stderr, flush=True)
+            else:
+                print(f"  {label}: {short_msg}", file=sys.stderr, flush=True)
 
         if with_notification:
             now = time.monotonic()
             if now - last_notify_time[0] >= 0.5:
-                notify(f"Downloading {label}... {msg}")
+                # Notifications get no bar (meaningless outside a terminal) and
+                # use the total's width for the downloaded value, so the message
+                # size stays stable across digit rollovers.
+                if total_size > 0:
+                    total_mb_str = f"{total_mb:.1f}"
+                    short_msg = f"{pct:3d}% {downloaded_mb:>{len(total_mb_str)}.1f}/{total_mb_str} MB"
+                else:
+                    short_msg = f"{downloaded_mb:9.1f} MB"
+                notify(f"Downloading {label}... {short_msg}")
                 last_notify_time[0] = now
 
     return hook
 
 
+def _download_file(url, output, label, with_notification=False):
+    """Downloads to a temporary sibling and atomically publishes the complete file."""
+    import urllib.request
+
+    part_path = output.with_suffix(f"{output.suffix}.part")
+    hook = _download_progress_hook(label, with_notification)
+    block_size = 1024 * 1024
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, part_path.open("wb") as part_file:
+            total_size = int(response.headers.get("Content-Length", -1))
+            downloaded = 0
+            hook(downloaded, 1, total_size)
+            while block := response.read(block_size):
+                part_file.write(block)
+                downloaded += len(block)
+                hook(downloaded, 1, total_size)
+    except BaseException:
+        # No resume support, so a partial file is only clutter next to the models.
+        part_path.unlink(missing_ok=True)
+        raise
+    part_path.replace(output)
+
+
 def download_model(model_name, models_dir, with_notification=False):
     """Downloads a whisper.cpp GGML model and the Silero VAD model."""
-    import urllib.request
     from pathlib import Path
 
     models_dir = Path(models_dir)
@@ -772,7 +855,7 @@ def download_model(model_name, models_dir, with_notification=False):
             print(f"Already exists: {output} ({size_mb:.1f} MB)", file=sys.stderr)
             continue
         print(f"Downloading {label}...", file=sys.stderr, flush=True)
-        urllib.request.urlretrieve(url, output, reporthook=_download_progress_hook(label, with_notification))
+        _download_file(url, output, label, with_notification)
         size_mb = output.stat().st_size / (1024 * 1024)
         print(f"\n  Saved: {output} ({size_mb:.1f} MB)", file=sys.stderr)
 
@@ -1933,6 +2016,7 @@ def main():
     try:
         sys.exit(handler(args, config))
     except KeyboardInterrupt:
+        notify_close()
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
 

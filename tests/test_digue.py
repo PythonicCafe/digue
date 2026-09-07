@@ -3,8 +3,10 @@
 import argparse
 import json
 import math
+import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -163,9 +165,10 @@ class TestContainerStatus:
 
 
 class TestCreateContainer:
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_nvidia_uses_gpus_flag(self, mock_docker, mock_pull):
+    def test_nvidia_uses_gpus_flag(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         digue.create_container(config, "nvidia")
@@ -174,18 +177,20 @@ class TestCreateContainer:
         assert "all" in cmd
         assert any("main-cuda" in arg for arg in cmd)
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_amd_uses_kfd_device(self, mock_docker, mock_pull):
+    def test_amd_uses_kfd_device(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         digue.create_container(config, "amd")
         cmd = mock_docker.call_args[0][0]
         assert "/dev/kfd" in cmd
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_cpu_has_no_device_flags(self, mock_docker, mock_pull):
+    def test_cpu_has_no_device_flags(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         digue.create_container(config, "cpu")
@@ -193,17 +198,19 @@ class TestCreateContainer:
         assert "--device" not in cmd
         assert "--gpus" not in cmd
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_raises_on_failure(self, mock_docker, mock_pull):
+    def test_raises_on_failure(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=1, stderr="permission denied")
         config = digue._default_config()
         with pytest.raises(RuntimeError, match="permission denied"):
             digue.create_container(config, "cpu")
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_binds_to_localhost(self, mock_docker, mock_pull):
+    def test_binds_to_localhost(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         digue.create_container(config, "cpu")
@@ -211,9 +218,10 @@ class TestCreateContainer:
         port_binding = [arg for arg in cmd if "8178" in arg and "127.0.0.1" in arg]
         assert port_binding, "Port must bind to 127.0.0.1"
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_binds_to_configured_ip(self, mock_docker, mock_pull):
+    def test_binds_to_configured_ip(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         config["server"]["bind_ip"] = "192.168.1.10"
@@ -221,13 +229,37 @@ class TestCreateContainer:
         cmd = mock_docker.call_args[0][0]
         assert "192.168.1.10:8178:8080" in cmd
 
+    @patch("digue.download_model")
     @patch("digue.pull_image")
     @patch("digue._docker_run")
-    def test_calls_pull_image(self, mock_docker, mock_pull):
+    def test_calls_pull_image(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
         digue.create_container(config, "cpu")
         mock_pull.assert_called_once_with("ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+
+    @patch("digue.download_model")
+    @patch("digue.pull_image")
+    @patch("digue._docker_run")
+    def test_downloads_model_when_missing(self, mock_docker, mock_pull, mock_download, tmp_path):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = digue._default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        digue.create_container(config, "cpu")
+        mock_download.assert_called_once_with("small", tmp_path / "models", with_notification=True)
+
+    @patch("digue.download_model")
+    @patch("digue.pull_image")
+    @patch("digue._docker_run")
+    def test_skips_download_when_model_exists(self, mock_docker, mock_pull, mock_download, tmp_path):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = digue._default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(parents=True)
+        (models_dir / "ggml-small.bin").write_bytes(b"dummy")
+        digue.create_container(config, "cpu")
+        mock_download.assert_not_called()
 
 
 class TestImageExists:
@@ -271,6 +303,125 @@ class TestDownloadProgressHook:
         assert "50%" in output
         assert "test.bin" in output
 
+    def test_terminal_line_has_carriage_return_and_bar(self, capsys):
+        with patch.object(digue, "_stderr_is_tty", return_value=True):
+            hook = digue._download_progress_hook("test.bin")
+            hook(25, 1024 * 1024, 100 * 1024 * 1024)  # 25%
+        output = capsys.readouterr().err
+        assert output.startswith("\r")
+        assert "[" in output and "]" in output
+
+    def test_non_terminal_prints_sparse_lines_without_bar(self, capsys):
+        with patch.object(digue, "_stderr_is_tty", return_value=False):
+            hook = digue._download_progress_hook("test.bin")
+            for block in range(0, 100 * 1024 * 1024, 8 * 1024 * 1024):
+                hook(block, 1, 100 * 1024 * 1024)
+            hook(100 * 1024 * 1024, 1, 100 * 1024 * 1024)  # final block
+        output = capsys.readouterr().err
+        lines = [line for line in output.splitlines() if line.strip()]
+        assert all("[" not in line for line in lines)  # no bar
+        assert len(lines) <= 22  # ~5% steps + 100%, not one line per block
+        assert lines[-1].endswith("100.0/100.0 MB")
+
+    def test_fixed_width_across_digit_rollover(self, capsys):
+        # 9.9 MB -> 10.0 MB must keep the line exactly the same length
+        with patch.object(digue, "_stderr_is_tty", return_value=True):
+            hook = digue._download_progress_hook("test.bin")
+            hook(0, 1, 20 * 1024 * 1024)  # 0.0 MB of 20.0 MB
+            first = capsys.readouterr().err
+            hook(10380902, 1, 20 * 1024 * 1024)  # 9.9 MB
+            at99 = capsys.readouterr().err
+            hook(10485760, 1, 20 * 1024 * 1024)  # 10.0 MB
+            at100 = capsys.readouterr().err
+        assert len(first.rstrip("\r")) == len(at99.rstrip("\r")) == len(at100.rstrip("\r"))
+
+    def test_notification_message_has_no_bar_and_fixed_width(self):
+        messages = []
+        with (
+            patch("digue.notify", side_effect=lambda message, timeout_ms=0: messages.append(message)),
+            patch("time.monotonic", side_effect=[1.0, 2.0, 3.0, 4.0]),
+        ):
+            hook = digue._download_progress_hook("test.bin", with_notification=True)
+            # 97.1 MB and 102.5 MB of 465.0 MB: digit rollover must keep width
+            hook(101816944, 1, 465 * 1024 * 1024)
+            hook(107479040, 1, 465 * 1024 * 1024)
+        assert len(messages) == 2
+        assert all("\r" not in message for message in messages)
+        assert all("[" not in message for message in messages)
+        assert len(messages[0]) == len(messages[1])
+
+    def test_unknown_content_length_can_notify(self):
+        messages = []
+        with (
+            patch("digue.notify", side_effect=lambda message, timeout_ms=0: messages.append(message)),
+            patch("time.monotonic", return_value=1.0),
+        ):
+            hook = digue._download_progress_hook("test.bin", with_notification=True)
+            hook(1, 1024 * 1024, -1)
+        assert messages == ["Downloading test.bin...       1.0 MB"]
+
+    def test_notify_prints_carriage_return_on_tty(self, capsys):
+        with patch.object(digue, "_stderr_is_tty", return_value=True):
+            digue.notify("status message")
+        err = capsys.readouterr().err
+        assert err.startswith("\r")
+        assert "[digue] status message" in err
+
+    def test_notify_prints_plain_line_when_not_tty(self, capsys):
+        with patch.object(digue, "_stderr_is_tty", return_value=False):
+            digue.notify("status message")
+        err = capsys.readouterr().err
+        assert err.startswith("[digue] status message\n")
+
+
+class TestDownloadModel:
+    def test_downloads_to_part_with_timeout_then_replaces_atomically(self, tmp_path):
+        model_path = tmp_path / "ggml-small.bin"
+        vad_path = tmp_path / "ggml-silero-v6.2.0.bin"
+        vad_path.write_bytes(b"vad")
+        response = MagicMock()
+        response.headers = {"Content-Length": "5"}
+        response.read.side_effect = [b"model", b""]
+        response.__enter__.return_value = response
+
+        def check_destination_is_not_visible(*args, **kwargs):
+            assert not model_path.exists()
+            return response
+
+        with patch("urllib.request.urlopen", side_effect=check_destination_is_not_visible) as mock_urlopen:
+            digue.download_model("small", tmp_path)
+
+        assert model_path.read_bytes() == b"model"
+        assert not model_path.with_suffix(".bin.part").exists()
+        assert mock_urlopen.call_args.kwargs["timeout"] == digue.DOWNLOAD_TIMEOUT
+
+    def test_partial_file_is_not_treated_as_ready_model(self, tmp_path):
+        part_path = tmp_path / "ggml-small.bin.part"
+        part_path.write_bytes(b"partial")
+        (tmp_path / "ggml-silero-v6.2.0.bin").write_bytes(b"vad")
+        response = MagicMock()
+        response.headers = {}
+        response.read.side_effect = [b"complete", b""]
+        response.__enter__.return_value = response
+
+        with patch("urllib.request.urlopen", return_value=response) as mock_urlopen:
+            digue.download_model("small", tmp_path)
+
+        mock_urlopen.assert_called_once()
+        assert (tmp_path / "ggml-small.bin").read_bytes() == b"complete"
+
+    def test_interrupted_download_leaves_no_part_file(self, tmp_path):
+        """A failed download left ggml-*.bin.part behind in the models dir."""
+        response = MagicMock()
+        response.headers = {"Content-Length": "10"}
+        response.read.side_effect = [b"half", OSError("connection reset")]
+        response.__enter__.return_value = response
+
+        with patch("urllib.request.urlopen", return_value=response), pytest.raises(OSError, match="reset"):
+            digue._download_file("http://example/model.bin", tmp_path / "ggml-small.bin", "ggml-small.bin")
+
+        assert list(tmp_path.iterdir()) == []
+
 
 # -- Notifications -----------------------------------------------------------
 
@@ -281,7 +432,8 @@ class TestNotify:
         digue.notify("test", timeout_ms=5000)
         cmd = mock_run.call_args[0][0]
         assert "--replace-id" in cmd
-        assert str(digue.NOTIFY_REPLACE_ID) in cmd
+        replace_id = int(cmd[cmd.index("--replace-id") + 1])
+        assert digue.NOTIFY_REPLACE_ID <= replace_id < digue.NOTIFY_REPLACE_ID + digue.NOTIFY_ID_SLOTS
 
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_prints_warning_when_notify_send_missing(self, mock_run, capsys):
@@ -303,6 +455,15 @@ class TestNotify:
         digue.notify("hello world")
         err = capsys.readouterr().err
         assert "hello world" in err
+
+    @patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "notify-send"))
+    def test_failing_notify_send_warns_once(self, mock_run, capsys):
+        """A failed notification must be visible, not silently swallowed."""
+        digue._notify_send_warned = False
+        digue.notify("first")
+        digue.notify("second")
+        err = capsys.readouterr().err
+        assert err.count("notify-send failed") == 1
 
 
 class TestNotifyClose:
