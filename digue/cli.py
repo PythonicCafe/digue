@@ -85,7 +85,14 @@ def create_parser() -> argparse.ArgumentParser:
     # main() prints this help when no action is given (no default action).
     sub_server.set_defaults(server_parser=sub_server)
 
-    sub_server_sub.add_parser("start", help="Start (or create) digue container")
+    sub_server_start = sub_server_sub.add_parser("start", help="Start (or create) digue container")
+    sub_server_start.add_argument(
+        "--image",
+        metavar="IMAGE",
+        default=None,
+        help="Docker image for whisper-server (overrides server.image); a container created from another image is "
+        "recreated. E.g. ghcr.io/ggml-org/whisper.cpp:main",
+    )
     sub_server_sub.add_parser("stop", help="Stop digue container")
     sub_server_sub.add_parser("destroy", help="Stop and remove digue container")
     sub_server_sub.add_parser("status", help="Show server status")

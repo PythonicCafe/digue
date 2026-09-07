@@ -293,7 +293,11 @@ CONFIG_TEMPLATE = """\
                                 # or "remote" (server on another machine via SSH tunnel)
 # remote-host = ""              # for backend = "remote": the server host (LAN IP,
                                 #   hostname, or empty = 127.0.0.1 via SSH tunnel)
-# image = ""                    # override Docker image (see README for compatibility matrix)
+# image = ""                    # Docker image for whisper-server; empty = the backend's
+                                #   default (see README for the compatibility matrix), e.g.
+                                #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
+                                #   main-vulkan crashes. `digue server start` recreates a
+                                #   container created from another image
 
 # -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
 [transcribe]

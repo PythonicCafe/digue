@@ -37,6 +37,8 @@ backend = "cpu"
 image = "ghcr.io/ggml-org/whisper.cpp:main"
 ```
 
+or for one run, `digue server start --image ghcr.io/ggml-org/whisper.cpp:main`. Either way, `digue server start` notices a container created from another image and recreates it (`docker start` alone would keep the old image); `digue dictate` only warns about the mismatch, since a multi-GB pull is not what a hotkey should trigger. Any image that provides `whisper-server` works, including a locally built one.
+
 
 ## Performance
 
@@ -178,6 +180,7 @@ digue detect-language audio.mp3 -v   # show conversion progress on stderr
 digue download                       # download model for detected backend
 digue download small                 # download a specific model
 digue server start                   # start (or create) server container
+digue server start --image ghcr.io/ggml-org/whisper.cpp:main   # with another image (recreates the container)
 digue server stop                    # stop server container
 digue server destroy                 # stop and remove container
 digue server status                  # show server status
@@ -254,7 +257,11 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
                                 # or "remote" (server on another machine via SSH tunnel)
 # remote-host = ""              # for backend = "remote": the server host (LAN IP,
                                 #   hostname, or empty = 127.0.0.1 via SSH tunnel)
-# image = ""                    # override Docker image (see README for compatibility matrix)
+# image = ""                    # Docker image for whisper-server; empty = the backend's
+                                #   default (see README for the compatibility matrix), e.g.
+                                #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
+                                #   main-vulkan crashes. `digue server start` recreates a
+                                #   container created from another image
 
 # -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
 [transcribe]

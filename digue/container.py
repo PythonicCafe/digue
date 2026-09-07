@@ -119,6 +119,31 @@ def container_status() -> str | None:
     return None
 
 
+def container_image() -> str | None:
+    """Returns the image the digue container was created from, or None."""
+    result = _docker_run(["inspect", "--format", "{{.Config.Image}}", CONTAINER_NAME])
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+def _image_mismatch(config: dict[str, dict[str, Any]]) -> tuple[str, str] | None:
+    """(current, configured) when the existing container was created from an
+    image other than the one the config resolves to now, else None.
+
+    `docker start` reuses the container's original image: a new `image` in the
+    config (or `server start --image`) would otherwise silently do nothing
+    until the container is destroyed by hand.
+    """
+    current = container_image()
+    if current is None:
+        return None
+    configured = resolve_image(resolve_backend(config), config)
+    if not configured or current == configured:
+        return None
+    return current, configured
+
+
 def image_exists(image: str) -> bool:
     """Returns True if a Docker image exists locally."""
     result = _docker_run(["image", "inspect", image])
@@ -394,6 +419,17 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
     status = container_status()
     backend = None
 
+    if status is not None:
+        mismatch = _image_mismatch(config)
+        if mismatch is not None:
+            # Not recreated here: this runs behind a dictation hotkey, and a
+            # multi-GB pull is not what a keypress asked for. server start does.
+            current, configured = mismatch
+            print(
+                f"Warning: container runs {current} but the config selects {configured}; "
+                "run `digue server start` to recreate it",
+                file=sys.stderr,
+            )
     if status == "exited":
         if not silent:
             send_notification("Starting server...")
@@ -579,16 +615,32 @@ def cmd_download(args: argparse.Namespace, config: dict[str, dict[str, Any]]) ->
 
 
 def cmd_server_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    if is_server_running(config):
-        print("server is already running", file=sys.stderr)
-        return 0
-
+    """Starts (or creates) the container. `--image` overrides `server.image`
+    for this run; a container created from another image than the one the
+    config now selects is removed and recreated, since `docker start` would
+    keep the old image."""
     if _is_remote(config):
+        if is_server_running(config):
+            print("server is already running", file=sys.stderr)
+            return 0
         print(server_not_running_hint(config), file=sys.stderr)
         return 1
 
+    image_override = getattr(args, "image", None)
+    if image_override:
+        config["server"]["image"] = image_override
+
     status = container_status()
     try:
+        mismatch = _image_mismatch(config) if status is not None else None
+        if mismatch is not None:
+            current, configured = mismatch
+            print(f"Container runs {current}; recreating with {configured}...", file=sys.stderr, flush=True)
+            remove_container()
+            status = None
+        elif is_server_running(config):
+            print("server is already running", file=sys.stderr)
+            return 0
         if status == "exited":
             print("Starting existing container...", file=sys.stderr, flush=True)
             start_container()

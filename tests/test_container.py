@@ -11,6 +11,15 @@ from digue import dictate as dictate_mod
 from digue import notify as notify_mod
 from digue.config import _default_config, load_config
 
+
+@pytest.fixture(autouse=True)
+def existing_container_has_the_configured_image(monkeypatch):
+    """Tests that mock `container_status` never ran `docker inspect` for the
+    image; keep them that way (no docker in tests). Tests about the image
+    check override this with their own patch."""
+    monkeypatch.setattr(container_mod, "container_image", lambda: None)
+
+
 # -- Detection ----------------------------------------------------------------
 
 
@@ -621,6 +630,121 @@ class TestContainerFailures:
         err = capsys.readouterr().err
         assert f"docker logs {container_mod.CONTAINER_NAME}" in err
         assert "whisper-server" not in err
+
+
+class TestServerStartImage:
+    """`server start --image`, and the recreation of a container created
+    from another image than the one the config now selects."""
+
+    def test_parser_accepts_image(self):
+        args = cli_mod.create_parser().parse_args(["server", "start", "--image", "ghcr.io/ggml-org/whisper.cpp:main"])
+        assert args.server_action == "start"
+        assert args.image == "ghcr.io/ggml-org/whisper.cpp:main"
+        assert cli_mod.create_parser().parse_args(["server", "start"]).image is None
+
+    @patch("digue.container._wait_for_server", return_value=True)
+    @patch("digue.container.create_container")
+    @patch("digue.container.remove_container")
+    @patch("digue.container.container_image", return_value="ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+    @patch("digue.container.container_status", return_value="exited")
+    @patch("digue.container.is_server_running", return_value=False)
+    def test_image_option_recreates_a_container_from_another_image(
+        self, mock_running, mock_status, mock_image, mock_remove, mock_create, mock_wait, capsys
+    ):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        args = MagicMock(image="ghcr.io/ggml-org/whisper.cpp:main")
+
+        assert container_mod.cmd_server_start(args, config) == 0
+
+        mock_remove.assert_called_once()
+        mock_create.assert_called_once_with(config, "cpu")
+        assert config["server"]["image"] == "ghcr.io/ggml-org/whisper.cpp:main"
+        err = capsys.readouterr().err
+        assert "recreating with ghcr.io/ggml-org/whisper.cpp:main" in err
+
+    @patch("digue.container._wait_for_server", return_value=True)
+    @patch("digue.container.create_container")
+    @patch("digue.container.remove_container")
+    @patch("digue.container.container_image", return_value="ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+    @patch("digue.container.container_status", return_value="running")
+    @patch("digue.container.is_server_running", return_value=True)
+    def test_config_image_change_recreates_even_a_running_server(
+        self, mock_running, mock_status, mock_image, mock_remove, mock_create, mock_wait
+    ):
+        """`docker start` keeps the original image, so a new `image` in the
+        config did nothing until the container was destroyed by hand."""
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "ghcr.io/ggml-org/whisper.cpp:main"
+
+        assert container_mod.cmd_server_start(MagicMock(image=None), config) == 0
+
+        mock_remove.assert_called_once()
+        mock_create.assert_called_once_with(config, "cpu")
+
+    @patch("digue.container.create_container")
+    @patch("digue.container.remove_container")
+    @patch("digue.container.container_image", return_value="ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+    @patch("digue.container.container_status", return_value="running")
+    @patch("digue.container.is_server_running", return_value=True)
+    def test_matching_image_is_left_alone(
+        self, mock_running, mock_status, mock_image, mock_remove, mock_create, capsys
+    ):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"  # resolves to main-vulkan, the container's image
+
+        assert container_mod.cmd_server_start(MagicMock(image=None), config) == 0
+
+        mock_remove.assert_not_called()
+        mock_create.assert_not_called()
+        assert "already running" in capsys.readouterr().err
+
+    @patch("digue.container.container_image", return_value="ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+    @patch("digue.container.container_status", return_value="running")
+    @patch("digue.container.is_server_running", return_value=True)
+    def test_remote_backend_ignores_the_image_check(self, mock_running, mock_status, mock_image, capsys):
+        config = _default_config()
+        config["server"]["backend"] = "remote"
+        assert container_mod.cmd_server_start(MagicMock(image="x"), config) == 0
+        mock_status.assert_not_called()
+
+    @patch("digue.container._wait_for_server", return_value=True)
+    @patch("digue.container.start_container")
+    @patch("digue.container.remove_container")
+    @patch("digue.container.container_image", return_value="ghcr.io/ggml-org/whisper.cpp:main-vulkan")
+    @patch("digue.container.container_status", return_value="exited")
+    @patch("digue.container.is_server_running", return_value=False)
+    def test_ensure_server_only_warns_about_a_mismatch(
+        self, mock_running, mock_status, mock_image, mock_remove, mock_start, mock_wait, capsys
+    ):
+        """Behind the dictation hotkey a multi-GB pull is not what a keypress
+        asked for: the mismatch is reported and `server start` recreates."""
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "ghcr.io/ggml-org/whisper.cpp:main"
+
+        container_mod.ensure_server(config, silent=True)
+
+        mock_remove.assert_not_called()
+        mock_start.assert_called_once()
+        err = capsys.readouterr().err
+        assert "runs ghcr.io/ggml-org/whisper.cpp:main-vulkan" in err
+        assert "digue server start" in err
+
+    @patch("digue.container._docker_run")
+    def test_container_image_reads_docker_inspect(self, mock_docker, monkeypatch):
+        monkeypatch.undo()  # the autouse fixture stubs container_image; this test is about the real one
+        mock_docker.return_value = MagicMock(returncode=0, stdout="ghcr.io/ggml-org/whisper.cpp:main\n")
+        assert container_mod.container_image() == "ghcr.io/ggml-org/whisper.cpp:main"
+        assert mock_docker.call_args.args[0] == [
+            "inspect",
+            "--format",
+            "{{.Config.Image}}",
+            container_mod.CONTAINER_NAME,
+        ]
+        mock_docker.return_value = MagicMock(returncode=1, stdout="")
+        assert container_mod.container_image() is None
 
 
 class TestRemoteBackend:
