@@ -1296,6 +1296,13 @@ class TestOrphanStartingTake:
         assert rescued.name.endswith("-0123456789abcdef.wav")
         assert not rec_file.exists()
         assert list(tmp_path.glob("digue-take-*.json")) == []
+        # same metadata contract as the surplus rescue: the take JSON travels
+        # with the audio, state "rescued"
+        import json
+
+        archived_state = json.loads(rescued.with_suffix(".json").read_text())
+        assert archived_state["state"] == "rescued"
+        assert archived_state["take_id"] == "0123456789abcdef"
 
     def test_recent_orphan_is_left_alone(self, tmp_path):
         take = self.make_starting_take(tmp_path, age_seconds=1)
@@ -1766,6 +1773,210 @@ class TestRecoverClaimedTake:
 
         assert exit_code == 1
         assert list(tmp_path.glob("digue-take-*.json")) == []
+
+
+class TestSurplusOrphanRescue:
+    """After the oldest orphan take was delivered, the remaining orphans are
+    claimed one by one (each claim under the dictate lock) and rescued: the
+    audio is kept via rescue_recording (unique name per take id) with the
+    take's metadata JSON moved next to it (state "rescued"), and one
+    consolidated notification is shown. Only the oldest take is ever
+    transcribed and pasted."""
+
+    def make_take(self, tmp_path, take_id, created_at_ns, **changes):
+        values = {
+            "version": digue.TAKE_STATE_VERSION,
+            "take_id": take_id,
+            "created_at_ns": created_at_ns,
+            "state": "recording",
+            "rec_file": tmp_path / f"digue-{take_id}.wav",
+            "daemon_pid": 999999,
+            "daemon_starttime": 1,
+            "recorder_pid": 555,
+            "recorder_starttime": 666,
+        }
+        values.update(changes)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            take = digue.TakeState(**values)
+            digue._write_take_state(take)
+        return take
+
+    def test_toggle_delivers_the_oldest_and_rescues_the_rest(self, tmp_path):
+        import os
+
+        oldest_wav = tmp_path / "digue-oldest.wav"
+        oldest_wav.write_bytes(b"audio oldest")
+        surplus_a = tmp_path / "digue-surplus-a.wav"
+        surplus_a.write_bytes(b"audio a")
+        surplus_b = tmp_path / "digue-surplus-b.wav"
+        surplus_b.write_bytes(b"audio b")
+        oldest = self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
+        surplus_take_a = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", 200, rec_file=surplus_a)
+        surplus_take_b = self.make_take(tmp_path, "bbbbbbbbbbbbbbbb", 300, rec_file=surplus_b)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["max_duration"] = 0
+        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+        finish_take_ids = []
+
+        def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
+            finish_take_ids.append(take_id)
+            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.stop_recording_pid", side_effect=lambda pid, rec_file, expected_starttime=None: rec_file),
+            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("subprocess.Popen", return_value=recorder),
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.notify") as mock_notify,
+            patch("digue.notify_close"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        # only the oldest orphan is transcribed and pasted; the second
+        # finish_dictation call belongs to the take this toggle started
+        assert finish_take_ids[0] == oldest.take_id
+        assert surplus_take_a.take_id not in finish_take_ids
+        assert surplus_take_b.take_id not in finish_take_ids
+        month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
+        for take, original_bytes in (
+            (surplus_take_a, b"audio a"),
+            (surplus_take_b, b"audio b"),
+        ):
+            rescued = list(month.glob(f"*-{take.take_id}.wav"))
+            assert len(rescued) == 1 and rescued[0].read_bytes() == original_bytes
+            assert not take.rec_file.exists()
+            metadata_path = rescued[0].with_suffix(".json")
+            metadata = json.loads(metadata_path.read_text())
+            assert metadata["state"] == "rescued"
+            assert metadata["take_id"] == take.take_id
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+        rescued_notifies = [call for call in mock_notify.call_args_list if "rescued to" in str(call.args)]
+        assert len(rescued_notifies) == 1
+        message = rescued_notifies[0].args[0]
+        assert "2 recordings rescued to" in message
+        assert str(tmp_path / "audio") in message
+
+    def test_surplus_take_with_live_recorder_is_stopped_before_rescue(self, tmp_path):
+        import os
+
+        oldest_wav = tmp_path / "digue-oldest.wav"
+        oldest_wav.write_bytes(b"audio oldest")
+        surplus_wav = tmp_path / "digue-surplus.wav"
+        surplus_wav.write_bytes(b"audio surplus")
+        self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
+        surplus_recorder = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        try:
+            self.make_take(
+                tmp_path,
+                "aaaaaaaaaaaaaaaa",
+                200,
+                rec_file=surplus_wav,
+                recorder_pid=surplus_recorder.pid,
+                recorder_starttime=int(digue._process_starttime(surplus_recorder.pid)),
+            )
+            config = digue._default_config()
+            config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+            config["dictate"]["max_duration"] = 0
+            recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+
+            with (
+                patch("digue._runtime_dir", return_value=tmp_path),
+                patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+                patch("digue.ensure_server"),
+                patch("digue.is_server_running", return_value=True),
+                patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+                patch("subprocess.Popen", return_value=recorder),
+                patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+                patch("digue._wait_recorder_end_daemon", return_value="ended"),
+                patch("digue.notify"),
+                patch("digue.notify_close"),
+                patch("signal.signal"),
+            ):
+                assert digue.dictate_toggle(config) == 0
+
+            assert surplus_recorder.poll() is not None
+            month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
+            rescued = list(month.glob("*-aaaaaaaaaaaaaaaa.wav"))
+            assert len(rescued) == 1 and rescued[0].read_bytes() == b"audio surplus"
+            assert list(month.glob("*-aaaaaaaaaaaaaaaa.json"))
+        finally:
+            surplus_recorder.kill()
+            surplus_recorder.wait(timeout=5)
+
+    def test_each_surplus_claim_happens_under_the_dictate_lock(self, tmp_path):
+        """_claim_orphan_take requires the lock; the surplus loop runs outside
+        the toggle's lock, so it must take it around every claim, or two
+        toggles could claim the same surplus take."""
+        import contextlib
+
+        lock_depth = 0
+        claims_under_lock = []
+
+        @contextlib.contextmanager
+        def recording_lock():
+            nonlocal lock_depth
+            lock_depth += 1
+            try:
+                yield
+            finally:
+                lock_depth -= 1
+
+        takes = iter([MagicMock(take_id="aaaaaaaaaaaaaaaa"), None])
+
+        def fake_claim():
+            claims_under_lock.append(lock_depth > 0)
+            return next(takes)
+
+        with (
+            patch("digue._dictate_lock", recording_lock),
+            patch("digue._claim_orphan_take", side_effect=fake_claim),
+            patch("digue._rescue_surplus_take", return_value=tmp_path / "rescued.wav"),
+            patch("digue._take_state_file", return_value=tmp_path / "gone.json"),
+        ):
+            rescued = digue._rescue_surplus_orphans(digue._default_config())
+
+        assert rescued == [tmp_path / "rescued.wav"]
+        assert claims_under_lock == [True, True]
+
+    def test_surplus_rescue_failure_preserves_state_and_wav(self, tmp_path):
+        import os
+
+        oldest_wav = tmp_path / "digue-oldest.wav"
+        oldest_wav.write_bytes(b"audio oldest")
+        surplus_wav = tmp_path / "digue-surplus.wav"
+        surplus_wav.write_bytes(b"audio surplus")
+        self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
+        surplus_take = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", 200, rec_file=surplus_wav)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["max_duration"] = 0
+        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+            patch("digue.rescue_recording", return_value=None),
+            patch("subprocess.Popen", return_value=recorder),
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.notify"),
+            patch("digue.notify_close"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        assert surplus_wav.exists()
+        assert (tmp_path / f"digue-take-{surplus_take.take_id}.json").exists()
 
 
 class TestSpawnLimitWatchdog:
@@ -3921,6 +4132,58 @@ class TestCmdClean:
         assert "2026/09/20260901-100000.txt" in err
         assert "2026/09/20260902-110000.flac" in err
 
+    def test_rescued_json_is_removed_with_its_recording_as_one_unit(self, tmp_path, capsys):
+        """A rescued take's .json is metadata of the recording: it is removed
+        together with the recording of the same stem and counted as one unit,
+        never as its own category."""
+        audio_dir = tmp_path / "audio"
+        month = audio_dir / "2026" / "09"
+        month.mkdir(parents=True)
+        (month / "20260904-120000-0123456789abcdef.wav").write_bytes(b"audio")
+        (month / "20260904-120000-0123456789abcdef.json").write_text('{"state": "rescued"}')
+        (month / "20260905-130000-aaaaaaaaaaaaaaaa.wav").write_bytes(b"audio")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True), config)
+
+        assert result == 0
+        assert not list(month.glob("*0123456789abcdef*"))
+        assert not list(month.glob("*aaaaaaaaaaaaaaaa*"))
+        assert "Removed 2 file(s)" in capsys.readouterr().err
+
+    def test_json_without_recording_is_preserved(self, tmp_path, capsys):
+        """clean is not a general metadata collector: a .json whose recording
+        is gone stays untouched."""
+        audio_dir = tmp_path / "audio"
+        month = audio_dir / "2026" / "09"
+        month.mkdir(parents=True)
+        json_path = month / "20260904-120000-0123456789abcdef.json"
+        json_path.write_text('{"state": "rescued"}')
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True), config)
+
+        assert result == 0
+        assert "Nothing to remove" in capsys.readouterr().err
+        assert json_path.exists()
+
+    def test_json_is_never_removed_as_transcript(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        month = audio_dir / "2026" / "09"
+        month.mkdir(parents=True)
+        json_path = month / "20260904-120000-0123456789abcdef.json"
+        json_path.write_text('{"state": "rescued"}')
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
+
+        assert result == 0
+        assert "Nothing to remove" in capsys.readouterr().err
+        assert json_path.exists()
+
     def test_nothing_to_remove(self, tmp_path, capsys):
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir()
@@ -4073,6 +4336,24 @@ class TestSaveAudio:
 
 
 class TestRescueRecording:
+    def test_rescue_never_overwrites_an_existing_destination(self, tmp_path):
+        """The temp file is exclusive, but publishing with os.replace would
+        still clobber a destination that already exists; the rescue contract
+        is never to overwrite another take's file."""
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"new audio")
+        timestamp = "20260905-101500"
+        existing = tmp_path / "audio" / digue.month_dir_for(timestamp) / f"{timestamp}-0123456789abcdef.wav"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"old audio")
+
+        rescued = digue.rescue_recording(rec_file, tmp_path / "audio", timestamp, "0123456789abcdef")
+
+        assert rescued is None
+        assert existing.read_bytes() == b"old audio"
+        assert rec_file.read_bytes() == b"new audio"
+        assert sorted(path.name for path in existing.parent.iterdir()) == [existing.name]
+
     def test_moves_wav_with_take_id_and_only_then_removes_origin(self, tmp_path):
         rec_file = tmp_path / "digue-rec.wav"
         rec_file.write_bytes(b"audio")
@@ -4094,12 +4375,12 @@ class TestRescueRecording:
         assert result is None
         assert "Failed to keep recording" in capsys.readouterr().err
 
-    def test_replace_failure_preserves_origin_and_removes_temp(self, tmp_path, capsys):
+    def test_publish_failure_preserves_origin_and_removes_temp(self, tmp_path, capsys):
         rec_file = tmp_path / "digue-rec.wav"
         rec_file.write_bytes(b"audio")
         audio_dir = tmp_path / "audio"
 
-        with patch("os.replace", side_effect=OSError("cross-device")):
+        with patch("os.link", side_effect=OSError("disk full")):
             result = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
 
         month_dir = audio_dir / "2026" / "09"

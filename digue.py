@@ -1571,20 +1571,7 @@ def _write_take_state(take: TakeState) -> Path:
     import json
 
     state_path = _take_state_file(take.take_id)
-    data = {
-        "version": take.version,
-        "take_id": take.take_id,
-        "created_at_ns": take.created_at_ns,
-        "state": take.state,
-        "rec_file": str(take.rec_file),
-        "daemon_pid": take.daemon_pid,
-        "daemon_starttime": take.daemon_starttime,
-        "recorder_pid": take.recorder_pid,
-        "recorder_starttime": take.recorder_starttime,
-        "recoverer_pid": take.recoverer_pid,
-        "recoverer_starttime": take.recoverer_starttime,
-    }
-    _write_state_file(state_path, json.dumps(data, separators=(",", ":")))
+    _write_state_file(state_path, json.dumps(_take_state_payload(take), separators=(",", ":")))
     return state_path
 
 
@@ -1671,13 +1658,16 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
         take.rec_file.unlink(missing_ok=True)
         state_file.unlink(missing_ok=True)
         return None
-    rescued = rescue_recording(take.rec_file, config["dictate"]["audio_dir"], now_timestamp(), take.take_id)
-    state_file.unlink(missing_ok=True)
-    if rescued is not None:
-        notify(
-            f"A recording whose daemon died while starting was recovered; audio kept at {rescued}",
-            timeout_ms=10000,
-        )
+    timestamp = now_timestamp()
+    rescued = rescue_recording(take.rec_file, config["dictate"]["audio_dir"], timestamp, take.take_id)
+    if rescued is None:
+        return None  # origin preserved, state kept: the next toggle retries
+    # same metadata contract as the surplus rescue: the JSON goes with the audio
+    _archive_rescued_take_state(take, config["dictate"]["audio_dir"], timestamp)
+    notify(
+        f"A recording whose daemon died while starting was recovered; audio kept at {rescued}",
+        timeout_ms=10000,
+    )
     return rescued
 
 
@@ -1751,6 +1741,91 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         return result.exit_code
     _take_state_file(take.take_id).unlink(missing_ok=True)
     return result.exit_code
+
+
+def _take_state_payload(take: TakeState, state: str | None = None) -> dict[str, Any]:
+    """JSON payload of a take state; `state` overrides the lifecycle state (the
+    archived "rescued" metadata is written outside the runtime dir, where the
+    strict parser never sees it)."""
+    return {
+        "version": take.version,
+        "take_id": take.take_id,
+        "created_at_ns": take.created_at_ns,
+        "state": state if state is not None else take.state,
+        "rec_file": str(take.rec_file),
+        "daemon_pid": take.daemon_pid,
+        "daemon_starttime": take.daemon_starttime,
+        "recorder_pid": take.recorder_pid,
+        "recorder_starttime": take.recorder_starttime,
+        "recoverer_pid": take.recoverer_pid,
+        "recoverer_starttime": take.recoverer_starttime,
+    }
+
+
+def _archive_rescued_take_state(take: TakeState, audio_dir: str | Path, timestamp: str) -> None:
+    """Moves the take state JSON next to the rescued recording (state "rescued").
+
+    The JSON is metadata of the recording, not a live take state: it is kept
+    beside the audio for a future re-transcribe command, and clean removes it
+    together with the recording of the same stem (never on its own)."""
+    import json
+
+    state_file = _take_state_file(take.take_id)
+    if not state_file.exists():
+        return
+    target = Path(audio_dir) / month_dir_for(timestamp) / f"{_saved_stem(timestamp, take.take_id)}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_state_file(target, json.dumps(_take_state_payload(take, state="rescued"), separators=(",", ":")))
+    state_file.unlink(missing_ok=True)
+
+
+def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> Path | None:
+    """Rescues one surplus orphan take's audio without transcribing it.
+
+    A live recorder is stopped through its published identity first; the WAV
+    goes to rescue_recording (exclusive name per take id) and the take state
+    JSON is archived next to it. Returns the rescued path, or None when there
+    was nothing to rescue (the state is then removed) or the rescue failed
+    (the state is kept, so the next toggle retries)."""
+    rec_file: Path | None = take.rec_file
+    if take.recorder_pid is not None:
+        rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
+    else:
+        # no recorder identity to trust: the conservative starting rules apply
+        return _expire_orphan_starting(config, take)
+    if rec_file is None or not rec_file.exists() or rec_file.stat().st_size == 0:
+        _take_state_file(take.take_id).unlink(missing_ok=True)
+        return None
+    audio_dir = Path(config["dictate"]["audio_dir"])
+    timestamp = now_timestamp()
+    rescued = rescue_recording(rec_file, audio_dir, timestamp, take.take_id)
+    if rescued is None:
+        return None
+    _archive_rescued_take_state(take, audio_dir, timestamp)
+    return rescued
+
+
+def _rescue_surplus_orphans(config: dict[str, dict[str, Any]]) -> list[Path]:
+    """Rescues the remaining orphan takes after the oldest one was delivered.
+
+    Each take is claimed (under the dictate lock) and rescued one by one, so a
+    concurrent toggle never races a claim. Only the oldest orphan is ever
+    transcribed and pasted; the rest keep their audio and metadata. Stops at
+    the first take whose state could not be removed (rescue failure), leaving
+    it for the next toggle."""
+    rescued_paths: list[Path] = []
+    while True:
+        # This loop runs outside the toggle's lock (the rescue itself is slow
+        # I/O), so each claim takes it: _claim_orphan_take requires the lock.
+        with _dictate_lock():
+            surplus = _claim_orphan_take()
+        if surplus is None:
+            return rescued_paths
+        rescued = _rescue_surplus_take(config, surplus)
+        if rescued is not None:
+            rescued_paths.append(rescued)
+        if _take_state_file(surplus.take_id).exists():
+            return rescued_paths
 
 
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
@@ -2301,11 +2376,12 @@ def rescue_recording(
     """Keeps a recording that could not be fully delivered. Never raises.
 
     Copies the WAV to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.wav via an
-    exclusive temp sibling + flush + fsync + replace (runtime dir and audio-dir
-    usually live on different filesystems, and the destination must never be
-    readable in a partial state), then removes the origin -- only after the
-    destination is valid. Any failure removes the temp, preserves the origin
-    and reports on stderr.
+    exclusive temp sibling + flush + fsync + exclusive link (runtime dir and
+    audio-dir usually live on different filesystems, the destination must
+    never be readable in a partial state, and an existing destination is
+    never overwritten), then removes the origin -- only after the destination
+    is valid. Any failure removes the temp, preserves the origin and reports
+    on stderr.
     """
     import shutil
 
@@ -2320,7 +2396,10 @@ def rescue_recording(
             shutil.copyfileobj(source_file, temp_file)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_archived, archived)
+        # os.link fails with FileExistsError instead of replacing: the publish
+        # step is as exclusive as the temp file (os.replace would clobber).
+        os.link(temp_archived, archived)
+        temp_archived.unlink()
         rec_file.unlink()
         return archived
     except Exception as rescue_exc:
@@ -2660,6 +2739,16 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     # toggle retries), not be reported as a failed recording start.
     if claimed is not None:
         recovery_exit = _recover_claimed_take(config, claimed)
+        # Surplus orphans are only rescued once the oldest take reached a
+        # terminal outcome: a retryable failure leaves the claimed state in
+        # place and the next toggle claims it again (the surplus stays put).
+        if not _take_state_file(claimed.take_id).exists():
+            rescued_paths = _rescue_surplus_orphans(config)
+            if rescued_paths:
+                notify(
+                    f"{len(rescued_paths)} recordings rescued to {config['dictate']['audio_dir']}",
+                    timeout_ms=10000,
+                )
     try:
         limit = config["dictate"]["max_duration"]
         message = (
@@ -3832,13 +3921,23 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
     print(f"  Recordings: {len(recordings)} file(s), {total_mb:.1f} MB", file=sys.stderr)
     print(f"  Transcripts: {len(transcripts)} file(s)", file=sys.stderr)
 
+    # A rescued take's .json is metadata of the recording, not its own
+    # category: it is removed together with the recording of the same stem
+    # (counted as one unit), never listed as a transcript, and a .json whose
+    # recording is gone is preserved.
+    recording_metadata = {path: path.with_suffix(".json") for path in recordings if path.with_suffix(".json").exists()}
+
     if not recordings and not transcripts:
         print("Nothing to remove.", file=sys.stderr)
         return 0
 
     total = len(recordings) + len(transcripts)
     if not args.force:
-        for path in sorted(recordings + transcripts):
+        for path in sorted(recordings):
+            print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
+            if path in recording_metadata:
+                print(f"  {recording_metadata[path].relative_to(audio_dir)} (metadata)", file=sys.stderr)
+        for path in sorted(transcripts):
             print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
         answer = input(f"Remove all {total} file(s)? [y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
@@ -3849,6 +3948,9 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
     for path in recordings:
         path.unlink()
         count += 1
+        metadata_path = recording_metadata.get(path)
+        if metadata_path is not None:
+            metadata_path.unlink()
     for path in transcripts:
         path.unlink()
         count += 1
