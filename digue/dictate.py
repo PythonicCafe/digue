@@ -272,6 +272,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         _cancel_watchdog,
         _claim_orphan_take,
         _finish_owned_recorder,
+        _mark_take_delivering,
         _recording_file_of,
         _take_state_file,
         _wait_recorder_end_daemon,
@@ -369,6 +370,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     # concurrent toggle never lands in the kill window (it would be dropped:
     # SIGTERM on a daemon that is already delivering is ignored by the gate).
     _write_daemon_state(daemon_pid, "delivering")
+    if processes.take_id is not None:
+        _mark_take_delivering(processes.take_id)
     notify_close()
     rec_file = _finish_owned_recorder(processes.recorder, rec_file)
     _cancel_watchdog(processes.watchdog)

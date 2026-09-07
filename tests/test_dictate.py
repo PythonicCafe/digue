@@ -163,7 +163,7 @@ class TestDictateDaemon:
         assert not (tmp_path / "digue-daemon.pid").exists()
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
             [take] = recording_mod._take_states()
-            assert take.state == "recording"
+            assert take.state == "delivering"
             assert take.rec_file.exists()
 
     def test_daemon_keeps_take_state_on_unexpected_exception(self, tmp_path):
@@ -175,7 +175,7 @@ class TestDictateDaemon:
 
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
             [take] = recording_mod._take_states()
-            assert take.state == "recording"
+            assert take.state == "delivering"
         assert not (tmp_path / "digue-daemon.pid").exists()
 
     def test_startup_failure_clears_own_reservation(self, tmp_path):

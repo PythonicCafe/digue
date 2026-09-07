@@ -452,7 +452,10 @@ class TestStartRecordingPublishesTakeState:
 
         def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
             finish_take_ids.append(take_id)
-            assert [take.state for take in recording_mod._take_states()] == ["recording"]
+            # the take state follows the daemon file: "delivering" is written
+            # before the recorder is stopped, so it is what the delivery sees
+            # and what a recovery of a daemon killed mid-delivery reads
+            assert [take.state for take in recording_mod._take_states()] == ["delivering"]
             return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (

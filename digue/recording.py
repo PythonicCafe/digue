@@ -369,6 +369,23 @@ def _read_take_state(state_path: Path) -> TakeState | None:
         return None
 
 
+def _mark_take_delivering(take_id: str) -> None:
+    """Moves the daemon's own take from "recording" to "delivering".
+
+    Called together with the daemon file transition, before the recorder is
+    stopped: the persisted take state then mirrors the daemon file, and a
+    recovery reads what phase the dead daemon was in. A state that cannot
+    be read (or is not "recording") is left alone: the daemon file already
+    carries the phase, and the unreadable-state rule (report, never touch)
+    applies.
+    """
+    import dataclasses
+
+    take = _read_take_state(_take_state_file(take_id))
+    if take is not None and take.state == "recording":
+        _write_take_state(dataclasses.replace(take, state="delivering"))
+
+
 def _take_states() -> list[TakeState]:
     states = []
     for state_path in _runtime_dir().glob("digue-take-*.json"):
