@@ -171,6 +171,55 @@ class TestContainerExists:
         assert digue.container_exists() is False
 
 
+class TestDockerMissing:
+    """Without the docker binary, every local-backend command used to die with
+    a FileNotFoundError traceback, and `dictate` blamed the recorder."""
+
+    def test_docker_run_raises_a_named_error(self):
+        with (
+            patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", "docker")),
+            pytest.raises(digue.DockerNotFoundError, match="docker not found"),
+        ):
+            digue._docker_run(["ps"])
+
+    def test_pull_image_raises_a_named_error(self):
+        with (
+            patch("digue.image_exists", return_value=False),
+            patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", "docker")),
+            pytest.raises(digue.DockerNotFoundError, match="docker not found"),
+        ):
+            digue.pull_image("ghcr.io/example/image")
+
+    def test_main_reports_missing_docker_without_traceback(self, tmp_path, capsys):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[server]\nbackend = "cpu"\n')
+        with (
+            patch.object(sys, "argv", ["digue", "--config", str(config_path), "status"]),
+            patch("digue.is_server_running", return_value=False),
+            patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", "docker")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            digue.main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Error: docker not found" in err
+        assert "Traceback" not in err
+
+    def test_dictate_blames_docker_not_the_recorder(self, tmp_path):
+        config = digue._default_config()
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server", side_effect=digue.DockerNotFoundError(digue.DOCKER_NOT_FOUND)),
+            patch("digue.notify") as mock_notify,
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        message = mock_notify.call_args.args[0]
+        assert "docker not found" in message
+        assert "Recorder not found" not in message
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
+
 class TestContainerStatus:
     @patch("digue._docker_run")
     def test_returns_status(self, mock_docker):

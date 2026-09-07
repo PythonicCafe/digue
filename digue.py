@@ -473,15 +473,27 @@ def detect_backend() -> str:
 # -- Container management -----------------------------------------------------
 
 
+DOCKER_NOT_FOUND = (
+    'docker not found. Install Docker (https://docs.docker.com/engine/install/) or use backend = "remote"'
+)
+
+
+class DockerNotFoundError(RuntimeError):
+    """The docker binary is missing: every local-backend command needs it."""
+
+
 def _docker_run(args: list[str], timeout: int | float = 30) -> subprocess.CompletedProcess[str]:
     import subprocess
 
-    return subprocess.run(
-        ["docker"] + args,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        return subprocess.run(
+            ["docker"] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise DockerNotFoundError(DOCKER_NOT_FOUND) from exc
 
 
 def container_exists() -> bool:
@@ -512,10 +524,13 @@ def pull_image(image: str) -> None:
         return
 
     print(f"Pulling {image} (this may take a while on first run)...", file=sys.stderr, flush=True)
-    result = subprocess.run(
-        ["docker", "pull", image],
-        timeout=600,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "pull", image],
+            timeout=600,
+        )
+    except FileNotFoundError as exc:
+        raise DockerNotFoundError(DOCKER_NOT_FOUND) from exc
     if result.returncode != 0:
         raise RuntimeError(f"Failed to pull image: {image}")
     print(f"Pull complete: {image}", file=sys.stderr)
@@ -2877,15 +2892,10 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             notify(server_not_running_hint(config), timeout_ms=5000)
             _remove_daemon_state(daemon_pid)
             return 1
-    except FileNotFoundError as exc:
-        notify(
-            f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
-            timeout_ms=10000,
-        )
-        _remove_daemon_state(daemon_pid)
-        return 1
     except Exception as exc:
-        notify(f"Failed to start recording: {exc}", timeout_ms=5000)
+        # no recorder is involved yet: a missing binary here is docker (or
+        # ffmpeg during the model download), never pw-record/arecord
+        notify(f"Cannot start the server: {exc}", timeout_ms=10000)
         _remove_daemon_state(daemon_pid)
         return 1
     try:
@@ -4299,6 +4309,9 @@ def main() -> None:
 
     try:
         sys.exit(handler(args, config))
+    except DockerNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         notify_close()
         print("\nInterrupted.", file=sys.stderr)
