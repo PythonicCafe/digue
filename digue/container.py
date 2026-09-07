@@ -651,9 +651,6 @@ def cmd_server_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]
     image_override = getattr(args, "image", None)
     if image_override:
         config["server"]["image"] = image_override
-    container_override = getattr(args, "container_name", None)
-    if isinstance(container_override, str) and container_override:
-        config["server"]["container_name"] = container_override
 
     name = resolve_container_name(config)
     status = container_status(name)

@@ -6,7 +6,7 @@ import pytest
 
 from digue import convert as convert_mod
 from digue import transcribe as transcribe_mod
-from digue.config import _default_config
+from digue.config import _default_config, apply_cli_overrides
 
 
 class TestCmdConvert:
@@ -255,8 +255,10 @@ class TestSilentAudioTimestamps:
         args.language = None
         args.prompt = None
         args.verbose = False
+        config = _default_config()
+        apply_cli_overrides(args, config)
 
-        result = transcribe_mod.cmd_transcribe(args, _default_config())
+        result = transcribe_mod.cmd_transcribe(args, config)
 
         captured = capsys.readouterr()
         assert result == 0
@@ -279,8 +281,10 @@ class TestSilentAudioTimestamps:
         args.output_dir = output_dir
         args.response_format = "timestamps"
         args.language = None
+        config = _default_config()
+        apply_cli_overrides(args, config)
 
-        result = transcribe_mod.cmd_batch_transcribe(args, _default_config())
+        result = transcribe_mod.cmd_batch_transcribe(args, config)
 
         assert result == 0
         assert (output_dir / "silence.txt").read_text() == "\n"

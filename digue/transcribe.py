@@ -672,9 +672,9 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
         print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
         return 1
 
-    language = args.language or config["transcribe"]["language"]
-    prompt = args.prompt if args.prompt is not None else config["transcribe"].get("prompt", "")
-    response_format = args.response_format or config["transcribe"].get("output_format", "text")
+    language = config["transcribe"]["language"]
+    prompt = config["transcribe"].get("prompt") or None
+    response_format = config["transcribe"].get("output_format", "text")
     max_line_length = int(config["transcribe"].get("max_line_length", 42))
     max_lines = int(config["transcribe"].get("max_lines", 2))
     timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
@@ -723,8 +723,8 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
     from digue.convert import _convert_content
 
-    language = args.language or config["transcribe"]["language"]
-    response_format = args.response_format or config["transcribe"]["output_format"]
+    language = config["transcribe"]["language"]
+    response_format = config["transcribe"]["output_format"]
     prompt = config["transcribe"]["prompt"]
     max_line_length = config["transcribe"]["max_line_length"]
     max_lines = config["transcribe"]["max_lines"]

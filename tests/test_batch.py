@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from digue import transcribe as transcribe_mod
-from digue.config import _default_config
+from digue.config import _default_config, apply_cli_overrides
 
 
 class TestCmdBatchTranscribeInput:
@@ -163,6 +163,7 @@ class TestCmdBatchTranscribe:
         args.response_format = "vtt"
         args.language = None
         config = _default_config()
+        apply_cli_overrides(args, config)
 
         result = transcribe_mod.cmd_batch_transcribe(args, config)
         assert result == 0
@@ -189,6 +190,7 @@ class TestCmdBatchTranscribe:
         args.response_format = "vtt"
         args.language = None
         config = _default_config()
+        apply_cli_overrides(args, config)
 
         result = transcribe_mod.cmd_batch_transcribe(args, config)
         assert result == 0

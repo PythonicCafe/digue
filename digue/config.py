@@ -99,6 +99,21 @@ def _host_overrides(user_config: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def validate_container_name(name: str) -> None:
+    """Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]* (docker silently truncates anything else).
+
+    Used by the config validation and by `server start -n`, which writes the name straight into the config and would
+    otherwise reach docker inspect/create unvalidated.
+    """
+    import re
+
+    if not name or re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name) is None:
+        raise ValueError(
+            f"Invalid server.container_name: {name!r}; expected a non-empty Docker container name "
+            "([a-zA-Z0-9][a-zA-Z0-9_.-]*)"
+        )
+
+
 def _validate_config(config: dict[str, dict[str, Any]]) -> None:
     """Validates the fully merged configuration before commands consume it."""
 
@@ -122,8 +137,7 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
         raise ValueError(f"Invalid server.port: {port}; expected an integer from 1 to 65535")
     for key in ("data_dir", "image", "bind_ip", "remote_host", "container_name"):
         require_type("server", key, str)
-    if not str(config["server"]["container_name"]).strip():
-        raise ValueError("Invalid server.container_name: expected a non-empty Docker container name")
+    validate_container_name(str(config["server"]["container_name"]))
 
     for key in ("language", "prompt"):
         require_type("transcribe", key, str)
@@ -222,6 +236,30 @@ def _validate_config_structure(user_config: dict[str, Any]) -> None:
             kind = type(value).__name__
             raise ValueError(f"Section [{name}] must be a table of key = value pairs, got {kind}")
         _check_section_keys(name, value)
+
+
+def apply_cli_overrides(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> None:
+    """Applies CLI options that override config values, with the same validation the TOML file gets.
+
+    Every CLI-to-config override lives here so a value typed on the command line cannot bypass the checks the file
+    goes through (the choices are also enforced by argparse, but -n historically was not, and "already running" hid it).
+    An option absent from the parsed Namespace (tests with partial mocks, subcommands without the flag) keeps the
+    loaded config.
+    """
+    candidates = {
+        ("server", "container_name"): getattr(args, "container_name", None),
+        ("server", "image"): getattr(args, "image", None),
+        ("transcribe", "language"): getattr(args, "language", None),
+        ("transcribe", "prompt"): getattr(args, "prompt", None),
+        ("transcribe", "output_format"): getattr(args, "response_format", None),
+    }
+    overrides = {(section, key): value for (section, key), value in candidates.items() if isinstance(value, str)}
+    merged = {section: dict(values) for section, values in config.items()}
+    for (section, key), value in overrides.items():
+        merged[section][key] = value
+    _validate_config(merged)
+    for (section, key), value in overrides.items():
+        config[section][key] = value
 
 
 def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, Any]]:

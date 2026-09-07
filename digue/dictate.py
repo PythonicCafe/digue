@@ -420,6 +420,4 @@ def _recover_orphan_takes(config: dict[str, dict[str, Any]], claimed: TakeState)
 
 
 def cmd_dictate(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    if args.prompt is not None:
-        config["transcribe"]["prompt"] = args.prompt
     return dictate_toggle(config)

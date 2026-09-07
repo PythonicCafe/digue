@@ -8,7 +8,7 @@ import pytest
 
 from digue import convert as convert_mod
 from digue import transcribe as transcribe_mod
-from digue.config import _default_config
+from digue.config import _default_config, apply_cli_overrides
 
 # Transcription
 
@@ -712,8 +712,10 @@ class TestOutputFilesEndWithOneNewline:
         args = MagicMock(audio=audio, output=str(tmp_path / "a.vtt"), response_format="vtt")
         args.language = args.prompt = None
         args.verbose = False
+        config = _default_config()
+        apply_cli_overrides(args, config)
 
-        assert transcribe_mod.cmd_transcribe(args, _default_config()) == 0
+        assert transcribe_mod.cmd_transcribe(args, config) == 0
 
         content = (tmp_path / "a.vtt").read_text()
         assert content == self.VTT
@@ -728,8 +730,10 @@ class TestOutputFilesEndWithOneNewline:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format="vtt", language=None)
+        config = _default_config()
+        apply_cli_overrides(args, config)
 
-        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 0
+        assert transcribe_mod.cmd_batch_transcribe(args, config) == 0
 
         assert (output_dir / "a.vtt").read_text() == self.VTT
 

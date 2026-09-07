@@ -309,7 +309,7 @@ def _format_extension(response_format: str) -> str:
 def main() -> None:
     from digue.audio import cmd_clean
     from digue.benchmark import cmd_benchmark
-    from digue.config import _config_init, _config_path, cmd_config, load_config
+    from digue.config import _config_init, _config_path, apply_cli_overrides, cmd_config, load_config
     from digue.container import (
         DockerNotFoundError,
         cmd_detect,
@@ -382,6 +382,13 @@ def main() -> None:
     handler = commands.get(f"{command}-{args.server_action}" if command == "server" else command)
     if handler is None:
         parser.print_help()
+        sys.exit(1)
+
+    try:
+        apply_cli_overrides(args, config)
+    except ValueError as exc:
+        # an invalid override (-n with spaces, -f outside the choices...) fails exactly like a config error
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     try:

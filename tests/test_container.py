@@ -9,7 +9,7 @@ from digue import cli as cli_mod
 from digue import container as container_mod
 from digue import dictate as dictate_mod
 from digue import notify as notify_mod
-from digue.config import _default_config, load_config
+from digue.config import _default_config, apply_cli_overrides, load_config
 
 _real_container_image = container_mod.container_image
 
@@ -789,12 +789,32 @@ class TestServerStartImage:
         config = _default_config()
         config["server"]["backend"] = "cpu"
         args = MagicMock(image=None, container_name="whisper-lab")
+        apply_cli_overrides(args, config)
 
         assert container_mod.cmd_server_start(args, config) == 0
 
         assert config["server"]["container_name"] == "whisper-lab"
         mock_status.assert_called_once_with("whisper-lab")
         mock_create.assert_called_once_with(config, "cpu")
+
+    @patch("digue.container._wait_for_server", return_value=True)
+    @patch("digue.container.create_container")
+    @patch("digue.container.container_status", return_value=None)
+    @patch("digue.container.is_server_running", return_value=False)
+    def test_container_name_option_with_an_invalid_docker_name_is_rejected(
+        self, mock_running, mock_status, mock_create, mock_wait
+    ):
+        """`-n` goes through apply_cli_overrides like every CLI override; without that check it only got validated
+        when it came from the TOML, and `server start -n 'bad name'` answered "already running" with a live server."""
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["container_name"] = "digue-whisper.cpp"
+        args = MagicMock(image=None, container_name="bad name")
+
+        with pytest.raises(ValueError, match="Invalid server.container_name"):
+            apply_cli_overrides(args, config)
+
+        assert config["server"]["container_name"] == "digue-whisper.cpp"
 
 
 class TestRemoteBackend:
