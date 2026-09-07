@@ -142,6 +142,71 @@ class TestDictateDaemon:
             state_file = recording_mod._take_state_file(take.take_id)
         return exit_code, state_file
 
+    def run_daemon_after_recorder_death(self, tmp_path, audio: bytes):
+        """The recorder exits on its own ("died") with its stderr on disk;
+        returns (exit_code, notifications, finish calls, take state file)."""
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(audio)
+        stderr_path = tmp_path / "digue-recorder-err-1"
+        stderr_path.write_text("pw-record: stream error\n")
+        recorder = MagicMock(pid=777, poll=lambda: 1, returncode=1)
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
+            take = recording_mod.TakeState(
+                version=recording_mod.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=100,
+                state="recording",
+                rec_file=rec_file,
+                daemon_pid=os.getpid(),
+                daemon_starttime=int(recording_mod._process_starttime(os.getpid())),
+                recorder_pid=777,
+                recorder_starttime=1,
+            )
+            recording_mod._write_take_state(take)
+        processes = recording_mod.RecordingProcesses(
+            recorder=recorder, watchdog=None, rec_file=rec_file, take_id=take.take_id, stderr_path=stderr_path
+        )
+        finish_calls = []
+
+        def finish(_config, file, limit_reached=False, take_id=None):
+            finish_calls.append(file)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
+            patch("digue.recording.start_recording", return_value=processes),
+            patch("digue.recording._wait_recorder_end_daemon", return_value="died"),
+            patch("digue.dictate.finish_dictation", side_effect=finish),
+            patch("digue.notify.send_notification") as mock_notify,
+            patch("signal.signal"),
+        ):
+            exit_code = dictate_mod.dictate_toggle(config)
+            state_file = recording_mod._take_state_file(take.take_id)
+        messages = [recorded_call.args[0] for recorded_call in mock_notify.call_args_list]
+        assert not stderr_path.exists()
+        return exit_code, messages, finish_calls, state_file
+
+    def test_recorder_death_without_audio_reports_its_stderr(self, tmp_path):
+        exit_code, messages, finish_calls, state_file = self.run_daemon_after_recorder_death(tmp_path, b"")
+
+        assert exit_code == 1
+        assert messages[-1] == "Recorder exited unexpectedly: pw-record: stream error"
+        assert finish_calls == []
+        assert not state_file.exists()
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
+    def test_recorder_death_with_audio_still_delivers_it(self, tmp_path, capsys):
+        exit_code, _messages, finish_calls, state_file = self.run_daemon_after_recorder_death(tmp_path, b"audio")
+
+        assert exit_code == 0
+        assert finish_calls == [tmp_path / "digue-recording.wav"]
+        assert not state_file.exists()
+        assert "Recorder exited unexpectedly (pw-record: stream error)" in capsys.readouterr().err
+
     def test_daemon_removes_take_state_after_terminal_outcome(self, tmp_path):
         exit_code, state_file = self.run_daemon_delivery(
             tmp_path, lambda *_args, **_kwargs: dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)

@@ -272,6 +272,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     from digue.recording import (
         _cancel_watchdog,
         _claim_orphan_take,
+        _consume_recorder_stderr,
         _finish_owned_recorder,
         _mark_take_delivering,
         _recording_file_of,
@@ -376,8 +377,21 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     notify_close()
     rec_file = _finish_owned_recorder(processes.recorder, rec_file)
     _cancel_watchdog(processes.watchdog)
+    recorder_detail = _consume_recorder_stderr(processes)
     try:
-        own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
+        if outcome == "died" and rec_file is None:
+            # The recorder exited on its own (PipeWire restarted, device
+            # vanished) and left no audio: its stderr is the whole story, and
+            # "Empty or missing audio file" would hide it.
+            send_notification(f"Recorder exited unexpectedly: {recorder_detail}", timeout_ms=10000)
+            own_result = DeliveryResult(outcome="empty", exit_code=1)
+        else:
+            if outcome == "died":
+                print(
+                    f"Recorder exited unexpectedly ({recorder_detail}); transcribing what was recorded",
+                    file=sys.stderr,
+                )
+            own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
     # Same rule as the recovery: the take state goes only after a terminal

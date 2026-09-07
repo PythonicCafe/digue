@@ -272,6 +272,30 @@ class TestStartRecording:
         assert processes.rec_file.suffix in {".wav", ".flac"}
         assert mock_popen.call_args[1].get("start_new_session") is True
 
+    @patch("subprocess.Popen")
+    def test_keeps_the_recorder_stderr_for_the_owner(self, mock_popen, tmp_path):
+        """The stderr file outlives the startup check: a recorder that dies
+        mid-take (PipeWire restarted) explains itself there, and the owner
+        reports it instead of a bare "Empty or missing audio file"."""
+        recorder = MagicMock(pid=1234, returncode=1)
+
+        def popen(argv, stdout=None, stderr=None, start_new_session=False):
+            stderr.write("stream disconnected\n")
+            recorder.poll.return_value = None
+            return recorder
+
+        mock_popen.side_effect = popen
+        config = _default_config()
+        config["dictate"]["max_duration"] = 0
+
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
+            processes = recording_mod.start_recording(config)
+            assert processes.stderr_path is not None
+            assert processes.stderr_path.exists()
+            assert recording_mod._consume_recorder_stderr(processes) == "stream disconnected"
+            assert not processes.stderr_path.exists()
+            assert recording_mod._consume_recorder_stderr(processes) == "exit code 1"
+
     @patch("digue.recording._spawn_limit_watchdog")
     @patch("subprocess.Popen")
     def test_max_duration_returns_watchdog_handle(self, mock_popen, mock_watchdog, tmp_path):

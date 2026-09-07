@@ -182,12 +182,24 @@ def recording_command(
     raise RuntimeError(f"Unknown recorder: {recorder}. Use 'auto', 'pw-record', or 'arecord'.")
 
 
-def _popen_recorder(argv: list[str], *, start_new_session: bool = True) -> subprocess.Popen[bytes]:
-    """Starts the recorder. Raises RuntimeError if it exits non-zero immediately."""
+def _recorder_stderr_path() -> Path:
+    """Where this process's recorder writes its stderr (one recorder per process)."""
+    return _runtime_dir() / f"digue-recorder-err-{os.getpid()}"
+
+
+def _popen_recorder(
+    argv: list[str], *, start_new_session: bool = True, keep_stderr: bool = False
+) -> subprocess.Popen[bytes]:
+    """Starts the recorder. Raises RuntimeError if it exits non-zero immediately.
+
+    With keep_stderr the stderr file (_recorder_stderr_path) outlives this
+    call so the owner can report why a recorder died mid-take; the owner
+    removes it with _consume_recorder_stderr.
+    """
     import subprocess
     import time
 
-    err_path = _runtime_dir() / f"digue-recorder-err-{os.getpid()}"
+    err_path = _recorder_stderr_path()
     with err_path.open("w") as err_file:
         try:
             recorder = subprocess.Popen(
@@ -212,8 +224,22 @@ def _popen_recorder(argv: list[str], *, start_new_session: bool = True) -> subpr
         if len(compact) > 400:
             compact = compact[:400] + "..."
         raise RuntimeError(f"{Path(argv[0]).name} failed: {compact}")
-    err_path.unlink(missing_ok=True)
+    if not keep_stderr:
+        err_path.unlink(missing_ok=True)
     return recorder
+
+
+def _consume_recorder_stderr(processes: RecordingProcesses) -> str:
+    """Removes the recorder's stderr file and returns what it said (compacted),
+    or the exit code when it said nothing. Never raises."""
+    detail = ""
+    if processes.stderr_path is not None:
+        with contextlib.suppress(OSError):
+            detail = " ".join(processes.stderr_path.read_text(errors="replace").split())
+        processes.stderr_path.unlink(missing_ok=True)
+    if len(detail) > 400:
+        detail = detail[:400] + "..."
+    return detail or f"exit code {processes.recorder.returncode}"
 
 
 @dataclass(frozen=True)
@@ -224,6 +250,7 @@ class RecordingProcesses:
     watchdog: subprocess.Popen[bytes] | None
     rec_file: Path | None = None
     take_id: str | None = None
+    stderr_path: Path | None = None
 
 
 TAKE_STATE_VERSION = 1
@@ -666,7 +693,7 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
         container="flac" if rec_file.suffix.lower() == ".flac" else None,
     )
     try:
-        recorder = _popen_recorder(argv)
+        recorder = _popen_recorder(argv, keep_stderr=True)
     except Exception:
         _take_state_file(take_id).unlink(missing_ok=True)
         raise
@@ -682,7 +709,9 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
             )
         )
     watchdog = _spawn_limit_watchdog(recorder.pid, max_duration) if max_duration > 0 else None
-    return RecordingProcesses(recorder=recorder, watchdog=watchdog, rec_file=rec_file, take_id=take_id)
+    return RecordingProcesses(
+        recorder=recorder, watchdog=watchdog, rec_file=rec_file, take_id=take_id, stderr_path=_recorder_stderr_path()
+    )
 
 
 def _process_starttime(pid: int, stat_path: Path | None = None) -> str | None:
