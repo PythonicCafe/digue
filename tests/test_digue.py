@@ -3507,6 +3507,80 @@ class TestDictateDaemon:
         ):
             assert digue.dictate_toggle(config) == 0
 
+    def run_daemon_delivery(self, tmp_path, finish):
+        """Runs the daemon path with a published take state and a mocked
+        delivery; returns (exit_code, take state file)."""
+        import os
+
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        recorder = MagicMock(pid=777, poll=lambda: 0)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            take = digue.TakeState(
+                version=digue.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=100,
+                state="recording",
+                rec_file=rec_file,
+                daemon_pid=os.getpid(),
+                daemon_starttime=int(digue._process_starttime(os.getpid())),
+                recorder_pid=777,
+                recorder_starttime=1,
+            )
+            digue._write_take_state(take)
+        processes = digue.RecordingProcesses(recorder=recorder, watchdog=None, rec_file=rec_file, take_id=take.take_id)
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.start_recording", return_value=processes),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.finish_dictation", side_effect=finish),
+            patch("digue.notify"),
+            patch("signal.signal"),
+        ):
+            exit_code = digue.dictate_toggle(config)
+            state_file = digue._take_state_file(take.take_id)
+        return exit_code, state_file
+
+    def test_daemon_removes_take_state_after_terminal_outcome(self, tmp_path):
+        exit_code, state_file = self.run_daemon_delivery(
+            tmp_path, lambda *_args, **_kwargs: digue.DeliveryResult(outcome="delivered", exit_code=0)
+        )
+
+        assert exit_code == 0
+        assert not state_file.exists()
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
+    def test_daemon_keeps_take_state_on_retryable_failure(self, tmp_path):
+        """Server down and the rescue failed too: the WAV is still in the
+        runtime dir, and without its state no toggle would ever pick it up."""
+        exit_code, state_file = self.run_daemon_delivery(
+            tmp_path, lambda *_args, **_kwargs: digue.DeliveryResult(outcome="retryable_failure", exit_code=1)
+        )
+
+        assert exit_code == 1
+        assert state_file.exists()
+        assert not (tmp_path / "digue-daemon.pid").exists()
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            [take] = digue._take_states()
+            assert take.state == "recording"
+            assert take.rec_file.exists()
+
+    def test_daemon_keeps_take_state_on_unexpected_exception(self, tmp_path):
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            self.run_daemon_delivery(tmp_path, explode)
+
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            [take] = digue._take_states()
+            assert take.state == "recording"
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
     def test_startup_failure_clears_own_reservation(self, tmp_path):
         config = digue._default_config()
         daemon_file = tmp_path / "digue-daemon.pid"

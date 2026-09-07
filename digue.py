@@ -2941,8 +2941,12 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
-        if processes.take_id is not None:
-            _take_state_file(processes.take_id).unlink(missing_ok=True)
+    # Same rule as the recovery: the take state goes only after a terminal
+    # outcome. A retryable failure (server down and the rescue failed too) or
+    # an unexpected exception keeps the state and the WAV, and the next toggle
+    # claims the take -- the daemon file is gone, so the take reads as orphan.
+    if processes.take_id is not None and own_result.outcome in TERMINAL_OUTCOMES:
+        _take_state_file(processes.take_id).unlink(missing_ok=True)
     return own_result.exit_code
 
 
