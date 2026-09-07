@@ -49,7 +49,6 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
     label = f"{backend} / {model}"
     print(f"\n=== {label} ===", file=sys.stderr)
 
-    resolved = digue.resolve_backend(config)
     models_dir = Path(config["server"]["data_dir"]) / "models"
     model_path = models_dir / f"ggml-{model}.bin"
     if not model_path.exists():
@@ -58,13 +57,7 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
             file=sys.stderr,
         )
 
-    # Same rule as run_benchmark: the image override only applies to the
-    # backend the config resolved to; other cases fall back to DOCKER_IMAGES.
-    bench_server = {**config["server"]}
-    if backend != resolved:
-        bench_server["image"] = ""
-    bench_config = {**config, "server": bench_server, "models": {**config["models"], backend: model}}
-    print(f"  Image: {digue.resolve_image(backend, bench_config)}", file=sys.stderr)
+    bench_config = {**config, "models": {**config["models"], backend: model}}
 
     print("  Starting server...", file=sys.stderr, flush=True)
     try:
@@ -111,16 +104,6 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
             digue.remove_container()
 
 
-def positive_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from None
-    if parsed < 1:
-        raise argparse.ArgumentTypeError(f"expected a positive integer, got {parsed}")
-    return parsed
-
-
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark digue with different models and backends")
     parser.add_argument(
@@ -136,37 +119,32 @@ def create_parser() -> argparse.ArgumentParser:
         "--models",
         nargs="+",
         default=list(ALL_MODELS),
-        choices=digue.AVAILABLE_MODELS,
         help=f"Models to test (default: {', '.join(ALL_MODELS)})",
     )
     parser.add_argument(
         "-n",
         "--runs",
-        type=positive_int,
+        type=int,
         default=RUNS,
         help=f"Runs per case (default: {RUNS})",
     )
     return parser
 
 
-def main() -> int:
+def main() -> None:
     global RUNS
 
     parser = create_parser()
     args = parser.parse_args()
     RUNS = args.runs
 
-    config = digue.load_config()
-    if digue._is_remote(config):
-        print("Benchmarking requires a local container; backend 'remote' is not supported.", file=sys.stderr)
-        return 1
-
     download_sample()
+    config = digue.load_config()
 
     if args.backends is None:
-        resolved = digue.resolve_backend(config)
-        backends = [resolved]
-        if resolved != "cpu":
+        detected = digue.detect_backend()
+        backends = [detected]
+        if detected != "cpu":
             backends.append("cpu")
     else:
         backends = args.backends
@@ -204,8 +182,7 @@ def main() -> int:
         print(f"  {label:<35} {result['avg_s']:>7.2f}s", file=sys.stderr)
 
     print(json.dumps(all_results, default=str, ensure_ascii=False, indent=2))
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
