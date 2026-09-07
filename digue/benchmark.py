@@ -1,4 +1,4 @@
-"""Backend benchmark runner."""
+"""Backend and model benchmark runner."""
 
 from __future__ import annotations
 
@@ -12,11 +12,42 @@ BENCHMARK_TRANSCRIPTION_TIMEOUT = 300
 
 BENCHMARK_RUNS = 3
 
+# The quick comparison: the CPU fallback model and the GPU default.
+BENCHMARK_MODELS = ("small", "large-v3-turbo")
+
+SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
+
+# Approximate GGML model sizes (MB), to warn before a benchmark triggers downloads.
+MODEL_SIZES_MB = {"tiny": 75, "base": 142, "small": 466, "medium": 1500, "large-v3-turbo": 1620, "large-v3": 3100}
+
 # -- Benchmark ----------------------------------------------------------------
 
 
+def sample_path() -> Path:
+    """The whisper.cpp JFK sample, kept in the runtime dir: it is private to
+    the user (a fixed name in /tmp could be a symlink planted by another
+    local user)."""
+    from digue.recording import _runtime_dir
+
+    return _runtime_dir() / "digue-bench-jfk.wav"
+
+
+def download_sample() -> Path:
+    """Downloads the JFK sample once and returns its path."""
+    from digue.container import _download_file
+
+    sample = sample_path()
+    if sample.exists():
+        print(f"Sample: {sample}", file=sys.stderr)
+        return sample
+    print("Downloading sample audio...", file=sys.stderr, flush=True)
+    _download_file(SAMPLE_URL, sample, sample.name)
+    print(f"Saved: {sample} ({sample.stat().st_size / 1024:.0f} KB)", file=sys.stderr)
+    return sample
+
+
 def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -> list[tuple[int, str]]:
-    """Runs N transcription requests and returns list of (elapsed_ms, text)."""
+    """Runs one warm-up plus N timed transcriptions; returns (elapsed_ms, text) per run."""
     import time
 
     from digue.transcribe import transcribe
@@ -33,91 +64,156 @@ def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -
     return results
 
 
-def run_benchmark(audio_path: str | Path, config: dict[str, dict[str, Any]]) -> None:
-    """Benchmarks different backend/model combinations with the same audio."""
+def _case_config(config: dict[str, dict[str, Any]], backend: str, model: str) -> dict[str, dict[str, Any]]:
+    """The config for one backend+model case.
+
+    server.image is a single global override that only makes sense for the
+    backend the config resolved to (e.g. image "main" pinned for a Kaby Lake
+    CPU); other cases fall back to DOCKER_IMAGES through the empty image.
+    """
+    from digue.container import resolve_backend
+
+    bench_server = {**config["server"]}
+    if backend != resolve_backend(config):
+        bench_server["image"] = ""
+    return {**config, "server": bench_server, "models": {**config["models"], backend: model}}
+
+
+def benchmark_case(
+    config: dict[str, dict[str, Any]],
+    backend: str,
+    model: str,
+    audio_path: str | Path,
+    runs: int = BENCHMARK_RUNS,
+) -> dict[str, Any] | None:
+    """Benchmarks one backend+model combination on audio_path.
+
+    Creates the container for the case (downloading the model if missing),
+    waits for the server, runs `_benchmark_run` and removes the container
+    again -- also on Ctrl+c or an error. Returns the case result, or None
+    when the case was skipped (image incompatible with this CPU, server did
+    not come up, transcription failed); the skip reason goes to stderr.
+    """
     from digue.container import (
         _wait_for_server,
         container_exists,
         create_container,
-        download_model,
-        preserve_container_for_benchmark,
         remove_container,
-        resolve_backend,
         resolve_image,
         server_url,
     )
 
-    models_dir = Path(config["server"]["data_dir"]) / "models"
-    url = server_url(config)
+    label = f"{backend} / {model}"
+    print(f"=== {label} ===", file=sys.stderr)
+    case_config = _case_config(config, backend, model)
+    print(f"  Image: {resolve_image(backend, case_config)}", file=sys.stderr)
     language = config["transcribe"]["language"]
-    # The configured backend wins over detection: a forced "cpu" (with an
-    # image override for a CPU the default image cannot run on) must not be
-    # bypassed here.
-    detected = resolve_backend(config)
+    try:
+        try:
+            create_container(case_config, backend)
+        except RuntimeError as exc:
+            print(f"  Skipped: {exc}", file=sys.stderr)
+            return None
 
-    print("digue benchmark", file=sys.stderr)
-    print(f"Audio: {audio_path}", file=sys.stderr)
-    print(f"Backend: {detected}", file=sys.stderr)
-    print(f"Runs per case: {BENCHMARK_RUNS}", file=sys.stderr)
-    print(file=sys.stderr)
+        print("  Waiting for server...", file=sys.stderr, flush=True)
+        if not _wait_for_server(case_config, verbose=True):
+            print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
+            return None
 
-    for model in ("small", "large-v3-turbo"):
-        model_path = models_dir / f"ggml-{model}.bin"
-        if not model_path.exists():
-            download_model(model, models_dir)
-            print(file=sys.stderr)
+        try:
+            results = _benchmark_run(server_url(case_config), audio_path, language, runs)
+        except Exception as exc:
+            print(f"  Skipped: transcription failed: {exc}", file=sys.stderr)
+            return None
+        if not results:
+            print("  Skipped: no runs", file=sys.stderr)
+            return None
+        for idx, (elapsed_ms, _text) in enumerate(results, 1):
+            print(f"  run {idx}: {elapsed_ms}ms", file=sys.stderr)
+        avg_ms = sum(elapsed for elapsed, _ in results) // len(results)
+        print(f"  avg: {avg_ms}ms", file=sys.stderr)
+        print(f"  text: {results[-1][1]}", file=sys.stderr)
+        print(file=sys.stderr)
+        return {
+            "backend": backend,
+            "model": model,
+            "avg_ms": avg_ms,
+            "runs_ms": [elapsed for elapsed, _ in results],
+            "text": results[-1][1],
+        }
+    finally:
+        if container_exists():
+            remove_container()
 
-    # Build test cases based on detected backend
-    test_cases = [("CPU / small", "cpu", "small")]
-    if detected != "cpu":
-        test_cases.append((f"{detected.upper()} / small", detected, "small"))
-    test_cases.append(("CPU / large-v3-turbo", "cpu", "large-v3-turbo"))
-    if detected != "cpu":
-        test_cases.append((f"{detected.upper()} / large-v3-turbo", detected, "large-v3-turbo"))
 
-    all_results = []
-    with preserve_container_for_benchmark():
-        for label, backend, model in test_cases:
-            print(f"=== {label} ===", file=sys.stderr)
+def default_backends(config: dict[str, dict[str, Any]]) -> list[str]:
+    """The resolved backend plus cpu: a forced backend in the config wins
+    over hardware detection (a cpu pinned with an image override must not be
+    bypassed by the GPU it cannot run on)."""
+    from digue.container import resolve_backend
 
-            # The image override is global in config, but it only applies to
-            # the backend the config resolved to; other cases fall back to
-            # DOCKER_IMAGES (resolve_image uses the empty image).
-            bench_server = {**config["server"]}
-            if backend != detected:
-                bench_server["image"] = ""
-            bench_config = {**config, "server": bench_server, "models": {**config["models"], backend: model}}
-            print(f"  Image: {resolve_image(backend, bench_config)}", file=sys.stderr)
-            try:
-                try:
-                    create_container(bench_config, backend)
-                except RuntimeError as exc:
-                    print(f"  Skipped: {exc}", file=sys.stderr)
-                    continue
+    resolved = resolve_backend(config)
+    return [resolved] if resolved == "cpu" else [resolved, "cpu"]
 
-                print("  Waiting for server...", file=sys.stderr, flush=True)
-                if not _wait_for_server(config, verbose=True):
-                    print("  Server failed to start, skipping", file=sys.stderr)
-                    continue
 
-                results = _benchmark_run(url, audio_path, language, BENCHMARK_RUNS)
-                for idx, (elapsed_ms, text) in enumerate(results, 1):
-                    print(f"  run {idx}: {elapsed_ms}ms", file=sys.stderr)
-                if results:
-                    avg_ms = sum(elapsed for elapsed, _ in results) // len(results)
-                    print(f"  avg: {avg_ms}ms", file=sys.stderr)
-                    print(f"  text: {results[-1][1]}", file=sys.stderr)
-                    all_results.append((label, avg_ms))
-                print(file=sys.stderr)
-            finally:
-                if container_exists():
-                    remove_container()
+def warn_missing_models(models: list[str], config: dict[str, dict[str, Any]]) -> None:
+    """Says up front which models the benchmark will download (minutes each)."""
+    models_dir = Path(config["server"]["data_dir"]) / "models"
+    missing = [model for model in models if not (models_dir / f"ggml-{model}.bin").exists()]
+    if not missing:
+        return
+    total_mb = sum(MODEL_SIZES_MB.get(model, 0) for model in missing)
+    listing = ", ".join(f"{model} (~{MODEL_SIZES_MB.get(model, '?')} MB)" for model in missing)
+    print(f"Missing models (will download, ~{total_mb} MB total): {listing}", file=sys.stderr)
 
+
+def print_summary(results: list[dict[str, Any]]) -> None:
     print(f"\n{'=' * 50}", file=sys.stderr)
     print("Summary", file=sys.stderr)
     print(f"{'=' * 50}", file=sys.stderr)
-    for label, avg_ms in all_results:
-        print(f"  {label:<35} {avg_ms}ms", file=sys.stderr)
+    for result in results:
+        label = f"{result['backend']} / {result['model']}"
+        print(f"  {label:<35} {result['avg_ms']}ms", file=sys.stderr)
+
+
+def run_benchmark(
+    audio_path: str | Path,
+    config: dict[str, dict[str, Any]],
+    backends: list[str] | None = None,
+    models: list[str] | None = None,
+    runs: int = BENCHMARK_RUNS,
+) -> list[dict[str, Any]]:
+    """Benchmarks every backend x model case on the same audio and returns
+    the results (also printed as a summary). Defaults: the resolved backend
+    plus cpu, and BENCHMARK_MODELS. The user's own container is preserved
+    around the run; Ctrl+c stops the cases, prints the partial summary and
+    propagates (the caller decides how to exit)."""
+    from digue.container import preserve_container_for_benchmark
+
+    backends = backends or default_backends(config)
+    models = list(models or BENCHMARK_MODELS)
+
+    print("digue benchmark", file=sys.stderr)
+    print(f"Audio: {audio_path}", file=sys.stderr)
+    print(f"Backends: {', '.join(backends)}", file=sys.stderr)
+    print(f"Models: {', '.join(models)}", file=sys.stderr)
+    print(f"Runs per case: {runs}", file=sys.stderr)
+    warn_missing_models(models, config)
+    print(file=sys.stderr)
+
+    results: list[dict[str, Any]] = []
+    try:
+        with preserve_container_for_benchmark():
+            for backend in backends:
+                for model in models:
+                    result = benchmark_case(config, backend, model, audio_path, runs)
+                    if result is not None:
+                        results.append(result)
+    except KeyboardInterrupt:
+        print_summary(results)
+        raise
+    print_summary(results)
+    return results
 
 
 def record_benchmark_audio(

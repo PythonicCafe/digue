@@ -1,6 +1,7 @@
 """Tests for digue benchmark and benchmark_models."""
 
 import argparse
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,9 +29,9 @@ class TestBenchmarkTempFiles:
 
         assert mock_record.call_args[0][0].parent == tmp_path
 
-    def test_benchmark_models_sample_lives_in_the_private_runtime_dir(self, tmp_path):
+    def test_sample_lives_in_the_private_runtime_dir(self, tmp_path):
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
-            assert benchmark_models.sample_path().parent == tmp_path
+            assert benchmark_mod.sample_path().parent == tmp_path
 
 
 class TestBenchmarkContainerState:
@@ -127,6 +128,7 @@ class TestRunBenchmarkLanguage:
         ):
             benchmark_mod.run_benchmark(tmp_path / "audio.wav", config)
 
+        # the case removes its own container before the interrupt propagates
         mock_remove.assert_called_once_with()
 
 
@@ -190,50 +192,174 @@ class TestBenchmarkRespectsConfig:
         assert mock_popen.call_args.args[0][0] == "arecord"
 
 
-class TestBenchmarkModels:
+class TestBenchmarkCase:
+    """One backend+model case: the container is created with the case config
+    (model swapped in, image override only for the resolved backend), waited
+    on with that same config, and always removed afterwards."""
+
+    def run_case(self, config, backend, model, tmp_path, transcribe=None):
+        config["server"]["data_dir"] = str(tmp_path)
+        with (
+            patch("digue.container.create_container") as mock_create,
+            patch("digue.container._wait_for_server", return_value=True) as mock_wait,
+            patch("digue.transcribe.transcribe", side_effect=transcribe or (lambda *_a, **_k: "hello")),
+            patch("digue.container.container_exists", return_value=True),
+            patch("digue.container.remove_container") as mock_remove,
+        ):
+            result = benchmark_mod.benchmark_case(config, backend, model, tmp_path / "audio.wav", runs=2)
+        return result, mock_create, mock_wait, mock_remove
+
     def test_case_removes_container_when_transcription_is_interrupted(self, tmp_path):
         config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         with (
-            patch("benchmark_models.container_mod.create_container"),
-            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.transcribe_mod.transcribe", side_effect=KeyboardInterrupt),
-            patch("benchmark_models.container_mod.container_exists", return_value=True),
-            patch("benchmark_models.container_mod.remove_container") as mock_remove,
+            patch("digue.container.create_container"),
+            patch("digue.container._wait_for_server", return_value=True),
+            patch("digue.transcribe.transcribe", side_effect=KeyboardInterrupt),
+            patch("digue.container.container_exists", return_value=True),
+            patch("digue.container.remove_container") as mock_remove,
             pytest.raises(KeyboardInterrupt),
         ):
-            benchmark_models.benchmark_case(config, "cpu", "small")
+            benchmark_mod.benchmark_case(config, "cpu", "small", tmp_path / "audio.wav")
 
         mock_remove.assert_called_once_with()
 
-    def test_main_preserves_previous_container_on_interrupt(self):
+    def test_case_clears_custom_image_for_other_backends(self, tmp_path):
         config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "x"
+
+        result, mock_create, _wait, _remove = self.run_case(config, "intel", "small", tmp_path)
+
+        assert result is not None
+        bench_config, backend = mock_create.call_args.args
+        assert backend == "intel"
+        assert bench_config["server"]["image"] == ""
+        assert bench_config["models"]["intel"] == "small"
+        assert container_mod.resolve_image(backend, bench_config) == container_mod.DOCKER_IMAGES["intel"]
+
+    def test_case_keeps_custom_image_for_resolved_backend(self, tmp_path):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "x"
+
+        result, mock_create, _wait, _remove = self.run_case(config, "cpu", "small", tmp_path)
+
+        assert result is not None
+        bench_config, backend = mock_create.call_args.args
+        assert backend == "cpu"
+        assert bench_config["server"]["image"] == "x"
+
+    def test_case_waits_on_the_case_config_it_created(self, tmp_path):
+        """The wait probed the caller's config while the container was
+        created from the case config; they share the port today, but the
+        probe must follow the container it is waiting for."""
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+
+        _result, mock_create, mock_wait, mock_remove = self.run_case(config, "cpu", "large-v3-turbo", tmp_path)
+
+        assert mock_wait.call_args.args[0] is mock_create.call_args.args[0]
+        mock_remove.assert_called_once_with()
+
+    def test_case_result_carries_timings_and_text(self, tmp_path):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+
+        result, *_rest = self.run_case(config, "cpu", "small", tmp_path)
+
+        assert result is not None
+        assert result["backend"] == "cpu" and result["model"] == "small"
+        assert len(result["runs_ms"]) == 2 and result["text"] == "hello"
+        assert result["avg_ms"] == sum(result["runs_ms"]) // 2
+
+    def test_transcription_error_skips_the_case(self, tmp_path, capsys):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("HTTP 500")
+
+        result, *_rest = self.run_case(config, "cpu", "small", tmp_path, transcribe=fail)
+
+        assert result is None
+        assert "Skipped: transcription failed: HTTP 500" in capsys.readouterr().err
+
+
+class TestRunBenchmarkCases:
+    def run(self, config, **kwargs):
+        seen = []
+
+        def fake_case(_config, backend, model, _audio, runs):
+            seen.append((backend, model, runs))
+            return {"backend": backend, "model": model, "avg_ms": 1, "runs_ms": [1], "text": "t"}
+
+        with (
+            patch("digue.container.preserve_container_for_benchmark"),
+            patch("digue.container.detect_backend", return_value="intel"),
+            patch("digue.benchmark.benchmark_case", side_effect=fake_case),
+        ):
+            results = benchmark_mod.run_benchmark("audio.wav", config, **kwargs)
+        return seen, results
+
+    def test_defaults_use_the_resolved_backend_plus_cpu_and_the_quick_models(self):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+
+        seen, results = self.run(config)
+
+        assert seen == [("cpu", "small", benchmark_mod.BENCHMARK_RUNS), ("cpu", "large-v3-turbo", 3)]
+        assert [result["model"] for result in results] == ["small", "large-v3-turbo"]
+
+    def test_explicit_backends_models_and_runs(self):
+        seen, _results = self.run(_default_config(), backends=["amd", "cpu"], models=["medium"], runs=1)
+
+        assert seen == [("amd", "medium", 1), ("cpu", "medium", 1)]
+
+    def test_interrupt_prints_the_partial_summary_restores_the_container_and_propagates(self, capsys):
         manager = MagicMock()
         manager.__enter__.return_value = None
         manager.__exit__.return_value = False
+        answers = iter([{"backend": "cpu", "model": "small", "avg_ms": 5, "runs_ms": [5], "text": "t"}])
+
+        def case_then_interrupt(*_args, **_kwargs):
+            try:
+                return next(answers)
+            except StopIteration:
+                raise KeyboardInterrupt from None
+
         with (
-            patch("benchmark_models.create_parser") as mock_parser,
-            patch("benchmark_models.download_sample"),
-            patch("benchmark_models.load_config", return_value=config),
-            patch("benchmark_models.container_mod.detect_backend", return_value="cpu"),
-            patch("benchmark_models.container_mod.preserve_container_for_benchmark", return_value=manager),
-            patch("benchmark_models.benchmark_case", side_effect=KeyboardInterrupt),
+            patch("digue.container.preserve_container_for_benchmark", return_value=manager),
+            patch("digue.container.detect_backend", return_value="cpu"),
+            patch("digue.benchmark.benchmark_case", side_effect=case_then_interrupt),
+            pytest.raises(KeyboardInterrupt),
         ):
-            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
-                backends=["cpu"], models=["small"], runs=1
-            )
-            benchmark_models.main()
+            benchmark_mod.run_benchmark("audio.wav", _default_config(), backends=["cpu"], models=["small", "medium"])
 
         manager.__exit__.assert_called_once()
+        err = capsys.readouterr().err
+        assert "Summary" in err and err.index("Summary") < err.rindex("cpu / small")
+
+    def test_missing_models_are_announced_with_sizes(self, tmp_path, capsys):
+        config = _default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        (tmp_path / "models").mkdir()
+        (tmp_path / "models" / "ggml-small.bin").write_bytes(b"x")
+
+        self.run(config, backends=["cpu"], models=["small", "medium"])
+
+        err = capsys.readouterr().err
+        assert "Missing models (will download, ~1500 MB total): medium (~1500 MB)" in err
+        assert "small (~" not in err
 
 
-class TestBenchmarkModelsConfig:
+class TestBenchmarkModelsWrapper:
     def test_main_rejects_remote_before_downloading_sample(self, capsys):
         config = _default_config()
         config["server"]["backend"] = "remote"
         with (
             patch("benchmark_models.create_parser") as mock_parser,
-            patch("benchmark_models.download_sample") as mock_download,
+            patch("digue.benchmark.download_sample") as mock_download,
             patch("benchmark_models.load_config", return_value=config),
         ):
             mock_parser.return_value.parse_args.return_value = argparse.Namespace(
@@ -245,62 +371,21 @@ class TestBenchmarkModelsConfig:
         mock_download.assert_not_called()
         assert "remote" in capsys.readouterr().err
 
-    def test_main_uses_resolved_backend_for_case_selection(self, capsys):
-        """A forced backend in config wins over detection, exactly like
-        run_benchmark: the auto list must follow resolve_backend."""
+    def test_main_forwards_options_and_prints_json(self, capsys):
         config = _default_config()
-        config["server"]["backend"] = "cpu"
         with (
             patch("benchmark_models.create_parser") as mock_parser,
-            patch("benchmark_models.download_sample"),
+            patch("digue.benchmark.download_sample", return_value="jfk.wav"),
             patch("benchmark_models.load_config", return_value=config),
-            patch("benchmark_models.container_mod.detect_backend", return_value="intel"),
-            patch("benchmark_models.container_mod.preserve_container_for_benchmark"),
-            patch("benchmark_models.benchmark_case", return_value=None),
+            patch("digue.benchmark.run_benchmark", return_value=[{"backend": "cpu"}]) as mock_run,
         ):
             mock_parser.return_value.parse_args.return_value = argparse.Namespace(
-                backends=None, models=["small"], runs=1
+                backends=["cpu"], models=["small"], runs=2
             )
             assert benchmark_models.main() == 0
 
-        err = capsys.readouterr().err
-        assert "Backends: cpu\n" in err
-        assert "intel" not in err
-
-    def test_case_clears_custom_image_for_other_backends(self, tmp_path):
-        config = _default_config()
-        config["server"]["backend"] = "cpu"
-        config["server"]["image"] = "x"
-        config["server"]["data_dir"] = str(tmp_path)
-        with (
-            patch("benchmark_models.container_mod.create_container") as mock_create,
-            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.transcribe_mod.transcribe", return_value="hello"),
-            patch("benchmark_models.container_mod.container_exists", return_value=False),
-        ):
-            assert benchmark_models.benchmark_case(config, "intel", "small") is not None
-
-        bench_config, backend = mock_create.call_args.args
-        assert backend == "intel"
-        assert bench_config["server"]["image"] == ""
-        assert container_mod.resolve_image(backend, bench_config) == container_mod.DOCKER_IMAGES["intel"]
-
-    def test_case_keeps_custom_image_for_resolved_backend(self, tmp_path):
-        config = _default_config()
-        config["server"]["backend"] = "cpu"
-        config["server"]["image"] = "x"
-        config["server"]["data_dir"] = str(tmp_path)
-        with (
-            patch("benchmark_models.container_mod.create_container") as mock_create,
-            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
-            patch("benchmark_models.transcribe_mod.transcribe", return_value="hello"),
-            patch("benchmark_models.container_mod.container_exists", return_value=False),
-        ):
-            assert benchmark_models.benchmark_case(config, "cpu", "small") is not None
-
-        bench_config, backend = mock_create.call_args.args
-        assert backend == "cpu"
-        assert bench_config["server"]["image"] == "x"
+        mock_run.assert_called_once_with("jfk.wav", config, backends=["cpu"], models=["small"], runs=2)
+        assert json.loads(capsys.readouterr().out) == [{"backend": "cpu"}]
 
     def test_models_argument_rejects_unknown_model(self, capsys):
         with pytest.raises(SystemExit):
@@ -315,4 +400,4 @@ class TestBenchmarkModelsConfig:
                 parser.parse_args(["--runs", bad])
 
         assert parser.parse_args(["--runs", "2"]).runs == 2
-        assert parser.parse_args([]).runs == benchmark_models.RUNS
+        assert parser.parse_args([]).runs == benchmark_mod.BENCHMARK_RUNS
