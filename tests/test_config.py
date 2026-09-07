@@ -10,7 +10,6 @@ import pytest
 
 from digue import cli as cli_mod
 from digue import config
-from digue import container as container_mod
 
 # -- Config -------------------------------------------------------------------
 
@@ -360,17 +359,6 @@ class TestConfigStructureValidation:
         err = capsys.readouterr().err
         assert "Error: failed to load configuration" in err
         assert "Traceback" not in err
-
-
-class TestServerHost:
-    @pytest.mark.parametrize(
-        ("bind_ip", "expected"),
-        (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
-    )
-    def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
-        cfg = config._default_config()
-        cfg["server"]["bind_ip"] = bind_ip
-        assert container_mod.server_host(cfg) == expected
 
 
 class TestConfigValueValidation:

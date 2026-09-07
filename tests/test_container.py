@@ -433,6 +433,17 @@ class TestIsServerRunning:
         assert container_mod.is_server_running(config) is False
 
 
+class TestServerHost:
+    @pytest.mark.parametrize(
+        ("bind_ip", "expected"),
+        (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
+    )
+    def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
+        config = _default_config()
+        config["server"]["bind_ip"] = bind_ip
+        assert container_mod.server_host(config) == expected
+
+
 # -- Remote backend -----------------------------------------------------------
 
 
