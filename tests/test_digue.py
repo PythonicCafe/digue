@@ -23,7 +23,7 @@ class TestDefaultConfig:
     def test_has_required_sections(self):
         config = digue._default_config()
         assert "server" in config
-        assert "dictation" in config
+        assert "dictate" in config
         assert "models" in config
 
     def test_default_port(self):
@@ -65,6 +65,21 @@ class TestLoadConfig:
         config = digue.load_config(config_path)
         assert config["server"]["data_dir"] == "/opt/data"
 
+    def test_main_reports_invalid_toml_without_traceback(self, tmp_path, capsys):
+        config_path = tmp_path / "invalid.toml"
+        config_path.write_text("[server\nport = 8178\n")
+
+        with (
+            patch.object(sys, "argv", ["digue", "--config", str(config_path), "config", "show"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            digue.main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Error: failed to load configuration" in err
+        assert "Traceback" not in err
+
     def test_expands_tilde_in_paths(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text(
@@ -72,15 +87,15 @@ class TestLoadConfig:
             [server]
             data-dir = "~/whisper/data"
 
-            [dictation]
+            [dictate]
             audio-dir = "~/whisper-audio"
         """)
         )
         config = digue.load_config(config_path)
         assert "~" not in config["server"]["data_dir"]
-        assert "~" not in config["dictation"]["audio_dir"]
+        assert "~" not in config["dictate"]["audio_dir"]
         assert config["server"]["data_dir"].endswith("whisper/data")
-        assert config["dictation"]["audio_dir"].endswith("whisper-audio")
+        assert config["dictate"]["audio_dir"].endswith("whisper-audio")
 
 
 class TestModelForBackend:
@@ -911,14 +926,14 @@ class TestHostOverrides:
             [host.thinkpad.server]
             backend = "cpu"
 
-            [host.thinkpad.dictation]
+            [host.thinkpad.dictate]
             max-duration = 42
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
             config = digue.load_config(config_path)
         assert config["server"]["backend"] == "cpu"
-        assert config["dictation"]["max_duration"] == 42
+        assert config["dictate"]["max_duration"] == 42
 
     def test_matches_hostname_without_domain(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -1028,9 +1043,28 @@ class TestConfigCommand:
         assert digue.cmd_config(args, config) == 0
         out = capsys.readouterr().out
         assert "[server]" in out
-        assert "[dictation]" in out
+        assert "[dictate]" in out
         assert "port = 8178" in out
         assert 'backend = "auto"' in out
+
+    def test_show_toml_uses_the_documented_kebab_case_keys(self, capsys):
+        """The template and README spell keys as data-dir, max-duration...;
+        config show printed data_dir, so its output did not match the format
+        it documents. It must also be valid TOML that loads back unchanged."""
+        import tomllib
+
+        config = digue._default_config()
+        args = MagicMock()
+        args.output_format = "toml"
+        digue.cmd_config(args, config)
+        out = capsys.readouterr().out
+
+        assert "data-dir = " in out
+        assert "max-duration = " in out
+        assert "output-format = " in out
+        assert "_" not in "".join(line.split("=")[0] for line in out.splitlines() if "=" in line)
+        parsed = tomllib.loads(out)
+        assert {key.replace("-", "_"): value for key, value in parsed["dictate"].items()} == config["dictate"]
 
     def test_show_json_unchanged(self, capsys):
         config = digue._default_config()
@@ -1059,6 +1093,7 @@ class TestConfigCommand:
         monkeypatch.setattr(digue, "_config_path", lambda: tmp_path / "digue" / "config.toml")
         args = MagicMock()
         args.force = False
+        args.output = None
         assert digue._config_init(args) == 0
         created = tmp_path / "digue" / "config.toml"
         assert created.exists()
@@ -1071,6 +1106,7 @@ class TestConfigCommand:
         monkeypatch.setattr(digue, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = False
+        args.output = None
         assert digue._config_init(args) == 1
         assert existing.read_text() == "# my custom config"
         assert "already exists" in capsys.readouterr().err
@@ -1081,16 +1117,25 @@ class TestConfigCommand:
         monkeypatch.setattr(digue, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = True
+        args.output = None
         assert digue._config_init(args) == 0
         assert "[server]" in existing.read_text()
+
+    def test_init_output_path(self, tmp_path, capsys):
+        target = tmp_path / "custom" / "digue.toml"
+        args = MagicMock()
+        args.force = False
+        args.output = str(target)
+        assert digue._config_init(args) == 0
+        assert target.exists()
+        assert "[server]" in target.read_text()
 
     def test_example_config_is_valid_toml(self, tmp_path):
         import tomllib
 
         example = digue._config_example()
         parsed = tomllib.loads(example)
-        assert parsed["server"]["port"] == digue.DEFAULT_PORT
-        assert "models" in parsed
+        assert "models" in parsed  # sections exist; all keys stay commented
 
 
 class TestCreateParser:
@@ -1117,6 +1162,17 @@ class TestCreateParser:
         args = parser.parse_args([])
         assert args.command is None
 
+    def test_bare_config_shows_its_help_instead_of_assuming_an_action(self, capsys, monkeypatch, tmp_path):
+        # `digue config` used to dump JSON (while `config show` defaults to
+        # TOML); with no action it must show the config subcommand help.
+        monkeypatch.setattr("sys.argv", ["digue", "-c", str(tmp_path / "none.toml"), "config"])
+        with pytest.raises(SystemExit) as excinfo:
+            digue.main()
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert "usage: digue config" in out
+        assert "show" in out and "init" in out
+        assert '"server"' not in out
     def test_version_flag(self, capsys):
         parser = digue.create_parser()
         with pytest.raises(SystemExit) as excinfo:
@@ -1498,3 +1554,48 @@ class TestFormatExtension:
         assert digue._format_extension("text") == ".txt"
         assert digue._format_extension("vtt") == ".vtt"
         assert digue._format_extension("srt") == ".srt"
+
+
+class TestConfigurationNetworkAndSharedDefaults:
+    @pytest.mark.parametrize(
+        ("bind_ip", "expected"),
+        (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
+    )
+    def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
+        config = digue._default_config()
+        config["server"]["bind_ip"] = bind_ip
+        assert digue.server_host(config) == expected
+
+    @pytest.mark.parametrize(
+        ("toml", "message"),
+        (
+            ('[server]\nbackend = "invalid"\n', "server.backend"),
+            ("[server]\nport = 0\n", "server.port"),
+            ("[server]\nport = true\n", "server.port"),
+            ("[dictate]\nmax-duration = -1\n", "dictate.max_duration"),
+            ('[dictate]\nrecorder = "invalid"\n', "dictate.recorder"),
+            ('[dictate]\ndisplay-server = "invalid"\n', "dictate.display_server"),
+            ('[dictate]\ninput-mode = "invalid"\n', "dictate.input_mode"),
+            ('[dictate]\naudio-format = "invalid"\n', "dictate.audio_format"),
+            ('[dictate]\nsave-audio = "yes"\n', "dictate.save_audio"),
+            ("[server]\ndata-dir = 42\n", "server.data_dir"),
+            ('[models]\ncpu = "invalid"\n', "models.cpu"),
+            ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
+        ),
+    )
+    def test_load_config_validates_resolved_values(self, tmp_path, toml, message):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(toml)
+        with pytest.raises(ValueError, match=message):
+            digue.load_config(config_path)
+
+    def test_custom_docker_image_is_allowed(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[server]\nimage = "registry.example/my-whisper:custom"\n')
+        assert digue.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
+
+    def test_config_init_uses_global_config_path(self, tmp_path):
+        target = tmp_path / "selected.toml"
+        args = MagicMock(config=str(target), output=None, force=False)
+        assert digue._config_init(args) == 0
+        assert target.exists()

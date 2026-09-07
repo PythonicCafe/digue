@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """Local speech-to-text dictation and transcription using whisper.cpp."""
 
+from __future__ import annotations
+
+import argparse
+import contextlib
+import os
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import subprocess
+
 __version__ = "0.1.0"
 
 import argparse
@@ -63,18 +75,14 @@ AUDIO_EXTENSIONS = frozenset(
 # -- Config -------------------------------------------------------------------
 
 
-def _config_path():
-    import os
-    from pathlib import Path
+def _config_path() -> Path:
 
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "digue" / "config.toml"
 
 
-def _default_config():
-    import os
-    from pathlib import Path
+def _default_config() -> dict[str, dict[str, Any]]:
 
     xdg = os.environ.get("XDG_DATA_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
@@ -89,8 +97,14 @@ def _default_config():
             "bind_ip": "127.0.0.1",
             "remote_host": "",
         },
-        "dictation": {
+        "transcribe": {
             "language": DEFAULT_LANGUAGE,
+            "prompt": "",
+            "output_format": "text",
+            "max_line_length": 42,
+            "max_lines": 2,
+        },
+        "dictate": {
             "audio_dir": "",
             "display_server": "auto",
             "input_mode": "paste",
@@ -103,13 +117,13 @@ def _default_config():
     }
 
 
-def _merge_section(target, source):
+def _merge_section(target: dict[str, Any], source: dict[str, Any]) -> None:
     """Merges source keys into target dict; kebab-case keys override snake_case defaults."""
     for key, value in source.items():
         target[key.replace("-", "_")] = value
 
 
-def _host_overrides(user_config):
+def _host_overrides(user_config: dict[str, Any]) -> dict[str, Any]:
     """Returns the [host.<this-hostname>] tables from the user config, or {}.
 
     Matches the exact hostname first; then tries without the domain part
@@ -124,11 +138,58 @@ def _host_overrides(user_config):
     hostname = socket.gethostname()
     for candidate in (hostname, hostname.split(".")[0]):
         if candidate in hosts and isinstance(hosts[candidate], dict):
-            return hosts[candidate]
+            override: dict[str, Any] = hosts[candidate]
+            return override
     return {}
 
 
-def load_config(config_path=None):
+def _validate_config(config: dict[str, dict[str, Any]]) -> None:
+    """Validates the fully merged configuration before commands consume it."""
+
+    def require_type(section: str, key: str, expected_type: type[Any]) -> Any:
+        value = config[section][key]
+        if not isinstance(value, expected_type) or expected_type is int and isinstance(value, bool):
+            raise ValueError(f"Invalid {section}.{key}: expected {expected_type.__name__}, got {type(value).__name__}")
+        return value
+
+    def require_choice(section: str, key: str, choices: tuple[str, ...]) -> None:
+        value = require_type(section, key, str)
+        if value not in choices:
+            options = ", ".join(choices)
+            raise ValueError(f"Invalid {section}.{key}: {value!r}; expected one of: {options}")
+
+    require_choice("server", "backend", ("auto", *BACKENDS))
+    port = require_type("server", "port", int)
+    if not 1 <= port <= 65535:
+        raise ValueError(f"Invalid server.port: {port}; expected an integer from 1 to 65535")
+    for key in ("data_dir", "image", "bind_ip", "remote_host"):
+        require_type("server", key, str)
+
+    for key in ("language", "prompt"):
+        require_type("transcribe", key, str)
+    require_choice("transcribe", "output_format", ("text", "vtt", "srt", "timestamps"))
+    for key in ("max_line_length", "max_lines"):
+        value = require_type("transcribe", key, int)
+        if value < 1:
+            raise ValueError(f"Invalid transcribe.{key}: {value}; expected an integer greater than zero")
+
+    require_type("dictate", "audio_dir", str)
+    require_choice("dictate", "display_server", ("auto", "x11", "wayland"))
+    require_choice("dictate", "input_mode", ("paste", "type"))
+    require_choice("dictate", "recorder", ("auto", "pw-record", "arecord"))
+    require_choice("dictate", "audio_format", ("wav", "flac", "opus"))
+    require_type("dictate", "save_audio", bool)
+    max_duration = require_type("dictate", "max_duration", int)
+    if max_duration < 0:
+        raise ValueError(f"Invalid dictate.max_duration: {max_duration}; expected zero or greater")
+
+    for backend, model in config["models"].items():
+        if backend in DEFAULT_MODELS and (not isinstance(model, str) or model not in AVAILABLE_MODELS):
+            options = ", ".join(AVAILABLE_MODELS)
+            raise ValueError(f"Invalid models.{backend}: {model!r}; expected one of: {options}")
+
+
+def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     """Loads config from TOML file, falling back to defaults for missing keys.
 
     If the file defines [host.<hostname>][section] tables matching this machine
@@ -136,14 +197,13 @@ def load_config(config_path=None):
     merged on top of the global ones, which in turn override the defaults.
     """
     import tomllib
-    from pathlib import Path
 
     config = _default_config()
     path = Path(config_path) if config_path else _config_path()
 
     if path.exists():
         with path.open("rb") as fobj:
-            user_config = tomllib.load(fobj)
+            user_config: dict[str, Any] = tomllib.load(fobj)
         for section, defaults in config.items():
             if section in user_config:
                 _merge_section(config[section], user_config[section])
@@ -152,14 +212,16 @@ def load_config(config_path=None):
             if section in host_overrides and isinstance(host_overrides[section], dict):
                 _merge_section(config[section], host_overrides[section])
 
-    if not config["dictation"]["audio_dir"]:
-        config["dictation"]["audio_dir"] = str(Path(config["server"]["data_dir"]) / "audio")
+    _validate_config(config)
+
+    if not config["dictate"]["audio_dir"]:
+        config["dictate"]["audio_dir"] = str(Path(config["server"]["data_dir"]) / "audio")
 
     # Expand ~ in path values
     for key in ("data_dir",):
         config["server"][key] = str(Path(config["server"][key]).expanduser())
     for key in ("audio_dir",):
-        config["dictation"][key] = str(Path(config["dictation"][key]).expanduser())
+        config["dictate"][key] = str(Path(config["dictate"][key]).expanduser())
 
     return config
 
@@ -1452,8 +1514,12 @@ def _config_example():
     return CONFIG_TEMPLATE.format(port=DEFAULT_PORT)
 
 
-def _config_as_toml(config):
-    """Renders the resolved config as TOML (section by section, strings quoted)."""
+def _config_as_toml(config: dict[str, dict[str, Any]]) -> str:
+    """Renders the resolved config as TOML (section by section, strings quoted).
+
+    Keys use the kebab-case spelling of the template and README (data-dir),
+    so the output can be pasted back into config.toml as documented.
+    """
     lines = []
     for section, values in config.items():
         lines.append(f"[{section}]")
@@ -1463,8 +1529,8 @@ def _config_as_toml(config):
             elif isinstance(value, int):
                 rendered = str(value)
             else:
-                rendered = '"' + str(value).replace('"', '\\"') + '"'
-            lines.append(f"{key} = {rendered}")
+                rendered = '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+            lines.append(f"{key.replace('_', '-')} = {rendered}")
         lines.append("")
     return "\n".join(lines)
 
@@ -1582,6 +1648,8 @@ def create_parser():
 
     sub_config = subparsers.add_parser("config", help="Show or initialize the configuration")
     sub_config_sub = sub_config.add_subparsers(dest="config_action", metavar="action")
+    # main() prints this help when no action is given (no default action).
+    sub_config.set_defaults(config_parser=sub_config)
 
     sub_config_show = sub_config_sub.add_parser("show", help="Show the resolved configuration")
     sub_config_show.add_argument(
@@ -1599,6 +1667,13 @@ def create_parser():
         "--force",
         action="store_true",
         help="Overwrite the config file if it already exists",
+    )
+    sub_config_init.add_argument(
+        "-o",
+        "--output",
+        metavar="path",
+        default=None,
+        help="Where to write the config file (default: -c/--config path, else ~/.config/digue/config.toml)",
     )
     subparsers.add_parser("doctor", help="Check system dependencies and test Docker images")
 
@@ -1861,21 +1936,21 @@ def cmd_benchmark(args, config):
     return 0
 
 
-def cmd_config(args, config):
+def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import json
 
-    output_format = getattr(args, "output_format", "json")
-    if output_format == "toml":
+    if args.output_format == "toml":
         print(_config_as_toml(config), end="")
     else:
         print(json.dumps(config, default=str, ensure_ascii=False, indent=2))
     return 0
 
 
-def _config_init(args):
+def _config_init(args: argparse.Namespace) -> int:
     """Creates the config file from the template. Refuses to overwrite without --force."""
 
-    path = _config_path()
+    selected_path = args.output or vars(args).get("config")
+    path = Path(selected_path).expanduser() if selected_path else _config_path()
     if path.exists() and not args.force:
         print(f"Error: config file already exists: {path}", file=sys.stderr)
         print("Use --force to overwrite it.", file=sys.stderr)
@@ -1885,6 +1960,83 @@ def _config_init(args):
     print(f"Config created: {path}", file=sys.stderr)
     if args.force:
         print("(existing file was overwritten)", file=sys.stderr)
+    return 0
+
+
+DICTATION_RECORDING_SUFFIXES = frozenset((".wav", ".flac", ".opus"))
+
+
+def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
+    """Lists <audio_dir>/YYYY/MM/<timestamp>.<suffix> files created by dictation.
+
+    Only that exact layout qualifies: audio-dir is user-configurable, and a
+    recursive *.wav/*.flac/*.txt glob pointed at a music folder would remove
+    the library. The stem is the now_timestamp() format, YYYYMMDD-HHMMSS.
+    """
+    import re
+
+    stem_pattern = re.compile(r"^\d{8}-\d{6}$")
+    found = []
+    for year_dir in audio_dir.glob("[0-9][0-9][0-9][0-9]"):
+        for month_dir in year_dir.glob("[0-9][0-9]"):
+            if not month_dir.is_dir():
+                continue
+            for path in month_dir.iterdir():
+                if path.is_file() and path.suffix.lower() in suffixes and stem_pattern.match(path.stem):
+                    found.append(path)
+    return sorted(found)
+
+
+def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """Removes dictation recordings and/or transcripts from the audio directory.
+
+    Lists what it found and asks for confirmation; --force removes right away.
+    --what selects what is removed: recordings, transcripts, or both (default).
+    """
+
+    audio_dir = Path(config["dictate"]["audio_dir"])
+    if not audio_dir.exists():
+        print(f"Audio directory does not exist: {audio_dir}", file=sys.stderr)
+        return 0
+
+    what = args.what
+    recordings = _dictation_files(audio_dir, DICTATION_RECORDING_SUFFIXES) if what in ("recordings", "both") else []
+    transcripts = _dictation_files(audio_dir, frozenset((".txt",))) if what in ("transcripts", "both") else []
+
+    total_mb = sum(path.stat().st_size for path in recordings) / (1024 * 1024)
+    print(f"Audio directory: {audio_dir}", file=sys.stderr)
+    print(f"  Recordings: {len(recordings)} file(s), {total_mb:.1f} MB", file=sys.stderr)
+    print(f"  Transcripts: {len(transcripts)} file(s)", file=sys.stderr)
+
+    if not recordings and not transcripts:
+        print("Nothing to remove.", file=sys.stderr)
+        return 0
+
+    total = len(recordings) + len(transcripts)
+    if not args.force:
+        for path in sorted(recordings + transcripts):
+            print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
+        answer = input(f"Remove all {total} file(s)? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted.", file=sys.stderr)
+            return 1
+
+    count = 0
+    for path in recordings:
+        path.unlink()
+        count += 1
+    for path in transcripts:
+        path.unlink()
+        count += 1
+
+    # Remove now-empty month/year directories (deepest first)
+    for directory in sorted((parent for parent in audio_dir.rglob("*") if parent.is_dir()), reverse=True):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+    with contextlib.suppress(OSError):
+        audio_dir.rmdir()
+
+    print(f"Removed {count} file(s).", file=sys.stderr)
     return 0
 
 
@@ -2007,10 +2159,22 @@ def main():
     if command == "detect":
         sys.exit(cmd_detect(args))
 
-    if command == "config" and getattr(args, "config_action", None) == "init":
-        sys.exit(_config_init(args))
 
-    config = load_config(args.config)
+
+    if command == "config":
+        if args.config_action is None:
+            # No default action, like the bare `digue`: show what is available.
+            args.config_parser.print_help()
+            sys.exit(1)
+        if args.config_action == "init":
+            sys.exit(_config_init(args))
+
+    try:
+        config = load_config(args.config)
+    except (OSError, ValueError) as exc:
+        selected_path = Path(args.config).expanduser() if args.config else _config_path()
+        print(f"Error: failed to load configuration {selected_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     commands = {
         "download": cmd_download,
