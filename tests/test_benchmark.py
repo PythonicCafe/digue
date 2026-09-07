@@ -1,4 +1,4 @@
-"""Tests for digue benchmark and benchmark_models."""
+"""Tests for digue benchmark."""
 
 import argparse
 import json
@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import benchmark_models
 import digue
 from digue import benchmark as benchmark_mod
 from digue import container as container_mod
@@ -417,53 +416,3 @@ class TestRunBenchmarkCases:
         err = capsys.readouterr().err
         assert "Missing models (will download, ~1500 MB total): medium (~1500 MB)" in err
         assert "small (~" not in err
-
-
-class TestBenchmarkModelsWrapper:
-    def test_main_rejects_remote_before_downloading_sample(self, capsys):
-        config = _default_config()
-        config["server"]["backend"] = "remote"
-        with (
-            patch("benchmark_models.create_parser") as mock_parser,
-            patch("digue.benchmark.download_sample") as mock_download,
-            patch("benchmark_models.load_config", return_value=config),
-        ):
-            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
-                backends=None, models=["small"], runs=1
-            )
-            result = benchmark_models.main()
-
-        assert result == 1
-        mock_download.assert_not_called()
-        assert "remote" in capsys.readouterr().err
-
-    def test_main_forwards_options_and_prints_json(self, capsys):
-        config = _default_config()
-        with (
-            patch("benchmark_models.create_parser") as mock_parser,
-            patch("digue.benchmark.download_sample", return_value="jfk.wav"),
-            patch("benchmark_models.load_config", return_value=config),
-            patch("digue.benchmark.run_benchmark", return_value=[{"backend": "cpu"}]) as mock_run,
-        ):
-            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
-                backends=["cpu"], models=["small"], runs=2
-            )
-            assert benchmark_models.main() == 0
-
-        mock_run.assert_called_once_with("jfk.wav", config, backends=["cpu"], models=["small"], runs=2)
-        assert json.loads(capsys.readouterr().out) == [{"backend": "cpu"}]
-
-    def test_models_argument_rejects_unknown_model(self, capsys):
-        with pytest.raises(SystemExit):
-            benchmark_models.create_parser().parse_args(["--models", "giant"])
-
-        assert "invalid choice" in capsys.readouterr().err
-
-    def test_runs_rejects_non_positive_values(self):
-        parser = benchmark_models.create_parser()
-        for bad in ("0", "-1"):
-            with pytest.raises(SystemExit):
-                parser.parse_args(["--runs", bad])
-
-        assert parser.parse_args(["--runs", "2"]).runs == 2
-        assert parser.parse_args([]).runs == benchmark_mod.BENCHMARK_RUNS

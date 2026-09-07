@@ -50,7 +50,7 @@ Times are wall-clock, three runs after a warm-up, `main-vulkan` image:
 | `medium` | 1.01 s | 6.96 s | 6.9x |
 | `large-v3-turbo` | 0.99 s | 11.02 s | 11.1x |
 
-One machine, not a ranking of AMD iGPUs. Re-run with `python3 benchmark_models.py --backends amd cpu`.
+One machine, not a ranking of AMD iGPUs. Re-run with `digue benchmark --sample -b amd cpu -m small medium large-v3-turbo`.
 
 
 ## System requirements
@@ -220,8 +220,11 @@ digue config init -f                 # overwrite the config file
 digue config init -o path            # create the config file at a custom path
 digue -c path config init            # create the config at the global -c path
 digue doctor                         # check dependencies, test locally present images
-digue benchmark                      # compare backends (records from mic)
-digue benchmark audio.wav            # benchmark with existing audio
+digue benchmark                      # quick: resolved backend + cpu, small + large-v3-turbo (records 10s from mic)
+digue benchmark audio.wav            # same, with an existing audio file
+digue benchmark --sample             # same, with the whisper.cpp JFK sample (downloaded once)
+digue benchmark --sample -m all      # every model on the default backends
+digue benchmark -b amd cpu -m medium -n 5 --json   # pick backends/models/runs; JSON results on stdout
 ```
 
 
@@ -459,7 +462,7 @@ digue.record_to("take.flac", seconds=8, config=config)
 ```bash
 pip install pytest pytest-cov ruff mypy
 make test            # or: pytest tests/ -v --cov=digue --cov-report=term-missing
-make mypy            # mypy --strict over digue/ and benchmark_models.py
+make mypy            # mypy --strict over digue/
 make lint            # ruff check --fix + format
 make check           # lint-check + mypy + test in one go
 ```

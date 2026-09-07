@@ -69,7 +69,7 @@ split-on-trailing-comma = true
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["digue", "benchmark_models.py"]
+files = ["digue"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
