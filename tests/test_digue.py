@@ -1496,6 +1496,66 @@ class TestStopRecording:
         assert elapsed < 0.3
 
 
+class TestStopRecordingPidIdentity:
+    """killpg assumes the pid is still the process-group leader; a recycled pid
+    could belong to an unrelated process. Before each signal, both the /proc
+    starttime and pgrp == pid are revalidated; on divergence the recorder is
+    not signaled and the validated WAV is returned."""
+
+    def make_rec_file(self, tmp_path):
+        rec_file = tmp_path / "take.wav"
+        rec_file.write_bytes(b"audio")
+        return rec_file
+
+    @patch("digue._group_alive", return_value=False)
+    @patch("os.killpg")
+    @patch("digue._process_starttime", return_value="999")
+    def test_starttime_divergence_skips_killpg(self, mock_starttime, mock_killpg, mock_alive, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+
+        result = digue.stop_recording_pid(4242, rec_file, expected_starttime="111")
+
+        mock_killpg.assert_not_called()
+        assert result == rec_file
+
+    @patch("digue._group_alive", return_value=False)
+    @patch("os.killpg")
+    @patch("digue._process_pgrp", return_value=5151)
+    @patch("digue._process_starttime", return_value="111")
+    def test_pgrp_mismatch_skips_killpg(self, mock_starttime, mock_pgrp, mock_killpg, mock_alive, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+
+        result = digue.stop_recording_pid(4242, rec_file, expected_starttime="111")
+
+        mock_killpg.assert_not_called()
+        assert result == rec_file
+
+    @patch("digue._group_alive", return_value=False)
+    @patch("os.killpg")
+    @patch("digue._process_pgrp", return_value=4242)
+    @patch("digue._process_starttime", return_value="111")
+    def test_matching_identity_signals_the_group(self, mock_starttime, mock_pgrp, mock_killpg, mock_alive, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+
+        result = digue.stop_recording_pid(4242, rec_file, expected_starttime="111")
+
+        mock_killpg.assert_called_once_with(4242, 15)
+        assert result == rec_file
+
+    @patch("digue._group_alive", return_value=True)
+    @patch("os.killpg")
+    @patch("digue._process_pgrp", return_value=4242)
+    @patch("digue._process_starttime", side_effect=["111", "999"])
+    def test_identity_is_rechecked_before_sigkill(self, mock_starttime, mock_pgrp, mock_killpg, mock_alive, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+
+        with patch("time.monotonic", side_effect=[0.0, 0.1, 0.6]):
+            result = digue.stop_recording_pid(4242, rec_file, expected_starttime="111")
+
+        assert list(mock_killpg.call_args_list) == [call(4242, 15)]
+        assert result == rec_file
+
+
 # -- Remote backend -----------------------------------------------------------
 
 

@@ -1749,6 +1749,32 @@ def _process_starttime(pid: int, stat_path: Path | None = None) -> str | None:
         return None
 
 
+def _process_pgrp(pid: int, stat_path: Path | None = None) -> int | None:
+    """Returns the process group id from /proc/<pid>/stat (field 5), or None."""
+    path = stat_path or Path(f"/proc/{pid}/stat")
+    try:
+        stat = path.read_text()
+        fields_after_comm = stat[stat.rindex(")") + 2 :].split()
+        return int(fields_after_comm[2])
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        return None
+
+
+def _recorder_identity_valid(pid: int, expected_starttime: str | int | None) -> bool:
+    """True when pid is still the recorder about to be signaled.
+
+    killpg assumes the pid still leads its process group, and a recycled pid
+    could be an unrelated process of the same user: the /proc starttime catches
+    recycling and pgrp == pid catches a process that no longer leads a group
+    (the recorder is spawned with start_new_session=True, so pid == pgid). No
+    expectation always validates -- the owner's unreaped Popen child cannot be
+    recycled; recovery paths must pass an identity.
+    """
+    if expected_starttime is None:
+        return True
+    return _process_starttime(pid) == str(expected_starttime) and _process_pgrp(pid) == pid
+
+
 def _spawn_limit_watchdog(pgid: int, max_duration: int) -> subprocess.Popen[bytes]:
     """Spawns an identity-checking safety killer and returns its handle.
 
@@ -1884,7 +1910,9 @@ def _validate_recording_file(rec_file: Path | None) -> Path | None:
     return rec_file
 
 
-def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
+def stop_recording_pid(
+    pid: int, rec_file: Path | None = None, expected_starttime: str | int | None = None
+) -> Path | None:
     """Stops the recorder process group `pid` and returns its audio file or None.
 
     Used by the take's owner (the daemon that started this recorder). Never
@@ -1892,7 +1920,10 @@ def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
     its own recorder -- a global stop would kill another take's recorder. The
     owner passes the rec_file captured while the recorder was alive; without
     it, the newest-runtime-wav fallback runs (single-take recovery only: with
-    concurrent takes it could grab another daemon's file).
+    concurrent takes it could grab another daemon's file). expected_starttime
+    (recovery paths) revalidates before every killpg that the pid still is the
+    recorder (same /proc starttime and still a process-group leader); a
+    diverged identity is never signaled and the validated WAV is returned.
     """
     import time
 
@@ -1900,6 +1931,8 @@ def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
         rec_file = _recording_file_of(pid)
 
     for signal in (15, 9):  # SIGTERM, then SIGKILL if it does not exit
+        if not _recorder_identity_valid(pid, expected_starttime):
+            break
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal)
         # Poll instead of a fixed sleep: pw-record exits within milliseconds,
