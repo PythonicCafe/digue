@@ -1755,12 +1755,18 @@ def _claim_orphan_take() -> TakeState | None:
     nothing slow). Returns the take in state "recovering" with this process as
     recoverer, or None when there is nothing to recover: a recovering take
     with a live recoverer is not an orphan, so a concurrent toggle claims
-    nothing and starts a new take instead.
+    nothing and starts a new take instead. A claim always means work: an
+    orphan without a recorder identity (a "starting" take) is only claimed
+    once it is old enough for the conservative expiry rules to act on it
+    (ORPHAN_MIN_AGE_SECONDS), so a toggle never returns after claiming a take
+    it could do nothing with.
     """
     import dataclasses
 
     for take in _take_states():
         if not _take_is_orphan(take):
+            continue
+        if take.recorder_pid is None and _take_age_seconds(take) < ORPHAN_MIN_AGE_SECONDS:
             continue
         recoverer_starttime = _process_starttime(os.getpid())
         if recoverer_starttime is None:
@@ -1781,13 +1787,18 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
 
     The recorder identity published by the dead daemon is revalidated before
     signaling: stop_recording_pid stops a live recorder and no-ops on a dead
-    or recycled one, so both cases converge on the delivery flow. The claimed
+    or recycled one, so both cases converge on the delivery flow -- unless
+    the transcript for this take already exists in audio-dir, which proves the
+    text was pasted (the daemon died during the archive): then only the audio
+    is archived, so a take is never pasted twice. The claimed
     state is removed only after a terminal outcome (delivered, rescued, empty):
     retryable failures and unexpected exceptions preserve state and WAV, and
     the next toggle finds a recovering take with a dead recoverer and retries.
-    An empty WAV only expires after the minimum age: a fresh zero-byte file
-    may be transient. A "starting" take has no recorder identity to trust or
-    stop, so the conservative expiry rules apply instead.
+    An empty WAV is final here, whatever the take's age: stop_recording_pid
+    leaves the recorder dead (or already gone) and unlinks an empty file, and
+    the no-speech path archives it -- keeping the state would make every toggle
+    reclaim a take that no longer has audio. Only a "starting" take, which has
+    no recorder identity to trust or stop, gets the age-based expiry rules.
     """
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
@@ -1795,10 +1806,14 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         _expire_orphan_starting(config, take)
         return 0
     rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
-    result = finish_dictation(config, rec_file, take_id=take.take_id)
+    transcript = _delivered_transcript(Path(config["dictate"]["audio_dir"]), take.take_id)
+    if rec_file is not None and transcript is not None:
+        # the dead daemon had already pasted and saved the text (it died during
+        # the archive): archive the audio, never paste twice
+        result = _archive_recovered_take(config, rec_file, transcript)
+    else:
+        result = finish_dictation(config, rec_file, take_id=take.take_id)
     if result.outcome not in TERMINAL_OUTCOMES:
-        return result.exit_code
-    if result.outcome == "empty" and _take_age_seconds(take) < ORPHAN_MIN_AGE_SECONDS:
         return result.exit_code
     _take_state_file(take.take_id).unlink(missing_ok=True)
     return result.exit_code
@@ -2573,6 +2588,63 @@ class DeliveryResult:
     outcome: DeliveryOutcome
     exit_code: int
     rescued_path: Path | None = None
+    # Invariant: once send_text succeeded the outcome is terminal (delivered
+    # or rescued), never retryable_failure -- a retry would paste twice.
+
+
+def _archive_recording(
+    config: dict[str, dict[str, Any]], rec_file: Path, timestamp: str, take_id: str | None
+) -> tuple[bool, Path | None]:
+    """Archives a delivered recording: copy + compression when save-audio is on
+    (the slow part), then removes the live WAV. Returns (archived, rescued_path):
+    on failure the raw WAV is rescued (moved) instead and the user is told."""
+    audio_dir = Path(config["dictate"]["audio_dir"])
+    try:
+        if config["dictate"]["save_audio"]:
+            # compression only needs remote-or-not: no hardware detection
+            # (nvidia-smi/lspci) on every delivery
+            save_audio(
+                rec_file,
+                audio_dir,
+                config["dictate"].get("audio_format", "wav"),
+                timestamp=timestamp,
+                backend="remote" if _is_remote(config) else "local",
+                take_id=take_id,
+            )
+        rec_file.unlink(missing_ok=True)
+        return True, None
+    except Exception as save_exc:
+        rescued_path = rescue_recording(rec_file, audio_dir, timestamp, take_id)
+        message = f"Failed to save audio: {save_exc}"
+        if rescued_path:
+            message += f"; uncompressed copy kept at {rescued_path}"
+        notify(message, timeout_ms=10000)
+        return False, rescued_path
+
+
+def _delivered_transcript(audio_dir: Path, take_id: str) -> Path | None:
+    """Returns the transcript already saved for a take, if any.
+
+    finish_dictation writes the transcript right after pasting, so its
+    presence proves the text reached the user: a recovery of a take whose
+    daemon died afterwards (during the archive) must not paste it again.
+    """
+    return next(iter(sorted(audio_dir.glob(f"[0-9][0-9][0-9][0-9]/[0-9][0-9]/*-{take_id}.txt"))), None)
+
+
+def _archive_recovered_take(config: dict[str, dict[str, Any]], rec_file: Path, transcript: Path) -> DeliveryResult:
+    """Finishes a take whose text was already pasted and saved: archive only.
+
+    The audio takes the transcript's timestamp and take id, so it lands next
+    to the .txt. Every outcome is terminal (the text was delivered)."""
+    timestamp, _, take_id = transcript.stem.rpartition("-")
+    notify("Recovering the previous recording (text already delivered)")
+    archived, rescued_path = _archive_recording(config, rec_file, timestamp, take_id)
+    if archived:
+        return DeliveryResult(outcome="delivered", exit_code=0)
+    if rescued_path is not None:
+        return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
+    return DeliveryResult(outcome="delivered", exit_code=1)
 
 
 def finish_dictation(
@@ -2600,26 +2672,8 @@ def finish_dictation(
         (moved) and the path is left in rescued_path for the caller to report
         (rescued vs retryable_failure)."""
         nonlocal rescued_path
-        try:
-            if config["dictate"]["save_audio"]:
-                backend = resolve_backend(config)
-                save_audio(
-                    rec_file,
-                    audio_dir,
-                    config["dictate"].get("audio_format", "wav"),
-                    timestamp=timestamp,
-                    backend=backend,
-                    take_id=take_id,
-                )
-            rec_file.unlink(missing_ok=True)
-            return True
-        except Exception as save_exc:
-            rescued_path = rescue_recording(rec_file, audio_dir, timestamp, take_id)
-            message = f"Failed to save audio: {save_exc}"
-            if rescued_path:
-                message += f"; uncompressed copy kept at {rescued_path}"
-            notify(message, timeout_ms=10000)
-            return False
+        archived, rescued_path = _archive_recording(config, rec_file, timestamp, take_id)
+        return archived
 
     # Ctrl+c leaves "^C" echoed on the current terminal line; the \r redraw in
     # notify() would write over it and leave stray glyphs ("v"). Start a fresh
@@ -2653,9 +2707,11 @@ def finish_dictation(
             if archived is not None:
                 return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
             return DeliveryResult(outcome="retryable_failure", exit_code=1)
-        archive_audio()
+        audio_kept = archive_audio()
         notify("No speech detected", timeout_ms=5000)
-        return DeliveryResult(outcome="empty", exit_code=0)
+        if audio_kept or rescued_path is not None:
+            return DeliveryResult(outcome="empty", exit_code=0, rescued_path=rescued_path)
+        return DeliveryResult(outcome="retryable_failure", exit_code=1)
 
     try:
         send_text(
@@ -2671,8 +2727,12 @@ def finish_dictation(
         except Exception as save_exc:
             notify(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
-        archive_audio()
-        return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
+        # Nothing reached the user: the outcome is only terminal if the audio
+        # left the runtime dir (archived or rescued); otherwise the take state
+        # stays and the next toggle retries the whole delivery.
+        if archive_audio() or rescued_path is not None:
+            return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
+        return DeliveryResult(outcome="retryable_failure", exit_code=1)
     notify_close()
 
     try:
@@ -2688,10 +2748,13 @@ def finish_dictation(
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
     print(f"Dictation done ({len(text)} chars): {text_path}", file=sys.stderr)
+    # From here on every outcome is terminal: the text was pasted, and a
+    # retryable_failure would make a recovery paste it a second time. An
+    # archive failure is still an error (exit 1), reported as delivered.
     if not archive_audio():
         if rescued_path is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
-        return DeliveryResult(outcome="retryable_failure", exit_code=1)
+        return DeliveryResult(outcome="delivered", exit_code=1)
     return DeliveryResult(outcome="delivered", exit_code=0)
 
 
@@ -2703,7 +2766,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     recorder crash) to run the delivery flow. A second call while the daemon
     is alive signals SIGTERM and exits immediately: the daemon does the work,
     so the keybinding feels instant. Killing the daemon (pkill digue) leaves
-    the recorder alive -- the next toggle transcribes what kept recording.
+    the recorder alive -- the next toggle transcribes what kept recording and
+    returns without starting a new take.
     """
 
     daemon_pid = os.getpid()
@@ -2729,11 +2793,16 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         if claimed is None:
             _write_daemon_state(daemon_pid, "starting")
 
-    for take in _take_states():
-        if take.state == "starting":
-            _expire_orphan_starting(config, take)
+    if claimed is not None:
+        # This toggle recovers and returns; it does not record. It publishes
+        # no daemon state on purpose: a recovering take with a live recoverer
+        # is like a delivering one, so a concurrent toggle starts a new take.
+        # Recording here too would leave that new take and this one competing
+        # for the same daemon state (two recorders, one stop). An unexpected
+        # exception in the delivery flow propagates and preserves the claimed
+        # state and WAV: the next toggle retries.
+        return _recover_orphan_takes(config, claimed)
 
-    recovery_exit = 0
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
@@ -2751,21 +2820,6 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         notify(f"Failed to start recording: {exc}", timeout_ms=5000)
         _remove_daemon_state(daemon_pid)
         return 1
-    # Recovery runs outside the try/except above: an unexpected exception in
-    # the delivery flow must preserve the claimed state and WAV (the next
-    # toggle retries), not be reported as a failed recording start.
-    if claimed is not None:
-        recovery_exit = _recover_claimed_take(config, claimed)
-        # Surplus orphans are only rescued once the oldest take reached a
-        # terminal outcome: a retryable failure leaves the claimed state in
-        # place and the next toggle claims it again (the surplus stays put).
-        if not _take_state_file(claimed.take_id).exists():
-            rescued_paths = _rescue_surplus_orphans(config)
-            if rescued_paths:
-                notify(
-                    f"{len(rescued_paths)} recordings rescued to {config['dictate']['audio_dir']}",
-                    timeout_ms=10000,
-                )
     try:
         limit = config["dictate"]["max_duration"]
         message = (
@@ -2821,7 +2875,32 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         _remove_daemon_state(daemon_pid)
         if processes.take_id is not None:
             _take_state_file(processes.take_id).unlink(missing_ok=True)
-    return own_result.exit_code or recovery_exit
+    return own_result.exit_code
+
+
+def _recover_orphan_takes(config: dict[str, dict[str, Any]], claimed: TakeState) -> int:
+    """Delivers the claimed orphan and rescues the remaining ones. Returns the exit code.
+
+    The server must be up for the delivery; a failure to reach it is reported
+    the same way a recording start would report it, and the claimed state stays
+    (retried by the next toggle). Surplus orphans are only rescued once the
+    oldest take reached a terminal outcome: a retryable failure leaves the
+    claimed state in place and the next toggle claims it again.
+    """
+    try:
+        result = ensure_server(config)
+        if result is None and not is_server_running(config):
+            notify(server_not_running_hint(config), timeout_ms=5000)
+            return 1
+    except Exception as exc:
+        notify(f"Cannot recover the previous recording: {exc}", timeout_ms=5000)
+        return 1
+    exit_code = _recover_claimed_take(config, claimed)
+    if not _take_state_file(claimed.take_id).exists():
+        rescued_paths = _rescue_surplus_orphans(config)
+        if rescued_paths:
+            notify(f"{len(rescued_paths)} recordings rescued to {config['dictate']['audio_dir']}", timeout_ms=10000)
+    return exit_code
 
 
 # -- Benchmark ----------------------------------------------------------------

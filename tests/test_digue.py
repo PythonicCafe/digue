@@ -1304,16 +1304,14 @@ class TestOrphanStartingTake:
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
         self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1, rec_file=rec_file)
-        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
-            patch("subprocess.Popen", return_value=recorder),
-            patch("digue._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+            patch("digue.start_recording") as mock_start,
+            patch("digue.finish_dictation") as mock_finish,
             patch("digue.notify"),
             patch("digue.notify_close"),
             patch("signal.signal"),
@@ -1323,6 +1321,8 @@ class TestOrphanStartingTake:
         rescued = list((tmp_path / "audio").rglob("*-0123456789abcdef.wav"))
         assert len(rescued) == 1
         assert list(tmp_path.glob("digue-take-*.json")) == []
+        mock_finish.assert_not_called()  # never transcribed/pasted automatically
+        mock_start.assert_not_called()  # the toggle returns after the rescue
 
 
 class TestOrphanTakeClaim:
@@ -1470,7 +1470,10 @@ class TestOrphanTakeClaim:
             states = digue._take_states()
         assert len(states) == 1 and states[0].state == "recording"
 
-    def test_toggle_recovers_the_claimed_orphan_then_starts_a_new_take(self, tmp_path):
+    def test_toggle_recovers_the_claimed_orphan_and_does_not_start_a_new_take(self, tmp_path):
+        """The recovering toggle delivers the orphan and returns: recording
+        here too would leave this take and a concurrent one competing for the
+        same daemon state (two recorders, one stop)."""
         import os
 
         rec_file = tmp_path / "digue-recording.wav"
@@ -1478,8 +1481,6 @@ class TestOrphanTakeClaim:
         self.make_take(tmp_path)
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
-        config["dictate"]["max_duration"] = 0
-        recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
         finish_calls = []
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
@@ -1493,18 +1494,98 @@ class TestOrphanTakeClaim:
             patch("digue.is_server_running", return_value=True),
             patch("digue.stop_recording_pid", return_value=rec_file) as mock_stop,
             patch("digue.finish_dictation", side_effect=fake_finish),
-            patch("subprocess.Popen", return_value=recorder),
-            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.start_recording") as mock_start,
             patch("digue.notify"),
             patch("digue.notify_close"),
             patch("signal.signal"),
         ):
             assert digue.dictate_toggle(config) == 0
 
-        assert [finish_call[1] for finish_call in finish_calls] == ["0123456789abcdef", finish_calls[1][1]]
-        assert finish_calls[0][0] == rec_file
+        assert finish_calls == [(rec_file, "0123456789abcdef")]
         mock_stop.assert_called_once()
+        mock_start.assert_not_called()
         assert list(tmp_path.glob("digue-take-*.json")) == []
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
+    def test_toggle_pressed_during_recovery_starts_exactly_one_new_take(self, tmp_path):
+        """Regression: while a toggle recovers an orphan, a second press must
+        find a single consistent picture -- no daemon state (so it starts a new
+        take) and the recovering toggle never records afterwards."""
+        import os
+
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        self.make_take(tmp_path)
+        config = digue._default_config()
+        seen: dict[str, object] = {}
+
+        def fake_finish(_config, file, limit_reached=False, take_id=None):
+            with patch("digue._runtime_dir", return_value=tmp_path):
+                seen["daemon_state_during_recovery"] = digue._daemon_state()
+                seen["claim_during_recovery"] = digue._claim_orphan_take()
+            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", lambda pid: pid == os.getpid()),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.stop_recording_pid", return_value=rec_file),
+            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.start_recording") as mock_start,
+            patch("digue.notify"),
+            patch("digue.notify_close"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+        # a second toggle at that instant sees no daemon and nothing to claim:
+        # it would publish "starting" and record, as the only recorder.
+        assert seen == {"daemon_state_during_recovery": None, "claim_during_recovery": None}
+        mock_start.assert_not_called()
+
+    def test_young_starting_orphan_is_not_claimed(self, tmp_path):
+        """A starting orphan younger than the minimum age cannot be acted on,
+        so claiming it would make the toggle return having done nothing; it is
+        left alone and the toggle records normally."""
+        self.make_take(
+            tmp_path,
+            state="starting",
+            created_at_ns=None,
+            recorder_pid=None,
+            recorder_starttime=None,
+        )
+
+        with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
+            assert digue._claim_orphan_take() is None
+            states = digue._take_states()
+
+        assert len(states) == 1 and states[0].state == "starting"
+
+    def test_recovery_failure_to_reach_the_server_keeps_the_claim_for_retry(self, tmp_path):
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        self.make_take(tmp_path)
+        config = digue._default_config()
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._pid_alive", return_value=False),
+            patch("digue.ensure_server", return_value=None),
+            patch("digue.is_server_running", return_value=False),
+            patch("digue.stop_recording_pid") as mock_stop,
+            patch("digue.finish_dictation") as mock_finish,
+            patch("digue.start_recording") as mock_start,
+            patch("digue.notify"),
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        mock_stop.assert_not_called()
+        mock_finish.assert_not_called()
+        mock_start.assert_not_called()
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            states = digue._take_states()
+        assert len(states) == 1 and states[0].state == "recovering"
+        assert rec_file.exists()
 
     def test_toggle_during_slow_recovery_starts_a_new_take(self, tmp_path):
         """A recovering take with a live recoverer is like a delivering one:
@@ -1652,6 +1733,33 @@ class TestRecoverClaimedTake:
         assert delivered == [rec_file]
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
+    def test_take_with_a_saved_transcript_is_archived_without_pasting_again(self, tmp_path):
+        """A daemon that died after pasting (during the archive) left the
+        transcript behind: recovery must not paste that text a second time."""
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+        config = self.make_config(tmp_path)
+        month_dir = Path(config["dictate"]["audio_dir"]) / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        (month_dir / f"20260905-101500-{take.take_id}.txt").write_text("already pasted\n")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.send_text") as mock_send,
+            patch("digue.transcribe") as mock_transcribe,
+            patch("digue.notify"),
+        ):
+            exit_code = digue._recover_claimed_take(config, take)
+
+        assert exit_code == 0
+        mock_send.assert_not_called()
+        mock_transcribe.assert_not_called()
+        assert not rec_file.exists()
+        assert len(list(month_dir.glob(f"*-{take.take_id}.wav"))) == 1
+        assert len(list(month_dir.glob(f"*-{take.take_id}.txt"))) == 1
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
     def test_recycled_recorder_pid_is_not_signaled(self, tmp_path):
         import os
 
@@ -1710,34 +1818,44 @@ class TestRecoverClaimedTake:
         assert rec_file.exists()
         assert list(tmp_path.glob("digue-take-*.json")) == [tmp_path / f"digue-take-{take.take_id}.json"]
 
-    def test_empty_wav_younger_than_min_age_preserves_state(self, tmp_path):
-        take = self.make_recovering_take(tmp_path, age_seconds=1.0)
+    def test_empty_wav_is_terminal_regardless_of_age(self, tmp_path):
+        """Regression: the "empty is transient while young" guard kept the
+        state of a take whose WAV was already gone (stop_recording_pid unlinks
+        an empty WAV; the no-speech path archives it), so every toggle in the
+        next minute reclaimed it, reported "Empty or missing audio file" and
+        blocked the surplus rescue. After stop_recording_pid the recorder is
+        dead, so an empty WAV is final. Uses the real finish_dictation."""
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"")
+        take = self.make_recovering_take(tmp_path, age_seconds=1.0, rec_file=rec_file)
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch(
-                "digue.finish_dictation",
-                return_value=digue.DeliveryResult(outcome="empty", exit_code=1),
-            ),
+            patch("digue.notify") as mock_notify,
         ):
             exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
 
         assert exit_code == 1
-        assert list(tmp_path.glob("digue-take-*.json")) == [tmp_path / f"digue-take-{take.take_id}.json"]
+        assert not rec_file.exists()
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+        assert mock_notify.call_args.args[0] == "Empty or missing audio file"
 
-    def test_empty_wav_older_than_min_age_removes_state(self, tmp_path):
-        take = self.make_recovering_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
+    def test_no_speech_take_is_consumed_on_the_first_toggle(self, tmp_path):
+        """Same regression through the no-speech path (WAV archived, text
+        empty): the state must go with the audio, not survive for a minute."""
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, age_seconds=1.0, rec_file=rec_file)
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch(
-                "digue.finish_dictation",
-                return_value=digue.DeliveryResult(outcome="empty", exit_code=1),
-            ),
+            patch("digue.transcribe", return_value=""),
+            patch("digue.notify"),
         ):
             exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
 
-        assert exit_code == 1
+        assert exit_code == 0
+        assert not rec_file.exists()
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
 
@@ -1804,9 +1922,8 @@ class TestSurplusOrphanRescue:
         ):
             assert digue.dictate_toggle(config) == 0
 
-        # only the oldest orphan is transcribed and pasted; the second
-        # finish_dictation call belongs to the take this toggle started
-        assert finish_take_ids[0] == oldest.take_id
+        # only the oldest orphan is transcribed and pasted
+        assert finish_take_ids == [oldest.take_id]
         assert surplus_take_a.take_id not in finish_take_ids
         assert surplus_take_b.take_id not in finish_take_ids
         month = tmp_path / "audio" / digue.month_dir_for(digue.now_timestamp())
@@ -4925,13 +5042,66 @@ class TestDeliveryResult:
         assert result.rescued_path is not None
         assert result.rescued_path.read_bytes() == b"audio"
 
-    def test_archive_failure_without_rescue_is_retryable(self, tmp_path):
+    def test_archive_failure_after_paste_is_terminal(self, tmp_path):
+        """Regression: once the text was pasted, no outcome may be retryable --
+        a recovery retry would transcribe and paste the same text again. The
+        archive failure is still reported (exit 1), but as delivered."""
         rec_file = self.make_rec_file(tmp_path)
         config = self.make_config(tmp_path)
 
         with (
             patch("digue.send_text"),
             patch("digue.transcribe", return_value="hello"),
+            patch("digue.save_audio", side_effect=OSError("disk full")),
+            patch("digue.rescue_recording", return_value=None),
+        ):
+            result = digue.finish_dictation(config, rec_file)
+
+        assert result.outcome == "delivered"
+        assert result.outcome in digue.TERMINAL_OUTCOMES
+        assert result.exit_code == 1
+        assert rec_file.exists()
+
+    def test_paste_failure_without_archive_or_rescue_is_retryable(self, tmp_path):
+        """Nothing was delivered and the WAV is still in the runtime dir: the
+        take state must stay so the next toggle retries."""
+        rec_file = self.make_rec_file(tmp_path)
+        config = self.make_config(tmp_path)
+
+        with (
+            patch("digue.send_text", side_effect=RuntimeError("no display")),
+            patch("digue.transcribe", return_value="hello"),
+            patch("digue.save_audio", side_effect=OSError("disk full")),
+            patch("digue.rescue_recording", return_value=None),
+        ):
+            result = digue.finish_dictation(config, rec_file)
+
+        assert result.outcome == "retryable_failure"
+        assert result.exit_code == 1
+        assert rec_file.exists()
+
+    def test_paste_failure_with_rescue_is_rescued(self, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+        config = self.make_config(tmp_path)
+
+        with (
+            patch("digue.send_text", side_effect=RuntimeError("no display")),
+            patch("digue.transcribe", return_value="hello"),
+            patch("digue.save_audio", side_effect=OSError("disk full")),
+        ):
+            result = digue.finish_dictation(config, rec_file)
+
+        assert result.outcome == "rescued"
+        assert result.rescued_path is not None and result.rescued_path.exists()
+        assert not rec_file.exists()
+
+    def test_no_speech_without_archive_or_rescue_is_retryable(self, tmp_path):
+        rec_file = self.make_rec_file(tmp_path)
+        config = self.make_config(tmp_path)
+
+        with (
+            patch("digue.send_text"),
+            patch("digue.transcribe", return_value=""),
             patch("digue.save_audio", side_effect=OSError("disk full")),
             patch("digue.rescue_recording", return_value=None),
         ):
