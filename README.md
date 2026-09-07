@@ -49,6 +49,7 @@ image = "ghcr.io/ggml-org/whisper.cpp:main"
 - For clipboard and paste (dictation only), `xclip` and `xdotool` on X11 or `wl-clipboard` and `wtype` on Wayland.
   - `digue` auto-detects X11 or Wayland via `$DISPLAY` / `$WAYLAND_DISPLAY`. You can force it with `display-server` in the config.
 - For GPU detection (optional): `apt install pciutils vulkan-tools mesa-vulkan-drivers`
+- For audio formats the server cannot decode (optional): `apt install ffmpeg`. Natively supported: wav, flac, mp3, ogg/Vorbis, aiff (see "Audio formats").
 
 ## Installation
 
@@ -239,6 +240,18 @@ sudo apt install alsa-utils      # fallback recorder (arecord)
 The recorder runs in its own process group, so it keeps recording even if the `digue` process is killed; it stops either when you press the key again or when `max-duration` is reached (default 300s, set `0` for unlimited). The limit is enforced by an independent watchdog process: when it fires, it kills the recorder and sends a desktop notification ("Recording stopped: 300s limit reached") -- this bounds the worst-case recording size even if digue dies mid-recording.
 
 The recorded `.wav` is saved as a backup next to the `.txt` transcript. Set `save-audio = false` to keep only the transcript.
+
+## Audio formats
+
+Verified against `whisper-server` (the `ghcr.io/ggml-org/whisper.cpp` images decode with miniaudio and are built without its own ffmpeg fallback): natively supported formats are **wav, flac, mp3, ogg/Vorbis and aiff**.
+
+Formats the server rejects (HTTP 400) are converted to 16 kHz mono WAV with **ffmpeg**, entirely in memory (the converted audio is never written to disk). This covers, among others: **ogg/Opus** (WhatsApp voice notes), **m4a/AAC**, mp4, webm, mka, wma, opus. Conversion happens either upfront (extension known to be unsupported) or as a retry after an HTTP 400. ffmpeg is optional:
+
+```bash
+sudo apt install ffmpeg   # optional, only needed for formats the server cannot decode
+```
+
+Without ffmpeg, unsupported formats produce a clear error instead of a raw HTTP 400.
 
 ## Remote access via SSH tunnel
 

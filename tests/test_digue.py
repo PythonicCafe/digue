@@ -364,6 +364,96 @@ class TestTranscribe:
         assert b"language" not in request.data
 
 
+# -- Ffmpeg fallback ----------------------------------------------------------
+
+
+class TestTranscribeFfmpegFallback:
+    @patch("digue._send_audio")
+    def test_native_format_sends_directly(self, mock_send, tmp_path):
+        mock_send.return_value = "ok"
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        assert digue.transcribe("http://x", audio) == "ok"
+        mock_send.assert_called_once()
+
+    @patch("digue._convert_to_wav", return_value=b"wav-bytes")
+    @patch("digue._send_audio")
+    def test_converts_unknown_extension_upfront(self, mock_send, mock_convert, tmp_path):
+        audio = tmp_path / "file.amr"
+        audio.write_bytes(b"data")
+        mock_send.return_value = "text"
+        result = digue.transcribe("http://x", audio)
+        assert result == "text"
+        mock_convert.assert_called_once_with(audio)
+
+    @patch("digue._convert_to_wav", return_value=b"wav-bytes")
+    @patch("digue._send_audio")
+    def test_retries_after_http_400(self, mock_send, mock_convert, tmp_path):
+        import urllib.error
+
+        audio = tmp_path / "file.ogg"
+        audio.write_bytes(b"data")
+        error = urllib.error.HTTPError("http://x", 400, "Bad Request", None, None)
+        mock_send.side_effect = [error, "converted text"]
+
+        result = digue.transcribe("http://x", audio)
+
+        assert result == "converted text"
+        assert mock_send.call_count == 2
+        mock_convert.assert_called_once_with(audio)
+
+    @patch("shutil.which", return_value=None)
+    @patch("digue._send_audio")
+    def test_400_without_ffmpeg_raises(self, mock_send, mock_which, tmp_path):
+        import urllib.error
+
+        audio = tmp_path / "file.ogg"
+        audio.write_bytes(b"data")
+        mock_send.side_effect = urllib.error.HTTPError("http://x", 400, "Bad Request", None, None)
+        with pytest.raises(RuntimeError, match="ffmpeg is not installed"):
+            digue.transcribe("http://x", audio)
+
+    @patch("shutil.which", return_value=None)
+    @patch("digue._send_audio")
+    def test_unknown_extension_without_ffmpeg_raises(self, mock_send, mock_which, tmp_path):
+        audio = tmp_path / "file.amr"
+        audio.write_bytes(b"data")
+        with pytest.raises(RuntimeError, match="ffmpeg is not installed"):
+            digue.transcribe("http://x", audio)
+
+    def test_conversion_returns_bytes_not_file(self, tmp_path):
+        # _convert_to_wav must work in memory: returns bytes, writes nothing
+        audio = tmp_path / "tone.ogg"
+        audio.write_bytes(b"x")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=b"wav", stderr=b"")
+            result = digue._convert_to_wav(audio)
+            argv = mock_run.call_args[0][0]
+        assert result == b"wav"
+        assert "pipe:1" in argv
+        assert not list(tmp_path.glob("digue-*.wav"))  # no temp files on disk
+
+
+class TestSendAudioTokenTimestamps:
+    @patch("digue._multipart_request", return_value="text")
+    def test_always_sends_token_timestamps_false(self, mock_multipart, tmp_path):
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        digue._send_audio("http://x", audio, "en", "text", 10)
+        fields = mock_multipart.call_args[0][2]
+        assert fields["token_timestamps"] == "false"
+
+    @patch("digue._multipart_request", return_value="text")
+    def test_sends_original_filename(self, mock_multipart, tmp_path):
+        audio = tmp_path / "tone_opus.ogg"
+        audio.write_bytes(b"data")
+        digue._send_audio("http://x", audio, "auto", "text", 10, audio_data=b"converted")
+        filename = mock_multipart.call_args[1]["filename"]
+        assert filename == "tone_opus.ogg"
+        audio_data = mock_multipart.call_args[0][1]
+        assert audio_data == b"converted"
+
+
 # -- VTT simplification ------------------------------------------------------
 
 
@@ -600,7 +690,10 @@ class TestRemoteBackend:
         assert digue.cmd_status(MagicMock(), config) == 1
 
 
-# -- CLI parser ---------------------------------------------------------------class TestCreateParser:
+# -- CLI parser ---------------------------------------------------------------
+
+
+class TestCreateParser:
     def test_all_subcommands_parse(self):
         parser = digue.create_parser()
         for cmd in ("detect", "download", "start", "stop", "destroy", "status", "dictate", "config", "benchmark"):

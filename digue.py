@@ -13,6 +13,12 @@ DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
 AVAILABLE_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 DEFAULT_MAX_RECORD_SECONDS = 300
+# Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3,
+# Ogg/Vorbis, AIFF). Verified empirically against whisper-server (ghcr.io main-vulkan
+# image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3, ogg-vorbis and aiff
+# return HTTP 200; opus-in-ogg (WhatsApp voice notes), m4a/AAC, mp4, webm, mka and
+# wma return HTTP 400. Everything else is converted with ffmpeg before upload.
+NATIVE_FORMATS = frozenset((".wav", ".flac", ".mp3", ".ogg", ".aiff", ".aif"))
 BACKENDS = ("nvidia", "amd", "intel", "cpu", "remote")
 DOCKER_IMAGES = {
     "nvidia": "ghcr.io/ggml-org/whisper.cpp:main-cuda",
@@ -503,7 +509,7 @@ def server_not_running_hint(config):
 # -- HTTP helpers -------------------------------------------------------------
 
 
-def _multipart_request(url, audio_data, fields, timeout):
+def _multipart_request(url, audio_data, fields, timeout, filename="audio.wav"):
     """Sends a multipart/form-data POST request using only stdlib."""
     import os
     import time
@@ -516,7 +522,7 @@ def _multipart_request(url, audio_data, fields, timeout):
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"\r\n\r\n{field_value}\r\n')
     file_part = (
         f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         f"Content-Type: application/octet-stream\r\n"
         f"\r\n"
     )
@@ -537,13 +543,88 @@ def _multipart_request(url, audio_data, fields, timeout):
 # -- Transcription ------------------------------------------------------------
 
 
-def transcribe(url, audio_path, language="auto", response_format="text", timeout=TRANSCRIPTION_TIMEOUT):
-    """Sends audio to the server and returns the response (text, VTT, or SRT)."""
-    audio_data = audio_path.read_bytes()
-    fields = {"response_format": response_format}
+def _convert_to_wav(audio_path):
+    """Converts audio to 16 kHz mono WAV in memory using ffmpeg. Returns the bytes.
+
+    Nothing is written to disk: ffmpeg writes to stdout, which is captured
+    (16 kHz mono s16 is ~32 KB/s, so a 300 s recording tops out around 10 MB).
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError(
+            f"Format {audio_path.suffix} is not supported by whisper-server and ffmpeg is not installed. "
+            "Install it with: sudo apt install ffmpeg"
+        )
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(audio_path),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+            "pipe:1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed to convert {audio_path.name}: {result.stderr.decode().strip()[:200]}")
+    return result.stdout
+
+
+def _send_audio(url, audio_path, language, response_format, timeout, audio_data=None):
+    """Uploads a single audio file to the server and returns the stripped response.
+
+    token_timestamps=false disables the server's max_len=60 segment wrapping,
+    which breaks segments on token boundaries (mid-word, e.g. "trans|crevendo").
+    Verified against whisper-server: with it disabled, text output comes as one
+    line per natural segment.
+    """
+    data = audio_data if audio_data is not None else audio_path.read_bytes()
+    fields = {"response_format": response_format, "token_timestamps": "false"}
     if language and language != "auto":
         fields["language"] = language
-    return _multipart_request(url, audio_data, fields, timeout).strip()
+    return _multipart_request(url, data, fields, timeout, filename=audio_path.name).strip()
+
+
+def transcribe(url, audio_path, language="auto", response_format="text", timeout=TRANSCRIPTION_TIMEOUT):
+    """Sends audio to the server and returns the response (text, VTT, or SRT).
+
+    Formats the server cannot decode are converted to WAV with ffmpeg in memory
+    (nothing is written to disk), either upfront (unknown extension) or as a
+    fallback after an HTTP 400.
+    """
+    import urllib.error
+    from pathlib import Path
+
+    audio_path = Path(audio_path)
+    if audio_path.suffix.lower() not in NATIVE_FORMATS:
+        print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
+        wav_data = _convert_to_wav(audio_path)
+        return _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data)
+    try:
+        return _send_audio(url, audio_path, language, response_format, timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        print(
+            f"Server rejected {audio_path.name} (HTTP 400). Trying ffmpeg conversion...",
+            file=sys.stderr,
+            flush=True,
+        )
+        wav_data = _convert_to_wav(audio_path)
+        return _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data)
 
 
 # -- VTT simplification -------------------------------------------------------
@@ -1496,6 +1577,7 @@ def cmd_doctor(args, config):
         "lspci": "GPU detection (pciutils)",
         "nvidia-smi": "NVIDIA GPU detection",
         "vulkaninfo": "Vulkan verification (vulkan-tools)",
+        "ffmpeg": "Optional: convert audio formats the server cannot decode",
     }
     for tool, description in tools.items():
         found = shutil.which(tool)
