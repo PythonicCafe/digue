@@ -740,15 +740,21 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
         raise
     recorder_starttime = _process_starttime(recorder.pid)
     if recorder_starttime is None:
-        # The recorder died before its identity could be read: without a
-        # verifiable recorder identity the state cannot move to "recording".
+        # /proc/<pid>/stat unreadable for our own unreaped child: no recorder
+        # identity means no take state and no watchdog could be published, so
+        # the recorder must not be left running. Practically unreachable (a
+        # zombie still has its stat), but silently continuing here used to
+        # hand back a recorder nobody could stop or recover.
         _take_state_file(take_id).unlink(missing_ok=True)
-    else:
-        _write_take_state(
-            dataclasses.replace(
-                state, state="recording", recorder_pid=recorder.pid, recorder_starttime=int(recorder_starttime)
-            )
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(recorder.pid, 15)
+        recorder.wait(timeout=5)
+        raise RuntimeError(f"Cannot identify the recorder process {recorder.pid} via /proc")
+    _write_take_state(
+        dataclasses.replace(
+            state, state="recording", recorder_pid=recorder.pid, recorder_starttime=int(recorder_starttime)
         )
+    )
     watchdog = _spawn_limit_watchdog(recorder.pid, max_duration) if max_duration > 0 else None
     return RecordingProcesses(
         recorder=recorder, watchdog=watchdog, rec_file=rec_file, take_id=take_id, stderr_path=_recorder_stderr_path()

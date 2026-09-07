@@ -275,7 +275,7 @@ class TestLiveRecordingFormat:
 class TestStartRecording:
     @patch("subprocess.Popen")
     def test_returns_owned_recorder_handle(self, mock_popen, tmp_path):
-        recorder = MagicMock(pid=1234)
+        recorder = MagicMock(pid=os.getpid())
         mock_popen.return_value = recorder
         config = _default_config()
         config["dictate"]["max_duration"] = 0
@@ -295,7 +295,7 @@ class TestStartRecording:
         """The stderr file outlives the startup check: a recorder that dies
         mid-take (PipeWire restarted) explains itself there, and the owner
         reports it instead of a bare "Empty or missing audio file"."""
-        recorder = MagicMock(pid=1234, returncode=1)
+        recorder = MagicMock(pid=os.getpid(), returncode=1)
 
         def popen(argv, stdout=None, stderr=None, start_new_session=False):
             stderr.write("stream disconnected\n")
@@ -313,6 +313,30 @@ class TestStartRecording:
             assert recording_mod._consume_recorder_stderr(processes) == "stream disconnected"
             assert not processes.stderr_path.exists()
             assert recording_mod._consume_recorder_stderr(processes) == "exit code 1"
+
+    @patch("subprocess.Popen")
+    def test_recorder_without_readable_identity_is_stopped_and_reported(self, mock_popen, tmp_path):
+        """No /proc identity means no take state and no watchdog can be
+        published: the recorder must not be handed back running."""
+        recorder = MagicMock(pid=1234)
+        recorder.poll.return_value = None
+        mock_popen.return_value = recorder
+        config = _default_config()
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch(
+                "digue.recording._process_starttime",
+                side_effect=lambda pid, stat_path=None: "7" if pid == os.getpid() else None,
+            ),
+            patch("digue.recording.os.killpg") as mock_killpg,
+            pytest.raises(RuntimeError, match="Cannot identify the recorder"),
+        ):
+            recording_mod.start_recording(config)
+
+        mock_killpg.assert_called_once_with(1234, 15)
+        recorder.wait.assert_called_once()
+        assert list(tmp_path.glob("digue-take-*.json")) == []
 
     @patch("digue.recording._spawn_limit_watchdog")
     @patch("subprocess.Popen")
