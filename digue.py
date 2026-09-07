@@ -45,12 +45,115 @@ DOCKER_IMAGES = {
 }
 HUGGINGFACE_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 HUGGINGFACE_VAD_URL = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin"
-RESPONSE_FORMATS = ("text", "vtt", "srt")
+RESPONSE_FORMATS = ("text", "vtt", "srt", "timestamps")
 SERVER_STARTUP_TIMEOUT = 180
 TRANSCRIPTION_TIMEOUT = 120
 BENCHMARK_TRANSCRIPTION_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 60
 BENCHMARK_RUNS = 3
+# whisper.cpp g_lang (src/whisper.cpp): full names the server's JSON "language"
+# field may carry, mapped to the two-letter codes.
+LANGUAGE_FULL_TO_CODE: dict[str, str] = {
+    "afrikaans": "af",
+    "albanian": "sq",
+    "amharic": "am",
+    "arabic": "ar",
+    "armenian": "hy",
+    "assamese": "as",
+    "azerbaijani": "az",
+    "basque": "eu",
+    "belarusian": "be",
+    "bengali": "bn",
+    "bosnian": "bs",
+    "breton": "br",
+    "bulgarian": "bg",
+    "cantonese": "yue",
+    "catalan": "ca",
+    "chinese": "zh",
+    "croatian": "hr",
+    "czech": "cs",
+    "danish": "da",
+    "dutch": "nl",
+    "english": "en",
+    "estonian": "et",
+    "faroese": "fo",
+    "finnish": "fi",
+    "french": "fr",
+    "galician": "gl",
+    "georgian": "ka",
+    "german": "de",
+    "greek": "el",
+    "gujarati": "gu",
+    "haitian creole": "ht",
+    "hausa": "ha",
+    "hawaiian": "haw",
+    "hebrew": "he",
+    "hindi": "hi",
+    "hungarian": "hu",
+    "icelandic": "is",
+    "indonesian": "id",
+    "italian": "it",
+    "japanese": "ja",
+    "javanese": "jw",
+    "kannada": "kn",
+    "kazakh": "kk",
+    "khmer": "km",
+    "korean": "ko",
+    "lao": "lo",
+    "latin": "la",
+    "latvian": "lv",
+    "lingala": "ln",
+    "lithuanian": "lt",
+    "luxembourgish": "lb",
+    "macedonian": "mk",
+    "malagasy": "mg",
+    "malay": "ms",
+    "malayalam": "ml",
+    "maltese": "mt",
+    "maori": "mi",
+    "marathi": "mr",
+    "mongolian": "mn",
+    "myanmar": "my",
+    "nepali": "ne",
+    "norwegian": "no",
+    "nynorsk": "nn",
+    "occitan": "oc",
+    "pashto": "ps",
+    "persian": "fa",
+    "polish": "pl",
+    "portuguese": "pt",
+    "punjabi": "pa",
+    "romanian": "ro",
+    "russian": "ru",
+    "sanskrit": "sa",
+    "serbian": "sr",
+    "shona": "sn",
+    "sindhi": "sd",
+    "sinhala": "si",
+    "slovak": "sk",
+    "slovenian": "sl",
+    "somali": "so",
+    "spanish": "es",
+    "sundanese": "su",
+    "swahili": "sw",
+    "swedish": "sv",
+    "tagalog": "tl",
+    "tajik": "tg",
+    "tamil": "ta",
+    "tatar": "tt",
+    "telugu": "te",
+    "thai": "th",
+    "tibetan": "bo",
+    "turkish": "tr",
+    "turkmen": "tk",
+    "ukrainian": "uk",
+    "urdu": "ur",
+    "uzbek": "uz",
+    "vietnamese": "vi",
+    "welsh": "cy",
+    "yiddish": "yi",
+    "yoruba": "yo",
+}
 AUDIO_EXTENSIONS = frozenset(
     (
         ".mp3",
@@ -733,51 +836,148 @@ def _convert_to_wav(audio_path):
     return result.stdout
 
 
-def _send_audio(url, audio_path, language, response_format, timeout, audio_data=None):
+def _send_audio(
+    url: str,
+    audio_path: Path,
+    language: str,
+    response_format: str,
+    timeout: int | float,
+    audio_data: bytes | None = None,
+    prompt: str | None = None,
+) -> str:
     """Uploads a single audio file to the server and returns the stripped response.
 
     token_timestamps=false disables the server's max_len=60 segment wrapping,
     which breaks segments on token boundaries (mid-word, e.g. "trans|crevendo").
     Verified against whisper-server: with it disabled, text output comes as one
     line per natural segment.
+    prompt, when set, is sent as the whisper initial prompt (steers spelling of
+    names/acronyms).
     """
     data = audio_data if audio_data is not None else audio_path.read_bytes()
-    fields = {"response_format": response_format, "token_timestamps": "false"}
-    if language and language != "auto":
-        fields["language"] = language
+    # The server's default language is "en" (server.cpp): omitting the field
+    # would transcribe everything as English. "auto" is passed as-is and makes
+    # whisper detect the language in the same pass (no extra cost).
+    fields = {"response_format": response_format, "token_timestamps": "false", "language": language or "auto"}
+    if prompt:
+        fields["prompt"] = prompt
     return _multipart_request(url, data, fields, timeout, filename=audio_path.name).strip()
 
 
-def transcribe(url, audio_path, language="auto", response_format="text", timeout=TRANSCRIPTION_TIMEOUT):
-    """Sends audio to the server and returns the response (text, VTT, or SRT).
+def _language_code(full_name: str) -> str:
+    """Maps a whisper full language name ("portuguese") to its code ("pt").
 
-    Formats the server cannot decode are converted to WAV with ffmpeg in memory
-    (nothing is written to disk), either upfront (unknown extension) or as a
-    fallback after an HTTP 400.
+    Codes pass through unchanged; unknown names are lowercased as-is (the
+    server may add languages before this map is updated).
     """
-    import urllib.error
-    from pathlib import Path
+    name = full_name.strip().lower()
+    if name in LANGUAGE_FULL_TO_CODE:
+        return LANGUAGE_FULL_TO_CODE[name]
+    return name
 
-    audio_path = Path(audio_path)
+
+def detect_language(
+    url: str, audio_path: Path, timeout: int | float = TRANSCRIPTION_TIMEOUT, verbose: bool = False
+) -> str:
+    """Detects the spoken language of an audio file. Returns the language code (e.g. "pt").
+
+    The server only reports the language in verbose_json (plain json returns
+    {"text":""} even with detect_language=true). detect_language=true makes
+    whisper return right after the encoder pass, skipping text decoding.
+    Formats the server cannot decode are converted in memory (upfront for
+    unknown extensions, as a retry after HTTP 400), like transcribe. Progress
+    messages follow the verbose flag (default off: quiet library use).
+    """
+    import json
+    import urllib.error
+
+    def request(audio_data: bytes | None) -> str:
+        fields = {"response_format": "verbose_json", "detect_language": "true", "language": "auto"}
+        return _multipart_request(
+            url,
+            audio_data if audio_data is not None else audio_path.read_bytes(),
+            fields,
+            timeout,
+            filename=audio_path.name,
+        )
+
+    def parse(response: str) -> str:
+        payload = json.loads(response)
+        return _language_code(payload["detected_language"])
+
     if audio_path.suffix.lower() not in NATIVE_FORMATS:
-        print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
-        wav_data = _convert_to_wav(audio_path)
-        return _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data)
+        if verbose:
+            print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
+        return parse(request(_convert_to_wav(audio_path)))
     try:
-        return _send_audio(url, audio_path, language, response_format, timeout)
+        return parse(request(None))
     except urllib.error.HTTPError as exc:
         if exc.code != 400:
             raise
-        print(
-            f"Server rejected {audio_path.name} (HTTP 400). Trying ffmpeg conversion...",
-            file=sys.stderr,
-            flush=True,
+        if verbose:
+            print(
+                f"Server rejected {audio_path.name} (HTTP 400). Trying ffmpeg conversion...",
+                file=sys.stderr,
+                flush=True,
+            )
+        return parse(request(_convert_to_wav(audio_path)))
+
+
+def language_probabilities(
+    url: str, audio_path: Path, timeout: int | float = TRANSCRIPTION_TIMEOUT, verbose: bool = False
+) -> dict[str, Any]:
+    """Detects the language and returns {"detected": (code, probability), "all": {code: probability}}.
+
+    Runs a full verbose_json request (the server computes the probability
+    table from the encoder's first-token logits and reports it in the
+    response; a full transcription pass also runs server-side). Progress
+    messages follow the verbose flag (default off: quiet library use).
+    """
+    import json
+    import urllib.error
+
+    def request(audio_data: bytes | None) -> str:
+        fields = {
+            "response_format": "verbose_json",
+            "language": "auto",
+            "token_timestamps": "false",
+            "no_language_probabilities": "false",
+        }
+        return _multipart_request(
+            url,
+            audio_data if audio_data is not None else audio_path.read_bytes(),
+            fields,
+            timeout,
+            filename=audio_path.name,
         )
-        wav_data = _convert_to_wav(audio_path)
-        return _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data)
 
+    def parse(response: str) -> dict[str, Any]:
+        payload = json.loads(response)
+        detected = _language_code(payload["detected_language"])
+        all_probs = {
+            _language_code(name): float(prob) for name, prob in payload.get("language_probabilities", {}).items()
+        }
+        return {
+            "detected": (detected, float(payload["detected_language_probability"])),
+            "all": all_probs,
+        }
 
-# -- VTT simplification -------------------------------------------------------
+    if audio_path.suffix.lower() not in NATIVE_FORMATS:
+        if verbose:
+            print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
+        return parse(request(_convert_to_wav(audio_path)))
+    try:
+        return parse(request(None))
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        if verbose:
+            print(
+                f"Server rejected {audio_path.name} (HTTP 400). Trying ffmpeg conversion...",
+                file=sys.stderr,
+                flush=True,
+            )
+        return parse(request(_convert_to_wav(audio_path)))
 
 
 def _post_process_subtitle(content: str, response_format: str, max_line_length: int, max_lines: int) -> str:
@@ -1726,6 +1926,20 @@ def create_parser():
 
     subparsers.add_parser("detect", help="Detect GPU backend and print it")
 
+    sub_detect_language = subparsers.add_parser("detect-language", help="Detect the spoken language of an audio file")
+    sub_detect_language.add_argument("audio", type=Path, help="Audio file to inspect")
+    sub_detect_language.add_argument(
+        "--json",
+        action="store_true",
+        help='Print {"language", "probability", "all"} JSON instead of just the code',
+    )
+    sub_detect_language.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show progress messages (ffmpeg conversion) on stderr",
+    )
+
     sub_download = subparsers.add_parser("download", help="Download model(s)")
     sub_download.add_argument(
         "model",
@@ -1754,15 +1968,27 @@ def create_parser():
         "-f",
         "--format",
         dest="response_format",
-        choices=RESPONSE_FORMATS,
-        default="text",
-        help=f"Output format. Options: {', '.join(RESPONSE_FORMATS)} (default: text)",
+        choices=("vtt", "srt", "timestamps", "text"),
+        default=None,
+        help='Output format: "vtt", "srt", "timestamps" ([00:00:12] text lines) or "text" (plain). Default: config output-format, else "text"',
     )
     sub_transcribe.add_argument(
         "-l",
         "--language",
         default=None,
         help="Language code, e.g. pt, en (default: from config or auto)",
+    )
+    sub_transcribe.add_argument(
+        "-p",
+        "--prompt",
+        default=None,
+        help="Initial prompt to steer spelling of names/acronyms (default: config transcribe.prompt)",
+    )
+    sub_transcribe.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show progress messages (conversion attempts etc.) on stderr",
     )
 
     sub_convert = subparsers.add_parser(
@@ -1806,8 +2032,8 @@ def create_parser():
         "--format",
         dest="response_format",
         choices=RESPONSE_FORMATS,
-        default="vtt",
-        help=f"Output format. Options: {', '.join(RESPONSE_FORMATS)} (default: vtt)",
+        default=None,
+        help=f"Output format. Options: {', '.join(RESPONSE_FORMATS)} (default: config output-format)",
     )
     sub_batch_transcribe.add_argument(
         "-l",
@@ -1860,6 +2086,37 @@ def create_parser():
 def cmd_detect(args):
     backend = detect_backend()
     print(backend)
+    return 0
+
+
+def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """Detects the spoken language of an audio file (no transcription)."""
+    ensure_server(config, silent=True)
+    if not is_server_running(config):
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
+        return 1
+
+    audio_path: Path = args.audio
+    if not audio_path.exists():
+        print(f"Error: file not found: {audio_path}", file=sys.stderr)
+        return 1
+    if not audio_path.is_file():
+        print(f"Error: not a file: {audio_path} (expected an audio file; got a directory?)", file=sys.stderr)
+        return 1
+
+    url = server_url(config)
+    try:
+        if args.json:
+            import json
+
+            probs = language_probabilities(url, audio_path, verbose=args.verbose)
+            detected_code, detected_prob = probs["detected"]
+            print(json.dumps({"language": detected_code, "probability": detected_prob, "all": probs["all"]}, indent=2))
+        else:
+            print(detect_language(url, audio_path, verbose=args.verbose))
+    except Exception as exc:
+        print(f"Error: language detection failed: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1957,7 +2214,7 @@ def cmd_dictate(args, config):
     return dictate_toggle(config)
 
 
-def cmd_transcribe(args, config):
+def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     from pathlib import Path
 
     ensure_server(config, silent=True)
@@ -1969,20 +2226,47 @@ def cmd_transcribe(args, config):
     if not audio_path.exists():
         print(f"Error: file not found: {audio_path}", file=sys.stderr)
         return 1
+    if not audio_path.is_file():
+        print(f"Error: not a file: {audio_path} (expected an audio file; got a directory?)", file=sys.stderr)
+        return 1
 
-    language = args.language or config["dictation"]["language"]
+    language = args.language or config["transcribe"]["language"]
+    prompt = args.prompt if args.prompt is not None else config["transcribe"].get("prompt", "")
+    response_format = args.response_format or config["transcribe"].get("output_format", "text")
+    max_line_length = int(config["transcribe"].get("max_line_length", 42))
+    max_lines = int(config["transcribe"].get("max_lines", 2))
     url = server_url(config)
 
-    print(f"Transcribing {audio_path.name}...", file=sys.stderr, flush=True)
-    result = transcribe(url, audio_path, language, args.response_format)
+    # timestamps output is meant for reading on one screen: cues are not
+    # wrapped, so each timestamp gets exactly one line with all its text.
+    wrap_subtitles = response_format != "timestamps"
+    try:
+        result = transcribe(
+            url,
+            audio_path,
+            language,
+            "vtt" if response_format == "timestamps" else response_format,
+            verbose=args.verbose,
+            prompt=prompt,
+            max_line_length=max_line_length,
+            max_lines=max_lines,
+            wrap_cues=wrap_subtitles,
+        )
 
-    if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(result + "\n")
-        print(f"Saved: {output_path}", file=sys.stderr)
-    else:
-        print(result)
+        if response_format == "timestamps":
+            result = _convert_content(result, "vtt", "timestamps")
+
+        if args.output:
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(result + "\n")
+            if args.verbose:
+                print(f"Saved: {output_path}", file=sys.stderr)
+        else:
+            print(result)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -2206,6 +2490,82 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> 
     output_path.write_text(result)
     print(f"Saved: {output_path}", file=sys.stderr)
     return 0
+
+
+def _format_extension(response_format: str) -> str:
+    return {"text": ".txt", "vtt": ".vtt", "srt": ".srt", "timestamps": ".txt"}[response_format]
+
+
+def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    import time
+
+    ensure_server(config, silent=True)
+    if not is_server_running(config):
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
+        return 1
+
+    language = args.language or config["transcribe"]["language"]
+    response_format = args.response_format or config["transcribe"]["output_format"]
+    prompt = config["transcribe"]["prompt"]
+    max_line_length = config["transcribe"]["max_line_length"]
+    max_lines = config["transcribe"]["max_lines"]
+    url = server_url(config)
+    ext = _format_extension(response_format)
+
+    audio_files = sorted(
+        path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+    )
+    if not audio_files:
+        print(f"No audio files found in {args.input_dir}", file=sys.stderr)
+        return 1
+
+    pending = []
+    for audio_file in audio_files:
+        output_file = args.output_dir / (audio_file.stem + ext)
+        if not output_file.exists():
+            pending.append((audio_file, output_file))
+
+    skipped = len(audio_files) - len(pending)
+    if skipped:
+        print(f"Skipping {skipped} already transcribed file(s)", file=sys.stderr)
+    if not pending:
+        print("All files already transcribed", file=sys.stderr)
+        return 0
+
+    succeeded = 0
+    failed = 0
+    wrap_subtitles = response_format not in ("timestamps", "text")
+    for idx, (audio_file, output_file) in enumerate(pending, 1):
+        print(f"[{idx}/{len(pending)}] {audio_file.name}...", file=sys.stderr, flush=True)
+        start = time.perf_counter()
+        temp_file = output_file.with_name(f".{output_file.name}.tmp")
+        try:
+            result = transcribe(
+                url,
+                audio_file,
+                language,
+                "vtt" if response_format == "timestamps" else response_format,
+                prompt=prompt,
+                max_line_length=max_line_length,
+                max_lines=max_lines,
+                wrap_cues=wrap_subtitles,
+            )
+            if response_format == "timestamps":
+                result = _convert_content(result, "vtt", "timestamps")
+            temp_file.write_text(result + "\n")
+            temp_file.replace(output_file)
+            succeeded += 1
+            elapsed = time.perf_counter() - start
+            print(f"  Saved: {output_file.name} ({elapsed:.1f}s)", file=sys.stderr)
+        except Exception as exc:
+            failed += 1
+            temp_file.unlink(missing_ok=True)
+            print(f"  Error: {exc}", file=sys.stderr)
+
+    print(
+        f"Done: {succeeded} succeeded, {failed} failed, {skipped} skipped. Output: {args.output_dir}", file=sys.stderr
+    )
+    return 1 if failed else 0
 
 
 def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
@@ -2438,6 +2798,7 @@ def main():
         "status": cmd_status,
         "dictate": cmd_dictate,
         "transcribe": cmd_transcribe,
+        "detect-language": cmd_detect_language,
         "convert": cmd_convert,
         "batch-transcribe": cmd_batch_transcribe,
         "batch-simplify-vtt": cmd_batch_simplify_vtt,
