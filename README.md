@@ -44,7 +44,7 @@ image = "ghcr.io/ggml-org/whisper.cpp:main"
 - Python 3.11+ (for `tomllib`). No pip packages needed at runtime.
 - Docker is required for running the whisper-server container (`apt install docker.io && usermod -aG docker $USER`, then log out and back in)
 - For NVIDIA GPUs, also install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
-- For audio recording (dictation only), PipeWire is needed (`apt install pipewire`)
+- For audio recording (dictation only), PipeWire is needed (`apt install pipewire`) or ALSA (`apt install alsa-utils`) as a fallback
 - For desktop notifications (dictation only), `notify-send` is needed (`apt install libnotify-bin`)
 - For clipboard and paste (dictation only), `xclip` and `xdotool` on X11 or `wl-clipboard` and `wtype` on Wayland.
   - `digue` auto-detects X11 or Wayland via `$DISPLAY` / `$WAYLAND_DISPLAY`. You can force it with `display-server` in the config.
@@ -182,7 +182,9 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # Server
 [server]
 port = 8178                     # host port for the whisper-server container
-# data-dir = "~/digue/data"     # where models are stored (default: ./data next to digue.py)
+# data-dir = ""                 # where models are stored
+                                #   (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is often
+                                #   unset, in which case: ~/.local/share/digue)
 # backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
                                 # or "remote" (server on another machine via SSH tunnel)
 # image = ""                    # override Docker image; leave empty for auto-selection
@@ -194,10 +196,12 @@ port = 8178                     # host port for the whisper-server container
 # Dictation
 [dictation]
 language = "auto"               # language for transcription: "auto", "pt", "en" etc.
-# audio-dir = ""                # where recordings are saved (default: <data-dir>/../audio)
+# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio)
 # display-server = "auto"       # "auto" (detect), "x11", or "wayland"
-                                #   X11 uses: xclip + xdotool
-                                #   Wayland uses: wl-copy + wtype
+                                #   X11 uses: xclip + xdotool (paste) or xdotool type (type)
+                                #   Wayland uses: wl-copy + wtype (paste) or wtype (type)
+# recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
+# max-duration = 300            # stop recording after N seconds (0 = unlimited)
 
 # Models per backend
 [models]                        # available: tiny, base, small, medium, large-v3-turbo, large-v3
@@ -209,6 +213,29 @@ cpu = "small"                   # lighter model for CPU-only machines
 
 Paths support `~` (expanded to home directory).
 
+
+## Audio formats
+
+Verified against `whisper-server` (the `ghcr.io/ggml-org/whisper.cpp` images decode with miniaudio and are built without its own ffmpeg fallback): natively supported formats are **wav, flac, mp3, ogg/Vorbis and aiff**.
+
+Formats the server rejects (HTTP 400) are converted to 16 kHz mono WAV with **ffmpeg**, entirely in memory (the converted audio is never written to disk). This covers, among others: **ogg/Opus** (WhatsApp voice notes), **m4a/AAC**, mp4, webm, mka, wma, opus. Conversion happens either upfront (extension known to be unsupported) or as a retry after an HTTP 400. ffmpeg is optional:
+
+```bash
+sudo apt install ffmpeg   # optional, only needed for formats the server cannot decode
+```
+
+Without ffmpeg, unsupported formats produce a clear error instead of a raw HTTP 400.
+
+## Recording
+
+Dictation uses PipeWire's `pw-record` by default and falls back to ALSA's `arecord` when PipeWire is not available (`recorder = "auto"`). Needed packages:
+
+```bash
+sudo apt install pipewire        # default recorder (pw-record)
+sudo apt install alsa-utils      # fallback recorder (arecord)
+```
+
+The recorder runs in its own process group, so it keeps recording even if the `digue` process is killed; it stops either when you press the key again or when `max-duration` is reached (default 300s, set `0` for unlimited). The limit is enforced by an independent watchdog process: when it fires, it kills the recorder and sends a desktop notification ("Recording stopped: 300s limit reached") -- this bounds the worst-case recording size even if digue dies mid-recording.
 
 ## Remote access via SSH tunnel
 
@@ -261,7 +288,7 @@ ruff check . --fix && ruff format --line-length 120
 
 ## Audio storage
 
-Every dictation is saved as a timestamped `.wav` + `.txt` pair in the audio directory (default: `<data-dir>/../audio/`). These are kept as backup and not cleaned up automatically.
+Every dictation is saved as a timestamped `.wav` + `.txt` pair in the audio directory (default: `<data-dir>/audio/`). These are kept as backup and not cleaned up automatically.
 
 ## License
 

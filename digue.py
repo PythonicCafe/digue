@@ -12,6 +12,7 @@ DEFAULT_PORT = 8178
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
 AVAILABLE_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
+DEFAULT_MAX_RECORD_SECONDS = 300
 BACKENDS = ("nvidia", "amd", "intel", "cpu", "remote")
 DOCKER_IMAGES = {
     "nvidia": "ghcr.io/ggml-org/whisper.cpp:main-cuda",
@@ -81,6 +82,8 @@ def _default_config():
             "language": DEFAULT_LANGUAGE,
             "audio_dir": "",
             "display_server": "auto",
+            "recorder": "auto",
+            "max_duration": DEFAULT_MAX_RECORD_SECONDS,
         },
         "models": dict(DEFAULT_MODELS),
     }
@@ -694,23 +697,95 @@ def _pid_alive(pid):
         return False
 
 
-def start_recording():
-    """Starts pw-record in background, returns the PID."""
+def recording_command(rec_file, recorder="auto"):
+    """Builds the argv that records mono 16 kHz s16 audio to rec_file.
+
+    recorder: "auto" (pw-record if available, else arecord), "pw-record", or "arecord".
+    """
+    import shutil
+
+    if recorder == "auto":
+        if shutil.which("pw-record"):
+            recorder = "pw-record"
+        elif shutil.which("arecord"):
+            recorder = "arecord"
+        else:
+            recorder = "pw-record"
+    if recorder == "pw-record":
+        return ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", str(rec_file)]
+    if recorder == "arecord":
+        return ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1", str(rec_file)]
+    raise RuntimeError(f"Unknown recorder: {recorder}. Use 'auto', 'pw-record', or 'arecord'.")
+
+
+def start_recording(config):
+    """Starts the recorder in its own session, returns the PID.
+
+    The recorder runs in a new process group so it keeps going even if digue
+    itself is killed (it stops when the duration limit is reached or on the
+    next toggle). The max-duration limit is enforced by an independent watchdog
+    process (sleep + kill) that survives digue: it kills the recorder group and
+    sends a desktop notification when the limit is reached.
+    """
     import subprocess
 
     rec_file = _rec_file()
     pid_file = _pid_file()
+    max_duration = config["dictation"]["max_duration"]
+    argv = recording_command(rec_file, recorder=config["dictation"]["recorder"])
     proc = subprocess.Popen(
-        ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", str(rec_file)],
+        argv,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     pid_file.write_text(str(proc.pid))
+
+    if max_duration > 0:
+        _spawn_limit_watchdog(proc.pid, max_duration)
+
     return proc.pid
 
 
+def _spawn_limit_watchdog(pgid, max_duration):
+    """Spawns a detached watchdog that kills the recording group after max_duration.
+
+    Runs as an independent process (sh -c 'sleep N; ...') so the limit still
+    applies if digue itself is killed. On timeout it kills the group and
+    notifies the user. Killing an already-dead group is harmless (recording
+    stopped manually first => killpg fails silently).
+    """
+    import shutil
+    import subprocess
+
+    notify_bin = shutil.which("notify-send")
+    message = f"Recording stopped: {max_duration}s limit reached"
+    if notify_bin:
+        notify_cmd = f'"{notify_bin}" -a digue -t 5000 Whisper "{message}"'
+    else:
+        notify_cmd = f'echo "[digue] {message}" >&2'
+    script = f"sleep {max_duration}; kill -TERM -{pgid} 2>/dev/null; {notify_cmd}"
+    subprocess.Popen(
+        ["sh", "-c", script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _group_alive(pid):
+    import os
+
+    try:
+        os.killpg(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def stop_recording():
-    """Stops recording, returns the path to the audio file or None."""
+    """Stops the recording process group, returns the path to the audio file or None."""
+    import contextlib
     import os
     import time
 
@@ -721,12 +796,14 @@ def stop_recording():
         return None
 
     pid = int(pid_file.read_text().strip())
-    try:
-        os.kill(pid, 15)  # SIGTERM
-    except OSError:
-        pass
-    time.sleep(0.5)
     pid_file.unlink(missing_ok=True)
+
+    for signal in (15, 9):  # SIGTERM, then SIGKILL if it does not exit
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal)
+        time.sleep(0.5)
+        if not _group_alive(pid):
+            break
 
     if not rec_file.exists() or rec_file.stat().st_size == 0:
         rec_file.unlink(missing_ok=True)
@@ -855,16 +932,23 @@ def dictate_toggle(config):
         try:
             result = ensure_server(config)
             if result is None and not is_server_running(config):
-                notify("Could not start whisper-server", timeout_ms=5000)
+                notify(server_not_running_hint(config), timeout_ms=5000)
                 return 1
-            start_recording()
-        except FileNotFoundError:
-            notify("pw-record not found. Install with: sudo apt install pipewire", timeout_ms=10000)
+            start_recording(config)
+        except FileNotFoundError as exc:
+            notify(
+                f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
+                timeout_ms=10000,
+            )
             return 1
         except Exception as exc:
             notify(f"Failed to start recording: {exc}", timeout_ms=5000)
             return 1
-        notify("Recording... (press again to stop)")
+        limit = config["dictation"]["max_duration"]
+        if limit > 0:
+            notify(f"Recording... (max {limit}s, press again to stop)")
+        else:
+            notify("Recording... (press again to stop)")
         return 0
 
 

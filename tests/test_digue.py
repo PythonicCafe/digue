@@ -435,6 +435,122 @@ class TestRecording:
         assert digue.is_recording() is False
 
 
+class TestRecordingCommand:
+    @patch("shutil.which")
+    def test_auto_prefers_pw_record(self, mock_which, tmp_path):
+        mock_which.return_value = "/usr/bin/pw-record"
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="auto")
+        assert argv[0] == "pw-record"
+
+    @patch("shutil.which")
+    def test_auto_falls_back_to_arecord(self, mock_which, tmp_path):
+        mock_which.side_effect = lambda name: None if name == "pw-record" else "/usr/bin/arecord"
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="auto")
+        assert argv[0] == "arecord"
+
+    def test_pw_record_argv(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="pw-record")
+        assert argv[0] == "pw-record"
+        assert "--rate" in argv and "16000" in argv
+        assert argv[-1].endswith("rec.wav")
+
+    def test_arecord_argv(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="arecord")
+        assert argv[0] == "arecord"
+        assert "16000" in argv
+
+    def test_unknown_recorder_raises(self, tmp_path):
+        with pytest.raises(RuntimeError, match="Unknown recorder"):
+            digue.recording_command(tmp_path / "rec.wav", recorder="sox")
+
+
+class TestStartRecording:
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen")
+    def test_starts_in_new_session(self, mock_popen, mock_pid_file, tmp_path):
+        mock_popen.return_value = MagicMock(pid=1234)
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+
+        pid = digue.start_recording(config)
+
+        assert pid == 1234
+        assert mock_popen.call_args[1].get("start_new_session") is True
+
+    @patch("digue._spawn_limit_watchdog")
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen")
+    def test_max_duration_spawns_watchdog(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
+        mock_popen.return_value = MagicMock(pid=777)
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+        config["dictation"]["max_duration"] = 300
+
+        digue.start_recording(config)
+
+        mock_watchdog.assert_called_once_with(777, 300)
+
+    @patch("digue._spawn_limit_watchdog")
+    @patch("digue._pid_file")
+    @patch("subprocess.Popen")
+    def test_zero_max_duration_spawns_no_watchdog(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
+        mock_popen.return_value = MagicMock(pid=777)
+        mock_pid_file.return_value = tmp_path / "digue.pid"
+        config = digue._default_config()
+        config["dictation"]["max_duration"] = 0
+
+        digue.start_recording(config)
+
+        mock_watchdog.assert_not_called()
+
+
+class TestSpawnLimitWatchdog:
+    @patch("subprocess.Popen")
+    @patch("shutil.which", return_value="/usr/bin/notify-send")
+    def test_watchdog_kills_group_and_notifies(self, mock_which, mock_popen):
+        digue._spawn_limit_watchdog(4242, 300)
+        script = mock_popen.call_args[0][0][2]
+        assert "sleep 300" in script
+        assert "kill -TERM -4242" in script
+        assert "notify-send" in script
+        assert mock_popen.call_args[1].get("start_new_session") is True
+
+    @patch("subprocess.Popen")
+    @patch("shutil.which", return_value=None)
+    def test_watchdog_without_notify_send_falls_back_to_stderr(self, mock_which, mock_popen):
+        digue._spawn_limit_watchdog(4242, 300)
+        script = mock_popen.call_args[0][0][2]
+        assert "notify-send" not in script
+        assert "kill -TERM -4242" in script
+
+
+class TestStopRecording:
+    @patch("os.killpg")
+    @patch("digue._group_alive", return_value=False)
+    @patch("digue._rec_file")
+    @patch("digue._pid_file")
+    def test_kills_process_group_and_returns_file(
+        self, mock_pid_file, mock_rec_file, mock_alive, mock_killpg, tmp_path
+    ):
+        pid_file = tmp_path / "digue.pid"
+        pid_file.write_text("4242")
+        rec_file = tmp_path / "digue.wav"
+        rec_file.write_bytes(b"audio data")
+        mock_pid_file.return_value = pid_file
+        mock_rec_file.return_value = rec_file
+
+        result = digue.stop_recording()
+
+        assert result == rec_file
+        mock_killpg.assert_called_once_with(4242, 15)
+        assert not pid_file.exists()
+
+    @patch("digue._pid_file")
+    def test_returns_none_without_pid_file(self, mock_pid_file, tmp_path):
+        mock_pid_file.return_value = tmp_path / "nope.pid"
+        assert digue.stop_recording() is None
+
+
 # -- Remote backend -----------------------------------------------------------
 
 
