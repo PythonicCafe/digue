@@ -66,12 +66,13 @@ class TestNotifyClose:
 
 
 class TestNotifyLifecycle:
+    @patch("digue.notify")
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
     @patch("digue.notify_close")
-    def test_successful_dictation_closes_notification(
-        self, mock_close, mock_save, mock_transcribe, mock_send, tmp_path
+    def test_successful_dictation_notifies_pasted(
+        self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
     ):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"audio")
@@ -82,7 +83,32 @@ class TestNotifyLifecycle:
         result = digue.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
-        mock_close.assert_called_once()
+        mock_close.assert_not_called()
+        last_notify = mock_notify.call_args_list[-1]
+        assert last_notify.args == ("Pasted (5 chars)",)
+        assert last_notify.kwargs == {"timeout_ms": 3000}
+
+    @patch("digue.notify")
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    @patch("digue.notify_close")
+    def test_successful_dictation_notifies_typed(
+        self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
+    ):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["input_mode"] = "type"
+
+        result = digue.finish_dictation(config, rec_file)
+
+        assert result.exit_code == 0
+        mock_close.assert_not_called()
+        last_notify = mock_notify.call_args_list[-1]
+        assert last_notify.args == ("Typed (5 chars)",)
+        assert last_notify.kwargs == {"timeout_ms": 3000}
 
     @patch("digue.send_text", side_effect=RuntimeError("no display"))
     @patch("digue.transcribe", return_value="hello")

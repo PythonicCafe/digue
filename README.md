@@ -38,6 +38,21 @@ image = "ghcr.io/ggml-org/whisper.cpp:main"
 ```
 
 
+## Performance
+
+On a Ryzen 7 8745HS with Radeon 780M (`amd` backend, Vulkan/RADV), GPU transcription of the whisper.cpp JFK sample is 5-11x faster than CPU. `large-v3-turbo` and `medium` both take about 1 s on this GPU; `small` is quicker (~0.4 s) but the transcript has no punctuation or capitalization. The default (`large-v3-turbo` on `amd`) is the right choice for this machine: same cost as `medium`, larger model.
+
+Times are wall-clock, three runs after a warm-up, `main-vulkan` image:
+
+| Model | GPU (`amd`) | CPU | GPU speedup |
+|---|---|---|---|
+| `small` | 0.42 s | 2.22 s | 5.3x |
+| `medium` | 1.01 s | 6.96 s | 6.9x |
+| `large-v3-turbo` | 0.99 s | 11.02 s | 11.1x |
+
+One machine, not a ranking of AMD iGPUs. Re-run with `python3 benchmark_models.py --backends amd cpu`.
+
+
 ## System requirements
 
 - GNU/Linux only. Tested on Debian trixie. Should work on Ubuntu 22.04+, Fedora 38+, Arch. Not compatible with macOS or Windows.
@@ -407,7 +422,7 @@ Common issues:
 - **No desktop notifications**: install `libnotify-bin`. All messages also print to stderr.
 - **Config syntax error**: `digue` fails with a `tomllib` parse error pointing at the line - fix `~/.config/digue/config.toml` (or run `digue config init -f` to start over).
 - **"Recorder not found"**: install PipeWire (`apt install pipewire`, for `pw-record`) or ALSA (`apt install alsa-utils`, for `arecord`).
-- **A dictation notification got stuck**: concurrent dictations use 32 notification slots, from ID 48271 through 48302, based on the daemon PID. Successful delivery closes its slot manually; errors replace it with a notification that expires in 5-10s. `kill -9` may leave one behind. Click it, or close all digue slots with:
+- **A dictation notification got stuck**: concurrent dictations use 32 notification slots, from ID 48271 through 48302, based on the daemon PID. Successful delivery replaces the progress popup with a 3s Pasted/Typed toast; errors replace it with a notification that expires in 5-10s. `kill -9` may leave one behind. Click it, or close all digue slots with:
 
 ```bash
 for id in $(seq 48271 48302); do

@@ -2818,7 +2818,8 @@ def finish_dictation(
         if archive_audio() or rescued_path is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
-    notify_close()
+    verb = "Pasted" if config["dictate"]["input_mode"] == "paste" else "Typed"
+    notify(f"{verb} ({len(text)} chars)", timeout_ms=3000)
 
     # From here on every outcome is terminal: the text was pasted, and a
     # retryable_failure would make a recovery paste it a second time. A
