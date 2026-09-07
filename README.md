@@ -164,7 +164,7 @@ System Settings -> Keyboard -> Shortcuts -> Custom Shortcuts -> `+`:
 ```bash
 # Global options
 digue --version                      # print the digue version
-digue -c ./config.toml status        # use a custom config file
+digue -c ./config.toml server status # use a custom config file
 
 # Dictation
 digue dictate                        # toggle recording/transcription
@@ -212,7 +212,6 @@ digue batch-transcribe ./audios ./transcriptions -f vtt       # override with VT
 digue batch-simplify-vtt ./transcriptions ./simplified        # all VTT -> text
 
 # Diagnostics
-digue config                         # show current config as JSON
 digue config show                    # resolved config as TOML (default)
 digue config show -f json            # resolved config as JSON
 digue config init                    # create the config file with commented defaults
