@@ -697,7 +697,7 @@ _notify_send_warned = False
 _last_notify_len = 0
 
 
-def notify(message: str, timeout_ms: int = 0) -> None:
+def send_notification(message: str, timeout_ms: int = 0) -> None:
     """Prints message to stderr AND sends a desktop notification.
 
     The notification stays visible until replaced by the next one (timeout_ms=0).
@@ -850,7 +850,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
     if _is_remote(config):
         host = config["server"].get("remote_host") or "127.0.0.1"
         if not silent:
-            notify(
+            send_notification(
                 f"Remote server {host}:{config['server']['port']} not responding. Is your tunnel active / host reachable?",
                 timeout_ms=10000,
             )
@@ -861,19 +861,19 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
 
     if status == "exited":
         if not silent:
-            notify("Starting server...")
+            send_notification("Starting server...")
         start_container()
     elif status == "running":
         if not silent:
-            notify("Server starting...")
+            send_notification("Server starting...")
     elif status is None:
         backend = resolve_backend(config)
         if not silent:
-            notify(f"Creating server ({backend})...")
+            send_notification(f"Creating server ({backend})...")
         create_container(config, backend)
     else:
         if not silent:
-            notify(f"Container in unexpected state: {status}", timeout_ms=5000)
+            send_notification(f"Container in unexpected state: {status}", timeout_ms=5000)
         return None
 
     if _wait_for_server(config, verbose=not silent):
@@ -882,7 +882,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
         return backend
 
     if not silent:
-        notify("Server failed to start (see: docker logs digue)", timeout_ms=10000)
+        send_notification("Server failed to start (see: docker logs digue)", timeout_ms=10000)
     return None
 
 
@@ -1410,7 +1410,7 @@ def _download_progress_hook(label: str, with_notification: bool = False) -> Any:
                     short_msg = f"{pct:3d}% {downloaded_mb:>{len(total_mb_str)}.1f}/{total_mb_str} MB"
                 else:
                     short_msg = f"{downloaded_mb:9.1f} MB"
-                notify(f"Downloading {label}... {short_msg}")
+                send_notification(f"Downloading {label}... {short_msg}")
                 last_notify_time[0] = now
 
     return hook
@@ -1869,7 +1869,7 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
         return None  # origin preserved, state kept: the next toggle retries
     # same metadata contract as the surplus rescue: the JSON goes with the audio
     _archive_rescued_take_state(take, config["dictate"]["audio_dir"], timestamp)
-    notify(
+    send_notification(
         f"A recording whose daemon died while starting was recovered; audio kept at {rescued}",
         timeout_ms=10000,
     )
@@ -2822,7 +2822,7 @@ def _archive_recording(
         message = f"Failed to save audio: {save_exc}"
         if rescued_path:
             message += f"; uncompressed copy kept at {rescued_path}"
-        notify(message, timeout_ms=10000)
+        send_notification(message, timeout_ms=10000)
         return False, rescued_path
 
 
@@ -2842,7 +2842,7 @@ def _archive_recovered_take(config: dict[str, dict[str, Any]], rec_file: Path, t
     The audio takes the transcript's timestamp and take id, so it lands next
     to the .txt. Every outcome is terminal (the text was delivered)."""
     timestamp, _, take_id = transcript.stem.rpartition("-")
-    notify("Recovering the previous recording (text already delivered)")
+    send_notification("Recovering the previous recording (text already delivered)")
     # The daemon died mid-archive, so a partial .wav copy, an empty compressed
     # reservation or a .tmp of this same take may already sit next to the .txt.
     # Same stem means same take id: they are provably incomplete products of
@@ -2870,7 +2870,7 @@ def finish_dictation(
     """
 
     if rec_file is None:
-        notify("Empty or missing audio file", timeout_ms=5000)
+        send_notification("Empty or missing audio file", timeout_ms=5000)
         return DeliveryResult(outcome="empty", exit_code=1)
 
     audio_dir = Path(config["dictate"]["audio_dir"])
@@ -2888,14 +2888,14 @@ def finish_dictation(
         return archived
 
     # Ctrl+c leaves "^C" echoed on the current terminal line; the \r redraw in
-    # notify() would write over it and leave stray glyphs ("v"). Start a fresh
+    # send_notification() would write over it and leave stray glyphs ("v"). Start a fresh
     # line for the transcription status.
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
     message = (
         f"Limit reached ({config['dictate']['max_duration']}s), transcribing..." if limit_reached else "Transcribing..."
     )
-    notify(message)
+    send_notification(message)
     try:
         url = server_url(config)
         language = config["transcribe"]["language"]
@@ -2903,7 +2903,7 @@ def finish_dictation(
         text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt))
     except Exception as exc:
         archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
-        notify(f"Transcription failed: {exc}", timeout_ms=10000)
+        send_notification(f"Transcription failed: {exc}", timeout_ms=10000)
         if archived:
             print(f"Recording kept at: {archived}", file=sys.stderr)
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
@@ -2913,14 +2913,14 @@ def finish_dictation(
         try:
             _write_transcript(audio_dir, timestamp, text, take_id=take_id)
         except Exception as exc:
-            notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
+            send_notification(f"Failed to save transcript: {exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
             archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
             if archived is not None:
                 return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
             return DeliveryResult(outcome="retryable_failure", exit_code=1)
         audio_kept = archive_audio()
-        notify("No speech detected", timeout_ms=5000)
+        send_notification("No speech detected", timeout_ms=5000)
         if audio_kept or rescued_path is not None:
             return DeliveryResult(outcome="empty", exit_code=0, rescued_path=rescued_path)
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
@@ -2932,12 +2932,12 @@ def finish_dictation(
             input_mode=config["dictate"]["input_mode"],
         )
     except Exception as exc:
-        notify(f"Paste failed: {exc}", timeout_ms=10000)
+        send_notification(f"Paste failed: {exc}", timeout_ms=10000)
         try:
             text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
             print(f"Transcription saved to: {text_path}", file=sys.stderr)
         except Exception as save_exc:
-            notify(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
+            send_notification(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
         # Nothing reached the user: the outcome is only terminal if the audio
         # left the runtime dir (archived or rescued); otherwise the take state
@@ -2949,7 +2949,7 @@ def finish_dictation(
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
     verb = "Pasted" if config["dictate"]["input_mode"] == "paste" else "Typed"
-    notify(f"{verb} ({len(text)} chars)", timeout_ms=3000)
+    send_notification(f"{verb} ({len(text)} chars)", timeout_ms=3000)
 
     # From here on every outcome is terminal: the text was pasted, and a
     # retryable_failure would make a recovery paste it a second time. A
@@ -2958,7 +2958,7 @@ def finish_dictation(
     try:
         text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
     except Exception as exc:
-        notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
+        send_notification(f"Failed to save transcript: {exc}", timeout_ms=10000)
         print(text, file=sys.stderr)
         archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         if archived is not None:
@@ -3000,7 +3000,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
                 # Startup is already owned by another toggle. It has no recorder
                 # to stop yet, so signaling it would abort or orphan the take.
                 # First use may take minutes (image pull, model download): say so.
-                notify("Still starting the server; recording begins when it is ready", timeout_ms=3000)
+                send_notification("Still starting the server; recording begins when it is ready", timeout_ms=3000)
                 return 0
             # A delivering daemon owns its old take. A new recording may replace
             # the global state; the old daemon removes it only if it still owns it.
@@ -3023,13 +3023,13 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
-            notify(server_not_running_hint(config), timeout_ms=5000)
+            send_notification(server_not_running_hint(config), timeout_ms=5000)
             _remove_daemon_state(daemon_pid)
             return 1
     except Exception as exc:
         # no recorder is involved yet: a missing binary here is docker (or
         # ffmpeg during the model download), never pw-record/arecord
-        notify(f"Cannot start the server: {exc}", timeout_ms=10000)
+        send_notification(f"Cannot start the server: {exc}", timeout_ms=10000)
         _remove_daemon_state(daemon_pid)
         return 1
     try:
@@ -3037,9 +3037,9 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         message = (
             f"Recording... (max {limit}s, press again to stop)" if limit > 0 else "Recording... (press again to stop)"
         )
-        notify(message)
+        send_notification(message)
         # running from a terminal: the user can also Ctrl+c to stop and transcribe.
-        # notify() redraws its line without a trailing newline on a TTY, so this
+        # send_notification() redraws its line without a trailing newline on a TTY, so this
         # starts with \n to sit on its own line.
         if _stderr_is_tty():
             print("\nPress Ctrl+c to stop recording and transcribe", file=sys.stderr, flush=True)
@@ -3056,14 +3056,14 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         signal.signal(signal.SIGINT, _on_sigint)
         processes = start_recording(config)
     except FileNotFoundError as exc:
-        notify(
+        send_notification(
             f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
             timeout_ms=10000,
         )
         _remove_daemon_state(daemon_pid)
         return 1
     except Exception as exc:
-        notify(f"Failed to start recording: {exc}", timeout_ms=10000)
+        send_notification(f"Failed to start recording: {exc}", timeout_ms=10000)
         _remove_daemon_state(daemon_pid)
         return 1
     recorder_pid = processes.recorder.pid
@@ -3106,16 +3106,18 @@ def _recover_orphan_takes(config: dict[str, dict[str, Any]], claimed: TakeState)
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
-            notify(server_not_running_hint(config), timeout_ms=5000)
+            send_notification(server_not_running_hint(config), timeout_ms=5000)
             return 1
     except Exception as exc:
-        notify(f"Cannot recover the previous recording: {exc}", timeout_ms=5000)
+        send_notification(f"Cannot recover the previous recording: {exc}", timeout_ms=5000)
         return 1
     exit_code = _recover_claimed_take(config, claimed)
     if not _take_state_file(claimed.take_id).exists():
         rescued_paths = _rescue_surplus_orphans(config)
         if rescued_paths:
-            notify(f"{len(rescued_paths)} recordings rescued to {config['dictate']['audio_dir']}", timeout_ms=10000)
+            send_notification(
+                f"{len(rescued_paths)} recordings rescued to {config['dictate']['audio_dir']}", timeout_ms=10000
+            )
     return exit_code
 
 

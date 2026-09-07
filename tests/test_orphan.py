@@ -104,7 +104,7 @@ class TestOrphanStartingTake:
             patch("digue.is_server_running", return_value=True),
             patch("digue.start_recording") as mock_start,
             patch("digue.finish_dictation") as mock_finish,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("digue.notify_close"),
             patch("signal.signal"),
         ):
@@ -246,7 +246,7 @@ class TestOrphanTakeClaim:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", return_value=True),
             patch("digue._process_starttime", return_value="555"),
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("os.kill") as mock_kill,
         ):
             assert digue.dictate_toggle(config) == 0
@@ -280,7 +280,7 @@ class TestOrphanTakeClaim:
             patch("digue.stop_recording_pid", return_value=rec_file) as mock_stop,
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("digue.start_recording") as mock_start,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("digue.notify_close"),
             patch("signal.signal"),
         ):
@@ -317,7 +317,7 @@ class TestOrphanTakeClaim:
             patch("digue.stop_recording_pid", return_value=rec_file),
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("digue.start_recording") as mock_start,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("digue.notify_close"),
         ):
             assert digue.dictate_toggle(config) == 0
@@ -359,7 +359,7 @@ class TestOrphanTakeClaim:
             patch("digue.stop_recording_pid") as mock_stop,
             patch("digue.finish_dictation") as mock_finish,
             patch("digue.start_recording") as mock_start,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
         ):
             assert digue.dictate_toggle(config) == 1
 
@@ -389,7 +389,7 @@ class TestOrphanTakeClaim:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
             patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("os.kill") as mock_kill,
         ):
             assert digue.dictate_toggle(config) == 1
@@ -509,7 +509,7 @@ class TestRecoverClaimedTake:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text") as mock_send,
             patch("digue.transcribe") as mock_transcribe,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
 
@@ -542,7 +542,7 @@ class TestRecoverClaimedTake:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text") as mock_send,
             patch("digue.transcribe") as mock_transcribe,
-            patch("digue.notify"),
+            patch("digue.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
 
@@ -576,7 +576,7 @@ class TestRecoverClaimedTake:
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.send_text"),
             patch("digue.transcribe"),
-            patch("digue.notify"),
+            patch("digue.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(config, take)
 
@@ -655,7 +655,7 @@ class TestRecoverClaimedTake:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.notify") as mock_notify,
+            patch("digue.send_notification") as mock_notify,
         ):
             exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
 
@@ -674,7 +674,7 @@ class TestRecoverClaimedTake:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.transcribe", return_value=""),
-            patch("digue.notify"),
+            patch("digue.send_notification"),
         ):
             exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
 
@@ -738,7 +738,7 @@ class TestSurplusOrphanRescue:
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.notify") as mock_notify,
+            patch("digue.send_notification") as mock_notify,
             patch("digue.notify_close"),
             patch("signal.signal"),
         ):
@@ -798,7 +798,7 @@ class TestSurplusOrphanRescue:
                 patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
                 patch("subprocess.Popen", return_value=recorder),
                 patch("digue._wait_recorder_end_daemon", return_value="ended"),
-                patch("digue.notify"),
+                patch("digue.send_notification"),
                 patch("digue.notify_close"),
                 patch("signal.signal"),
             ):
@@ -868,7 +868,7 @@ class TestSurplusOrphanRescue:
             patch("digue.rescue_recording", return_value=None),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.notify"),
+            patch("digue.send_notification"),
             patch("digue.notify_close"),
             patch("signal.signal"),
         ):
