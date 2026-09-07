@@ -862,6 +862,47 @@ class TestRemoteBackend:
         assert digue.cmd_status(MagicMock(), config) == 1
 
 
+class TestRemoteHost:
+    def test_server_host_localhost_for_local_backends(self):
+        config = digue._default_config()
+        config["server"]["remote_host"] = "10.0.0.5"
+        assert digue.server_host(config) == "127.0.0.1"
+
+    def test_server_host_default_tunnel(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        assert digue.server_host(config) == "127.0.0.1"
+
+    def test_server_host_remote_lan(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["server"]["remote_host"] = "10.0.0.5"
+        assert digue.server_host(config) == "10.0.0.5"
+
+    def test_server_url_uses_remote_host(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["server"]["remote_host"] = "desktop.lan"
+        assert digue.server_url(config) == "http://desktop.lan:8178/inference"
+
+    @patch("urllib.request.urlopen")
+    def test_is_server_running_probes_remote_host(self, mock_urlopen):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["server"]["remote_host"] = "10.0.0.5"
+        digue.is_server_running(config)
+        url = mock_urlopen.call_args[0][0]
+        assert url == "http://10.0.0.5:8178/"
+
+    def test_hint_remote_lan_mentions_host(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["server"]["remote_host"] = "10.0.0.5"
+        hint = digue.server_not_running_hint(config)
+        assert "10.0.0.5" in hint
+        assert "ssh -NfL" not in hint
+
+
 class TestHostOverrides:
     def test_applies_matching_host(self, tmp_path):
         config_path = tmp_path / "config.toml"

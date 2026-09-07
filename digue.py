@@ -87,6 +87,7 @@ def _default_config():
             "backend": "auto",
             "image": "",
             "bind_ip": "127.0.0.1",
+            "remote_host": "",
         },
         "dictation": {
             "language": DEFAULT_LANGUAGE,
@@ -458,24 +459,36 @@ def notify_close():
 # -- Server -------------------------------------------------------------------
 
 
+def server_host(config):
+    """Returns the host the server is probed on.
+
+    With backend 'remote', returns the configured remote host (default
+    127.0.0.1 for an SSH tunnel). For local backends, probes the address Docker
+    binds, except that the wildcard bind is reached through loopback.
+    """
+    if resolve_backend(config) == "remote":
+        return str(config["server"].get("remote_host") or "127.0.0.1")
+    bind_ip = str(config["server"].get("bind_ip", "127.0.0.1"))
+    return "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
+
+
 def server_url(config):
     port = config["server"]["port"]
-    return f"http://localhost:{port}/inference"
+    return f"http://{server_host(config)}:{port}/inference"
 
 
 def is_server_running(config):
-    """Returns True if server is responding to HTTP requests.
+    """Returns True if the server is responding to HTTP requests.
 
-    Always probes localhost: the bind IP only controls where Docker exposes
-    the port, but the server is always reachable from the same machine via
-    localhost (Docker DNATs traffic to the container).
+    For local backends this always probes localhost: the bind IP only controls
+    where Docker exposes the port, but the server is always reachable from the
+    same machine via localhost (Docker DNATs traffic to the container).
     """
     import urllib.error
     import urllib.request
 
-    port = config["server"]["port"]
     try:
-        urllib.request.urlopen(f"http://localhost:{port}/", timeout=1)
+        urllib.request.urlopen(f"http://{server_host(config)}:{config['server']['port']}/", timeout=1)
         return True
     except (urllib.error.URLError, OSError):
         return False
@@ -516,9 +529,10 @@ def ensure_server(config, silent=False):
         return None
 
     if resolve_backend(config) == "remote":
+        host = config["server"].get("remote_host") or "127.0.0.1"
         if not silent:
             notify(
-                f"Remote server not responding on port {config['server']['port']}. Is your SSH tunnel active?",
+                f"Remote server {host}:{config['server']['port']} not responding. Is your tunnel active / host reachable?",
                 timeout_ms=10000,
             )
         return None
@@ -553,11 +567,14 @@ def ensure_server(config, silent=False):
 def server_not_running_hint(config):
     """Returns the actionable hint shown when the server is not responding."""
     if resolve_backend(config) == "remote":
-        return (
-            f"Backend is 'remote': no local container to start. Forward port {config['server']['port']} with "
-            f"ssh -NfL {config['server']['port']}:127.0.0.1:{config['server']['port']} user@host "
-            "(see README, Remote access)."
-        )
+        host = config["server"].get("remote_host") or "127.0.0.1"
+        if host == "127.0.0.1":
+            return (
+                f"Backend is 'remote': no local container to start. Forward port {config['server']['port']} with "
+                f"ssh -NfL {config['server']['port']}:127.0.0.1:{config['server']['port']} user@host "
+                "(see README, Remote access), or set server.remote-host to a LAN host."
+            )
+        return f"Backend is 'remote' and server {host}:{config['server']['port']} is not responding (see README, Remote access)."
     return "Run: digue start"
 
 
@@ -1669,7 +1686,10 @@ def cmd_status(args, config):
     port = config["server"]["port"]
     if resolve_backend(config) == "remote":
         http_ok = is_server_running(config)
-        print(f"digue: remote backend, {'responding' if http_ok else 'not responding'} on port {port}", file=sys.stderr)
+        host = config["server"].get("remote_host") or "127.0.0.1"
+        print(
+            f"digue: remote backend, {'responding' if http_ok else 'not responding'} on {host}:{port}", file=sys.stderr
+        )
         return 0 if http_ok else 1
     status = container_status()
     if status is None:
