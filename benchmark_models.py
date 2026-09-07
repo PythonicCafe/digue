@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Benchmarks digue with different models and backends.
 
-Downloads a known audio sample and measures transcription time.
+Downloads a known audio sample and measures transcription time in-process
+(no interpreter startup overhead in the measured runs).
+
 Usage:
     python benchmark_models.py                          # auto-detected backend
     python benchmark_models.py --backends intel cpu      # compare backends
@@ -10,25 +12,19 @@ Usage:
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import digue
+
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
 SAMPLE_PATH = Path("/tmp/digue-bench-jfk.wav")
 ALL_MODELS = ("small", "medium", "large-v3-turbo")
 RUNS = 3
-SCRIPT = Path(__file__).resolve().parent / "digue.py"
-STARTUP_TIMEOUT = 180
-DOCKER_IMAGES = {
-    "nvidia": "ghcr.io/ggml-org/whisper.cpp:main-cuda",
-    "amd": "ghcr.io/ggml-org/whisper.cpp:main-vulkan",
-    "intel": "ghcr.io/ggml-org/whisper.cpp:main-vulkan",
-    # CPU: uses main-vulkan without GPU devices (main image crashes on AMX)
-    "cpu": "ghcr.io/ggml-org/whisper.cpp:main-vulkan",
-}
 
 
 def download_sample():
@@ -40,105 +36,52 @@ def download_sample():
     print(f"Saved: {SAMPLE_PATH} ({SAMPLE_PATH.stat().st_size / 1024:.0f} KB)", file=sys.stderr)
 
 
-def run_whisper(args, timeout=600):
-    return subprocess.run(
-        [sys.executable, str(SCRIPT)] + args,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-def get_config():
-    result = run_whisper(["config"])
-    return json.loads(result.stdout)
-
-
-def wait_for_server(config):
-    for attempt in range(STARTUP_TIMEOUT):
-        result = run_whisper(["status"])
-        if "responding" in result.stderr and "not responding" not in result.stderr:
-            return True
-        time.sleep(1)
-        if attempt > 0 and attempt % 15 == 0:
-            print(f"    loading model... {attempt}s", file=sys.stderr, flush=True)
-    return False
-
-
-def start_container(config, backend, model):
-    """Creates a digue container with a specific backend and model."""
-    port = config["server"]["port"]
-    models_dir = f"{config['server']['data_dir']}/models"
-    image = DOCKER_IMAGES[backend]
-
-    docker_cmd = [
-        "docker",
-        "run",
-        "-d",
-        "--name",
-        "digue",
-        "-p",
-        f"127.0.0.1:{port}:8080",
-    ]
-    if backend == "nvidia":
-        docker_cmd += ["--gpus", "all"]
-    elif backend == "amd":
-        docker_cmd += ["--device", "/dev/kfd", "--device", "/dev/dri"]
-    elif backend == "intel":
-        docker_cmd += ["--device", "/dev/dri"]
-
-    docker_cmd += [
-        "-v",
-        f"{models_dir}:/models:ro",
-        "--entrypoint",
-        "digue",
-        image,
-        "--model",
-        f"/models/ggml-{model}.bin",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
-        "--vad",
-        "--vad-model",
-        "/models/ggml-silero-v6.2.0.bin",
-    ]
-    subprocess.run(docker_cmd, capture_output=True, timeout=60)
-
-
 def benchmark_case(config, backend, model):
     """Benchmarks a single backend+model combination. Returns dict or None."""
     label = f"{backend} / {model}"
     print(f"\n=== {label} ===", file=sys.stderr)
 
-    run_whisper(["download", model], timeout=600)
-    run_whisper(["destroy"])
+    bench_config = {**config, "models": {**config["models"], backend: model}}
+
+    digue.remove_container()
     time.sleep(2)
 
     print("  Starting server...", file=sys.stderr, flush=True)
-    start_container(config, backend, model)
-
-    if not wait_for_server(config):
-        print("  Server failed to start, skipping", file=sys.stderr)
-        run_whisper(["destroy"])
+    try:
+        digue.create_container(bench_config, backend)
+    except RuntimeError as exc:
+        print(f"  Skipped: {exc}", file=sys.stderr)
         return None
 
-    # Warm-up
-    run_whisper(["transcribe", str(SAMPLE_PATH), "-l", "en"])
+    if not digue._wait_for_server(config, verbose=True):
+        print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
+        digue.remove_container()
+        return None
+
+    url = digue.server_url(config)
+
+    # Warm-up (not measured)
+    try:
+        digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
+    except Exception as exc:
+        print(f"  Skipped: warm-up transcription failed: {exc}", file=sys.stderr)
+        digue.remove_container()
+        return None
 
     results = []
     text = ""
     for run_idx in range(1, RUNS + 1):
         start = time.perf_counter()
-        result = run_whisper(["transcribe", str(SAMPLE_PATH), "-l", "en"])
+        text = digue.transcribe(url, SAMPLE_PATH, "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
         elapsed = time.perf_counter() - start
-        text = result.stdout.strip()
         results.append(elapsed)
         print(f"  run {run_idx}: {elapsed:.2f}s", file=sys.stderr)
 
     avg = sum(results) / len(results)
     print(f"  avg: {avg:.2f}s", file=sys.stderr)
     print(f"  text: {text}", file=sys.stderr)
+
+    digue.remove_container()
 
     return {
         "backend": backend,
@@ -156,8 +99,8 @@ def create_parser():
         "--backends",
         nargs="+",
         default=None,
-        choices=list(DOCKER_IMAGES.keys()),
-        help=f"Backends to test (default: auto-detected). Options: {', '.join(DOCKER_IMAGES.keys())}",
+        choices=list(digue.DOCKER_IMAGES.keys()),
+        help=f"Backends to test (default: auto-detected + cpu). Options: {', '.join(digue.DOCKER_IMAGES.keys())}",
     )
     parser.add_argument(
         "-m",
@@ -184,11 +127,10 @@ def main():
     RUNS = args.runs
 
     download_sample()
-    config = get_config()
+    config = digue.load_config()
 
     if args.backends is None:
-        result = run_whisper(["detect"])
-        detected = result.stdout.strip()
+        detected = digue.detect_backend()
         backends = [detected]
         if detected != "cpu":
             backends.append("cpu")
@@ -211,8 +153,11 @@ def main():
 
     # Restore default container
     print("\nRestoring default container...", file=sys.stderr, flush=True)
-    run_whisper(["destroy"])
-    run_whisper(["start"])
+    try:
+        digue.create_container(config)
+        digue._wait_for_server(config, verbose=True)
+    except RuntimeError as exc:
+        print(f"  Could not restore default container: {exc}", file=sys.stderr)
 
     print(f"\n{'=' * 60}", file=sys.stderr)
     print("Summary", file=sys.stderr)

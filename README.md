@@ -46,7 +46,7 @@ image = "ghcr.io/ggml-org/whisper.cpp:main"
 - For NVIDIA GPUs, also install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 - For audio recording (dictation only), PipeWire is needed (`apt install pipewire`) or ALSA (`apt install alsa-utils`) as a fallback
 - For desktop notifications (dictation only), `notify-send` is needed (`apt install libnotify-bin`)
-- For clipboard and paste (dictation only), `xclip` and `xdotool` on X11 or `wl-clipboard` and `wtype` on Wayland.
+- For clipboard and paste (dictation only), `xclip` and `xdotool` on X11 or `wl-clipboard` and `wtype` on Wayland (`apt install xclip xdotool` / `apt install wl-clipboard wtype`). See "Text output" for the `input-mode = "type"` alternative.
   - `digue` auto-detects X11 or Wayland via `$DISPLAY` / `$WAYLAND_DISPLAY`. You can force it with `display-server` in the config.
 - For GPU detection (optional): `apt install pciutils vulkan-tools mesa-vulkan-drivers`
 - For audio formats the server cannot decode (optional): `apt install ffmpeg`. Natively supported: wav, flac, mp3, ogg/Vorbis, aiff (see "Audio formats").
@@ -198,12 +198,14 @@ port = 8178                     # host port for the whisper-server container
 [dictation]
 language = "auto"               # language for transcription: "auto", "pt", "en" etc.
 # audio-dir = ""                # where recordings are saved (default: <data-dir>/audio)
-# display-server = "auto"       # "auto" (detect), "x11", or "wayland"
-                                #   X11 uses: xclip + xdotool (paste) or xdotool type (type)
-                                #   Wayland uses: wl-copy + wtype (paste) or wtype (type)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
 # save-audio = true             # save the .wav recording as a backup
+# input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
+                                #   keystrokes; useful in terminals)
+# display-server = "auto"       # "auto" (detect), "x11", or "wayland"
+                                #   X11 uses: xclip + xdotool (paste) or xdotool type (type)
+                                #   Wayland uses: wl-copy + wtype (paste) or wtype (type)
 
 # Models per backend
 [models]                        # available: tiny, base, small, medium, large-v3-turbo, large-v3
@@ -240,6 +242,20 @@ sudo apt install alsa-utils      # fallback recorder (arecord)
 The recorder runs in its own process group, so it keeps recording even if the `digue` process is killed; it stops either when you press the key again or when `max-duration` is reached (default 300s, set `0` for unlimited). The limit is enforced by an independent watchdog process: when it fires, it kills the recorder and sends a desktop notification ("Recording stopped: 300s limit reached") -- this bounds the worst-case recording size even if digue dies mid-recording.
 
 The recorded `.wav` is saved as a backup next to the `.txt` transcript. Set `save-audio = false` to keep only the transcript.
+
+## Text output
+
+The transcribed text is joined into a single line before being sent to the focused window. Line breaks in the server output are segment boundaries; with `token_timestamps=false` (sent by digue on every request) the server no longer wraps segments at 60 characters, which was splitting words in half (`trans` / `crevendo`).
+
+How the text lands on screen is controlled by `input-mode`:
+
+- `paste` (default): copies to the clipboard and simulates Ctrl+V -- `xclip` + `xdotool` on X11, `wl-copy` + `wtype` on Wayland.
+- `type`: simulates keystrokes -- `xdotool type` on X11, `wtype --no-newline` on Wayland. Useful in terminals, where the paste shortcut is different (Ctrl+Shift+V); typing is slower and may drop characters in slow apps.
+
+```bash
+sudo apt install xclip xdotool       # X11
+sudo apt install wl-clipboard wtype  # Wayland
+```
 
 ## Audio formats
 

@@ -796,23 +796,23 @@ class TestDetectDisplayServer:
         assert digue.detect_display_server() is None
 
 
-class TestPasteText:
+class TestSendText:
     def test_raises_when_no_display(self, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
         with pytest.raises(RuntimeError, match="No DISPLAY"):
-            digue.paste_text("hello", display_server="auto")
+            digue.send_text("hello", display_server="auto")
 
     @patch("subprocess.run")
     def test_x11_uses_xclip(self, mock_run):
-        digue.paste_text("hello", display_server="x11")
+        digue.send_text("hello", display_server="x11")
         cmds = [call[0][0] for call in mock_run.call_args_list]
         assert cmds[0][0] == "xclip"
         assert cmds[1][0] == "xdotool"
 
     @patch("subprocess.run")
     def test_wayland_uses_wl_copy(self, mock_run):
-        digue.paste_text("hello", display_server="wayland")
+        digue.send_text("hello", display_server="wayland")
         cmds = [call[0][0] for call in mock_run.call_args_list]
         assert cmds[0][0] == "wl-copy"
         assert cmds[1][0] == "wtype"
@@ -820,7 +820,32 @@ class TestPasteText:
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_missing_tool_gives_install_hint(self, mock_run):
         with pytest.raises(RuntimeError, match="sudo apt install"):
-            digue.paste_text("hello", display_server="x11")
+            digue.send_text("hello", display_server="x11")
+
+    @patch("subprocess.run")
+    def test_type_x11_uses_xdotool_type(self, mock_run):
+        digue.send_text("olá mundo", display_server="x11", input_mode="type")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "xdotool"
+        assert cmd[1] == "type"
+        assert "olá mundo" in cmd
+
+    @patch("subprocess.run")
+    def test_type_wayland_uses_wtype(self, mock_run):
+        digue.send_text("olá mundo", display_server="wayland", input_mode="type")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "wtype"
+        assert "--no-newline" in cmd
+        assert "olá mundo" in cmd
+
+    @patch("subprocess.run", side_effect=FileNotFoundError)
+    def test_type_missing_tool_gives_install_hint(self, mock_run):
+        with pytest.raises(RuntimeError, match="sudo apt install"):
+            digue.send_text("hello", display_server="x11", input_mode="type")
+
+    def test_input_mode_default_is_paste(self):
+        config = digue._default_config()
+        assert config["dictation"]["input_mode"] == "paste"
 
 
 class TestSaveAudio:
@@ -850,7 +875,7 @@ class TestSaveAudioConfig:
         config = digue.load_config(config_path)
         assert config["dictation"]["save_audio"] is False
 
-    @patch("digue.paste_text")
+    @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     @patch("digue.ensure_server")
     @patch("digue.is_server_running", return_value=True)

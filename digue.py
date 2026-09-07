@@ -88,6 +88,7 @@ def _default_config():
             "language": DEFAULT_LANGUAGE,
             "audio_dir": "",
             "display_server": "auto",
+            "input_mode": "paste",
             "recorder": "auto",
             "max_duration": DEFAULT_MAX_RECORD_SECONDS,
             "save_audio": True,
@@ -907,10 +908,13 @@ def detect_display_server():
     return None
 
 
-def paste_text(text, display_server="auto"):
-    """Copies text to clipboard and simulates Ctrl+V.
+def send_text(text, display_server="auto", input_mode="paste"):
+    """Sends text to the focused window.
 
-    Uses xclip+xdotool on X11, wl-copy+wtype on Wayland.
+    input_mode "paste" copies to the clipboard and simulates Ctrl+V.
+    input_mode "type" simulates keystrokes (useful in terminals, where the
+    paste shortcut differs). Typing is slower and may drop characters in
+    slow applications.
     Raises RuntimeError with actionable message on failure.
     """
     import subprocess
@@ -919,7 +923,23 @@ def paste_text(text, display_server="auto"):
         display_server = detect_display_server()
 
     if display_server is None:
-        raise RuntimeError("No DISPLAY or WAYLAND_DISPLAY set. Cannot access clipboard.")
+        raise RuntimeError("No DISPLAY or WAYLAND_DISPLAY set. Cannot access clipboard or send keystrokes.")
+
+    if input_mode == "type":
+        if display_server == "wayland":
+            type_cmd = ["wtype", "--no-newline"]
+            type_pkg = "wtype"
+        else:
+            type_cmd = ["xdotool", "type", "--clearmodifiers"]
+            type_pkg = "xdotool"
+        type_cmd.append(text)
+        try:
+            subprocess.run(type_cmd, capture_output=True, timeout=120, check=True)
+        except FileNotFoundError:
+            raise RuntimeError(f"{type_cmd[0]} not found. Install with: sudo apt install {type_pkg}")
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"{type_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}")
+        return
 
     if display_server == "wayland":
         copy_cmd = ["wl-copy"]
@@ -1018,7 +1038,11 @@ def dictate_toggle(config):
             return 0
 
         try:
-            paste_text(text, display_server=config["dictation"]["display_server"])
+            send_text(
+                text,
+                display_server=config["dictation"]["display_server"],
+                input_mode=config["dictation"]["input_mode"],
+            )
         except Exception as exc:
             notify(f"Paste failed: {exc}", timeout_ms=10000)
             print(f"Transcription saved to: {text_path}", file=sys.stderr)
