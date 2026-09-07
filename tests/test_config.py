@@ -32,7 +32,7 @@ class TestDefaultConfig:
     def test_default_models_include_nvidia(self):
         cfg = config._default_config()
         assert "nvidia" in cfg["models"]
-        assert cfg["models"]["nvidia"] == "large-v3-turbo"
+        assert cfg["models"]["nvidia"] == "large-v3-turbo-q8_0"
 
 
 class TestLoadConfig:
@@ -56,7 +56,7 @@ class TestLoadConfig:
         assert cfg["server"]["port"] == 9999
         assert cfg["models"]["nvidia"] == "medium"
         assert cfg["models"]["cpu"] == "tiny"
-        assert cfg["models"]["amd"] == "large-v3-turbo"  # untouched
+        assert cfg["models"]["amd"] == "large-v3-turbo-q8_0"  # untouched
 
     def test_kebab_case_keys(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -104,8 +104,8 @@ class TestLoadConfig:
 
 class TestModelForBackend:
     def test_returns_default_without_config(self):
-        assert config.model_for_backend("nvidia") == "large-v3-turbo"
-        assert config.model_for_backend("cpu") == "small"
+        assert config.model_for_backend("nvidia") == "large-v3-turbo-q8_0"
+        assert config.model_for_backend("cpu") == "small-q8_0"
 
     def test_respects_config_override(self):
         cfg = {"models": {"nvidia": "medium"}}
@@ -246,7 +246,7 @@ class TestHostOverrides:
         with patch("socket.gethostname", return_value="thinkpad"):
             cfg = config.load_config(config_path)
         assert cfg["models"]["cpu"] == "medium"
-        assert cfg["models"]["nvidia"] == "large-v3-turbo"
+        assert cfg["models"]["nvidia"] == "large-v3-turbo-q8_0"
 
     def test_unknown_keys_in_host_section_are_rejected(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -592,11 +592,14 @@ class TestCmdConfig:
 
 
 class TestConfigTemplateSync:
-    def test_readme_config_block_matches_config_init_template(self):
-        """Regression: the README config example must stay in sync with `digue config init`."""
+    def test_readme_config_section_has_no_config_example_to_drift(self):
+        """The README used to embed the full config example and this suite kept it in sync with `digue config init`.
+        The example was removed (the README now points at `digue config init`), so the regression here is the opposite:
+        a reintroduced toml block in the Configuration section must be caught and updated or re-synced."""
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
-        section = readme.split("## Configuration", 1)[1]
-        fence_start = section.index("```toml") + len("```toml\n")
-        fence_end = section.index("```", fence_start)
-        readme_block = section[fence_start:fence_end].strip()
-        assert readme_block == config._config_example().strip()
+        section = readme.split("## Configuration", 1)[1].split("## Config command", 1)[0]
+        assert "```toml" not in section, (
+            "A toml block in the Configuration section drifted from the CONFIG_TEMPLATE in digue/config.py: "
+            "sync it or remove it (the generated file from `digue config init` is the single source)."
+        )
+        assert "`digue config init`" in section

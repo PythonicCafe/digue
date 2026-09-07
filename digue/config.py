@@ -318,10 +318,10 @@ CONFIG_TEMPLATE = """\
                                         #   arecord: -D NAME (PCM; arecord -l lists cards)
 
 [models]
-# nvidia = "large-v3-turbo"
-# amd = "large-v3-turbo"
-# intel = "large-v3-turbo"
-# cpu = "small"
+# nvidia = "large-v3-turbo-q8_0"
+# amd = "large-v3-turbo-q8_0"
+# intel = "large-v3-turbo-q8_0"
+# cpu = "small-q8_0"
 # Available models (multilingual): tiny, base, small, medium, large-v1, large-v2, large-v3, large-v3-turbo.
 # Quantized copies (smaller, usually faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1, base-q8_0,
 # base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0, large-v2-q8_0, large-v2-q5_0, large-v3-q5_0,

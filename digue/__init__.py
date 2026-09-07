@@ -6,7 +6,12 @@ __version__ = "0.1.0"
 
 DEFAULT_PORT = 8178
 DEFAULT_LANGUAGE = "auto"
-DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
+DEFAULT_MODELS = {
+    "nvidia": "large-v3-turbo-q8_0",
+    "amd": "large-v3-turbo-q8_0",
+    "intel": "large-v3-turbo-q8_0",
+    "cpu": "small-q8_0",
+}
 # Every ggml model published in huggingface.co/ggerganov/whisper.cpp (the download source), in size order per family:
 # f16, then q8_0, then q5_x.  "-q8_0"/"-q5_0"/"-q5_1" are integer-quantized copies (smaller file and RAM, usually
 # faster on CPU, slightly lower accuracy at q5); ".en" are English-only.

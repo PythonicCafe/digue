@@ -247,7 +247,7 @@ class TestCreateContainer:
         config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         container_mod.create_container(config, "cpu")
-        mock_download.assert_called_once_with("small", tmp_path / "models", with_notification=False)
+        mock_download.assert_called_once_with("small-q8_0", tmp_path / "models", with_notification=False)
 
     @patch("digue.container.download_model")
     @patch("digue.container.pull_image")
@@ -258,7 +258,7 @@ class TestCreateContainer:
         config["server"]["data_dir"] = str(tmp_path)
         models_dir = tmp_path / "models"
         models_dir.mkdir(parents=True)
-        (models_dir / "ggml-small.bin").write_bytes(b"dummy")
+        (models_dir / "ggml-small-q8_0.bin").write_bytes(b"dummy")
         (models_dir / container_mod.VAD_MODEL_FILENAME).write_bytes(b"dummy")
         container_mod.create_container(config, "cpu")
         mock_download.assert_not_called()
@@ -272,11 +272,11 @@ class TestCreateContainer:
         config["server"]["data_dir"] = str(tmp_path)
         models_dir = tmp_path / "models"
         models_dir.mkdir(parents=True)
-        (models_dir / "ggml-small.bin").write_bytes(b"dummy")
+        (models_dir / "ggml-small-q8_0.bin").write_bytes(b"dummy")
 
         container_mod.create_container(config, "cpu")
 
-        mock_download.assert_called_once_with("small", models_dir, with_notification=False)
+        mock_download.assert_called_once_with("small-q8_0", models_dir, with_notification=False)
 
 
 class TestCmdModels:
