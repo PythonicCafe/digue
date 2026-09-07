@@ -2779,7 +2779,14 @@ def run_benchmark(audio_path: str | Path, config: dict[str, dict[str, Any]]) -> 
         for label, backend, model in test_cases:
             print(f"=== {label} ===", file=sys.stderr)
 
-            bench_config = {**config, "models": {**config["models"], backend: model}}
+            # The image override is global in config, but it only applies to
+            # the backend the config resolved to; other cases fall back to
+            # DOCKER_IMAGES (resolve_image uses the empty image).
+            bench_server = {**config["server"]}
+            if backend != detected:
+                bench_server["image"] = ""
+            bench_config = {**config, "server": bench_server, "models": {**config["models"], backend: model}}
+            print(f"  Image: {resolve_image(backend, bench_config)}", file=sys.stderr)
             try:
                 try:
                     create_container(bench_config, backend)

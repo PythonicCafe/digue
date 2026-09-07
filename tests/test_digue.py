@@ -3381,6 +3381,34 @@ class TestBenchmarkRespectsConfig:
         backends = [call.args[1] for call in mock_create.call_args_list]
         assert backends == ["cpu", "cpu"]
 
+    def test_custom_image_applies_only_to_the_resolved_backend(self, tmp_path, capsys):
+        """server.image is a single global override that only makes sense for
+        the backend the config resolved to (e.g. image "main" pinned for a
+        Kaby Lake CPU): other cases must fall back to DOCKER_IMAGES."""
+        config = digue._default_config()
+        config["server"]["backend"] = "amd"
+        config["server"]["image"] = "x"
+        with (
+            patch("digue.download_model"),
+            patch("digue.preserve_container_for_benchmark"),
+            patch("digue.container_exists", return_value=False),
+            patch("digue.create_container") as mock_create,
+            patch("digue._wait_for_server", return_value=True),
+            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.detect_backend", return_value="amd"),
+        ):
+            digue.run_benchmark(tmp_path / "audio.wav", config)
+
+        images = {backend: [] for backend in ("cpu", "amd")}
+        for create_call in mock_create.call_args_list:
+            bench_config, backend = create_call.args
+            images[backend].append(digue.resolve_image(backend, bench_config))
+            assert bench_config["server"]["image"] == ("x" if backend == "amd" else "")
+        assert images == {"cpu": [digue.DOCKER_IMAGES["cpu"]] * 2, "amd": ["x", "x"]}
+        err = capsys.readouterr().err
+        assert f"Image: {digue.DOCKER_IMAGES['cpu']}" in err
+        assert "Image: x" in err
+
     @patch("time.sleep")
     @patch("subprocess.Popen")
     def test_microphone_recording_uses_the_configured_recorder(self, mock_popen, mock_sleep, tmp_path):
