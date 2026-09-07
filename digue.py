@@ -10,7 +10,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import subprocess
@@ -1735,9 +1735,9 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         _expire_orphan_starting(config, take)
         return 0
     rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
-    exit_code = finish_dictation(config, rec_file, take_id=take.take_id)
+    result = finish_dictation(config, rec_file, take_id=take.take_id)
     _take_state_file(take.take_id).unlink(missing_ok=True)
-    return exit_code
+    return result.exit_code
 
 
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
@@ -2443,9 +2443,25 @@ def _on_sigint(_signum: int, _frame: object) -> None:
     _got_sigint = True
 
 
+DeliveryOutcome = Literal["delivered", "rescued", "empty", "retryable_failure"]
+TERMINAL_OUTCOMES = ("delivered", "rescued", "empty")
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Terminal result of a delivery flow: the outcome alone does not carry the
+    exit code nor where a rescued recording was kept (paste failed but the
+    transcript and audio were saved -> rescued, exit 1; nothing salvaged ->
+    retryable_failure, which recovery retries on the next toggle)."""
+
+    outcome: DeliveryOutcome
+    exit_code: int
+    rescued_path: Path | None = None
+
+
 def finish_dictation(
     config: dict[str, dict[str, Any]], rec_file: Path | None, limit_reached: bool = False, take_id: str | None = None
-) -> int:
+) -> DeliveryResult:
     """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
 
     Called by the daemon once the recorder is dead: manual stop (second toggle
@@ -2455,13 +2471,19 @@ def finish_dictation(
 
     if rec_file is None:
         notify("Empty or missing audio file", timeout_ms=5000)
-        return 1
+        return DeliveryResult(outcome="empty", exit_code=1)
 
     audio_dir = Path(config["dictate"]["audio_dir"])
     timestamp = now_timestamp()
+    rescued_path: Path | None = None
 
     def archive_audio() -> bool:
-        """Runs the post-delivery archiving (copy + compression, the slow part)."""
+        """Runs the post-delivery archiving (copy + compression, the slow part).
+
+        Returns False when the archive failed; the raw WAV is then rescued
+        (moved) and the path is left in rescued_path for the caller to report
+        (rescued vs retryable_failure)."""
+        nonlocal rescued_path
         try:
             if config["dictate"]["save_audio"]:
                 backend = resolve_backend(config)
@@ -2476,10 +2498,10 @@ def finish_dictation(
             rec_file.unlink(missing_ok=True)
             return True
         except Exception as save_exc:
-            rescued = rescue_recording(rec_file, audio_dir, timestamp, take_id)
+            rescued_path = rescue_recording(rec_file, audio_dir, timestamp, take_id)
             message = f"Failed to save audio: {save_exc}"
-            if rescued:
-                message += f"; uncompressed copy kept at {rescued}"
+            if rescued_path:
+                message += f"; uncompressed copy kept at {rescued_path}"
             notify(message, timeout_ms=10000)
             return False
 
@@ -2502,7 +2524,8 @@ def finish_dictation(
         notify(f"Transcription failed: {exc}", timeout_ms=10000)
         if archived:
             print(f"Recording kept at: {archived}", file=sys.stderr)
-        return 1
+            return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
+        return DeliveryResult(outcome="retryable_failure", exit_code=1)
 
     if not text:
         try:
@@ -2510,11 +2533,13 @@ def finish_dictation(
         except Exception as exc:
             notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
-            rescue_recording(rec_file, audio_dir, timestamp, take_id)
-            return 1
+            archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
+            if archived is not None:
+                return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
+            return DeliveryResult(outcome="retryable_failure", exit_code=1)
         archive_audio()
         notify("No speech detected", timeout_ms=5000)
-        return 0
+        return DeliveryResult(outcome="empty", exit_code=0)
 
     try:
         send_text(
@@ -2531,7 +2556,7 @@ def finish_dictation(
             notify(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
         archive_audio()
-        return 1
+        return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
     notify_close()
 
     try:
@@ -2539,13 +2564,19 @@ def finish_dictation(
     except Exception as exc:
         notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
         print(text, file=sys.stderr)
-        rescue_recording(rec_file, audio_dir, timestamp, take_id)
-        return 1
+        archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
+        if archived is not None:
+            return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=archived)
+        return DeliveryResult(outcome="retryable_failure", exit_code=1)
     # Transcribing... is a \r-redrawn line (no newline); break before this one.
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
     print(f"Dictation done ({len(text)} chars): {text_path}", file=sys.stderr)
-    return 0 if archive_audio() else 1
+    if not archive_audio():
+        if rescued_path is not None:
+            return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
+        return DeliveryResult(outcome="retryable_failure", exit_code=1)
+    return DeliveryResult(outcome="delivered", exit_code=0)
 
 
 def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
@@ -2582,7 +2613,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             # pkill digue): recover -- stop and deliver what kept recording.
             rec_file = stop_recording()
             daemon_file.unlink(missing_ok=True)
-            return finish_dictation(config, rec_file)
+            return finish_dictation(config, rec_file).exit_code
         # Only with no current recording does the toggle look at orphan takes:
         # an old orphan must never keep the user from stopping the live one.
         claimed = _claim_orphan_take()
@@ -2657,12 +2688,12 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
         _pid_file().unlink(missing_ok=True)
     try:
-        own_exit = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
+        own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
         if processes.take_id is not None:
             _take_state_file(processes.take_id).unlink(missing_ok=True)
-    return own_exit or recovery_exit
+    return own_result.exit_code or recovery_exit
 
 
 # -- Benchmark ----------------------------------------------------------------
