@@ -56,23 +56,23 @@ One machine, not a ranking of AMD iGPUs. Re-run with `digue benchmark --sample -
 
 ### Quantized models
 
-whisper.cpp runs integer-quantized models, and `ggerganov/whisper.cpp` on Hugging Face (where `digue` downloads from) publishes them next to the f16 files: `-q8_0` (about 55% of the size, accuracy practically unchanged) and `-q5_0`/`-q5_1` (about 35%, a small but real accuracy loss, most visible on proper names). They cut disk, RAM and load time. Speed is not a given: on CPU they are usually faster (inference there is bound by memory bandwidth), on GPU it depends on the backend's kernels and can be a wash -- measure with `digue benchmark` before changing a default.
+whisper.cpp runs integer-quantized models, and `ggerganov/whisper.cpp` on Hugging Face (where `digue` downloads from) publishes them next to the f16 files. `-q8_0` is the first step worth trying: about 55% of the size, accuracy in practice unchanged on a short dictation, and in one AMD iGPU run `large-v3-turbo-q8_0` was a little faster than f16 (same transcript). `-q5_0`/`-q5_1` go to about 35% and can drop proper names ("Gedit" -> "G-Edit"); they are also not always faster -- on CPU, `medium-q5_0` was slower than `medium-q8_0`. Measure with `digue benchmark` before changing a default.
 
 `digue models` lists every name (and which files are already in `<data-dir>/models`). Any of them works wherever a model is named: `[models]`, `digue download <model>` and `digue benchmark -m`. The `.en` variants are English-only. Sizes (MiB): `large-v3-turbo` 1549, `-q8_0` 834, `-q5_0` 547; `medium` 1463, `-q8_0` 785, `-q5_0` 514; `small` 465, `-q8_0` 252, `-q5_1` 181; `large-v3` 2952, `-q5_0` 1031.
 
 ```toml
 [models]
-amd = "large-v3-turbo-q5_0"     # 547 MB instead of 1549 MB
+amd = "large-v3-turbo-q8_0"     # 834 MB instead of 1549 MB
 
 [host.thinkpad.models]
-cpu = "medium-q5_0"             # medium quality where only small fit before
+cpu = "small-q8_0"              # same family as the cpu default, half the file
 ```
 
 The model is a file in `<data-dir>/models` mounted into the container, but its name is fixed in the container's command line, so after changing `[models]` recreate the container: `digue server destroy && digue server start` (the missing file is downloaded first). To compare before committing to a change:
 
 ```bash
 digue benchmark --sample -b amd -m large-v3-turbo large-v3-turbo-q8_0 large-v3-turbo-q5_0 -n 5
-digue benchmark --sample -b cpu -m small small-q5_1 medium-q5_0
+digue benchmark --sample -b cpu -m small small-q8_0 medium-q8_0 medium-q5_0
 ```
 
 
