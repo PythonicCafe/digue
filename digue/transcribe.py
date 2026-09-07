@@ -8,12 +8,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3,
+# Ogg/Vorbis, AIFF). Verified empirically against whisper-server (ghcr.io main-vulkan
+# image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3, ogg-vorbis and aiff
+# return HTTP 200; opus-in-ogg (WhatsApp voice notes), m4a/AAC, mp4, webm, mka and
+# wma return HTTP 400. Everything else is converted with ffmpeg before upload.
 NATIVE_FORMATS = frozenset((".wav", ".flac", ".mp3", ".ogg", ".aiff", ".aif"))
 
 RESPONSE_FORMATS = ("text", "vtt", "srt", "timestamps")
 
 TRANSCRIPTION_TIMEOUT = 120
 
+# whisper.cpp g_lang (src/whisper.cpp): full names the server's JSON "language"
+# field may carry, mapped to the two-letter codes.
 LANGUAGE_FULL_TO_CODE: dict[str, str] = {
     "afrikaans": "af",
     "albanian": "sq",

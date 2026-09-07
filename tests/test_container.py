@@ -114,7 +114,7 @@ class TestDockerMissing:
     def test_dictate_blames_docker_not_the_recorder(self, tmp_path):
         config = _default_config()
         with (
-            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch(
                 "digue.container.ensure_server",
                 side_effect=container_mod.DockerNotFoundError(container_mod.DOCKER_NOT_FOUND),

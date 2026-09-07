@@ -20,7 +20,7 @@ class TestBenchmarkTempFiles:
         args = argparse.Namespace(audio=None)
 
         with (
-            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch("digue.record_benchmark_audio") as mock_record,
             patch("digue.run_benchmark"),
         ):
@@ -29,7 +29,7 @@ class TestBenchmarkTempFiles:
         assert mock_record.call_args[0][0].parent == tmp_path
 
     def test_benchmark_models_sample_lives_in_the_private_runtime_dir(self, tmp_path):
-        with patch("digue._runtime_dir", return_value=tmp_path):
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
             assert benchmark_models.sample_path().parent == tmp_path
 
 

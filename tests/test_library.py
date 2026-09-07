@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
+from digue import recording as recording_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
@@ -52,7 +52,7 @@ class TestRecordTo:
             patch("subprocess.Popen", side_effect=fake_popen),
             patch("time.sleep"),
         ):
-            result = digue.record_to(output, seconds=1.5, config=config)
+            result = recording_mod.record_to(output, seconds=1.5, config=config)
 
         assert result == output
         assert output.read_bytes() == b"audio"
@@ -75,4 +75,4 @@ class TestRecordTo:
             patch("subprocess.Popen", side_effect=fake_popen),
             pytest.raises(RuntimeError, match="pw-record failed: can't find node"),
         ):
-            digue.record_to(output, seconds=1, config=config)
+            recording_mod.record_to(output, seconds=1, config=config)

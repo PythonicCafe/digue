@@ -114,7 +114,7 @@ class TestSendTextDeliveryLock:
             digue.send_text("text")
 
         with (
-            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch("digue.detect_display_server", return_value="x11"),
             patch("subprocess.run", side_effect=slow_run),
         ):
@@ -138,7 +138,7 @@ class TestSendTextDeliveryLock:
         """Detection reads env vars only; serializing it would needlessly hold
         the lock while another delivery is pasting."""
         with (
-            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch("digue.detect_display_server", return_value="x11") as mock_detect,
             patch("subprocess.run"),
         ):
@@ -383,11 +383,11 @@ class TestDeliveryResult:
         result = digue.DeliveryResult(outcome="rescued", exit_code=exit_code)
 
         with (
-            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
             patch("subprocess.Popen", return_value=recorder),
-            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=result),
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),

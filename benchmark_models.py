@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digue
 from digue import container as container_mod
+from digue import recording as recording_mod
 from digue import transcribe as transcribe_mod
 from digue.config import load_config
 
@@ -34,7 +35,7 @@ RUNS = 3
 def sample_path() -> Path:
     """The runtime dir is private to the user; a fixed name in /tmp could be a
     symlink planted by another local user."""
-    return digue._runtime_dir() / "digue-bench-jfk.wav"
+    return recording_mod._runtime_dir() / "digue-bench-jfk.wav"
 
 
 def download_sample() -> None:
