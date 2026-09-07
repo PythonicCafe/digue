@@ -146,6 +146,32 @@ class TestTakeIdInSavedNames:
 
         assert existing.read_text() == "original\n"
 
+    def test_saving_with_take_id_never_overwrites_an_existing_file(self, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"new data")
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        existing = month_dir / "20260904-120000-0123456789abcdef.wav"
+        existing.write_bytes(b"original")
+
+        with pytest.raises(FileExistsError):
+            digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
+
+        assert existing.read_bytes() == b"original"
+
+    def test_transcript_write_with_take_id_is_exclusive(self, tmp_path):
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        existing = month_dir / "20260904-120000-0123456789abcdef.txt"
+        existing.write_text("original\n")
+
+        with pytest.raises(FileExistsError):
+            digue._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
+
+        assert existing.read_text() == "original\n"
+
 
 class TestDictationFiles:
     def test_accepts_old_and_new_layout_and_ignores_other_files(self, tmp_path):
