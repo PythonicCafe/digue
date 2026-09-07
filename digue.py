@@ -2202,14 +2202,46 @@ def send_text(text: str, display_server: str = "auto", input_mode: str = "paste"
     paste shortcut differs). Typing is slower and may drop characters in
     slow applications.
     Raises RuntimeError with actionable message on failure.
-    """
-    import subprocess
 
+    The whole body runs under an exclusive flock ("digue-delivery.lock"):
+    the clipboard is global, and two overlapping deliveries pasting within
+    the same window would deliver one text twice and lose the other. The
+    "type" mode has the sibling race (interleaved keystrokes into the
+    focused window), so it is serialized too. This is a dedicated lock, not
+    _dictate_lock: a delivery can take seconds (paste timeout is 5s) and
+    must not block state transitions.
+    """
     if display_server == "auto":
         detected = detect_display_server()
         if detected is None:
             raise RuntimeError("No DISPLAY or WAYLAND_DISPLAY set. Cannot access clipboard or send keystrokes.")
         display_server = detected
+
+    with _delivery_lock():
+        _send_text_locked(text, display_server, input_mode)
+
+
+def _delivery_lock() -> Any:
+    """Serializes deliveries (clipboard copy+paste or keystroke typing) between
+    overlapping takes."""
+    import fcntl
+
+    @contextlib.contextmanager
+    def locked() -> Any:
+        lock_path = _runtime_dir() / "digue-delivery.lock"
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    return locked()
+
+
+def _send_text_locked(text: str, display_server: str, input_mode: str) -> None:
+    """The delivery itself; the caller holds the delivery lock."""
+    import subprocess
 
     if input_mode == "type":
         # The text goes through stdin, never argv: wtype rejects any unknown

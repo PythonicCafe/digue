@@ -2998,6 +2998,59 @@ class TestCmdConfig:
         assert "nvidia" in output["models"]
 
 
+class TestSendTextDeliveryLock:
+    def test_concurrent_deliveries_are_serialized(self, tmp_path):
+        """The clipboard is global: two overlapping deliveries must not
+        interleave copy+paste, or one text is pasted twice and the other is
+        lost (the .txt archives both, the clipboard keeps only the last)."""
+        release = {"first": threading.Event(), "second": threading.Event()}
+        reached = {"first": threading.Event(), "second": threading.Event()}
+        current = threading.local()
+
+        def slow_run(cmd, *args, **kwargs):
+            if cmd[0] == "xclip":
+                reached[current.which].set()
+                release[current.which].wait(timeout=5)
+            return MagicMock()
+
+        def deliver(which):
+            current.which = which
+            digue.send_text("text")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.detect_display_server", return_value="x11"),
+            patch("subprocess.run", side_effect=slow_run),
+        ):
+            first = threading.Thread(target=deliver, args=("first",))
+            first.start()
+            assert reached["first"].wait(timeout=5)
+
+            second = threading.Thread(target=deliver, args=("second",))
+            second.start()
+            # D2 must block before its copy while D1 holds the delivery lock.
+            assert not reached["second"].wait(timeout=0.3)
+            release["first"].set()
+            first.join(timeout=5)
+            # D1 released the lock: D2 now reaches its own copy.
+            assert reached["second"].wait(timeout=5)
+            release["second"].set()
+            second.join(timeout=5)
+        assert not second.is_alive()
+
+    def test_display_server_detection_happens_outside_the_lock(self, tmp_path):
+        """Detection reads env vars only; serializing it would needlessly hold
+        the lock while another delivery is pasting."""
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.detect_display_server", return_value="x11") as mock_detect,
+            patch("subprocess.run"),
+        ):
+            digue.send_text("text")
+
+        assert mock_detect.call_count == 1
+
+
 class TestRuntimeIsolation:
     def test_state_paths_use_isolated_runtime_dir(self):
         runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
