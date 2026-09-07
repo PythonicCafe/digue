@@ -5,6 +5,8 @@
 *~
 .*.sw?
 .tags
+.cafezinho/
+whisper.cpp/
 data/*
 
 # Byte-compiled / optimized / DLL files
@@ -227,3 +229,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local dictation recordings and transcripts
+audio/
