@@ -895,7 +895,7 @@ def server_not_running_hint(config: dict[str, dict[str, Any]]) -> str:
                 "(see README, Remote access), or set server.remote-host to a LAN host."
             )
         return f"Backend is 'remote' and server {host}:{config['server']['port']} is not responding (see README, Remote access)."
-    return "Run: digue start"
+    return "Run: digue server start"
 
 
 # -- HTTP helpers -------------------------------------------------------------
@@ -3268,10 +3268,15 @@ def create_parser() -> argparse.ArgumentParser:
         help=f"Model to download (default: auto-detect). Options: {', '.join(AVAILABLE_MODELS)}",
     )
 
-    subparsers.add_parser("start", help="Start (or create) digue container")
-    subparsers.add_parser("stop", help="Stop digue container")
-    subparsers.add_parser("destroy", help="Stop and remove digue container")
-    subparsers.add_parser("status", help="Show server status")
+    sub_server = subparsers.add_parser("server", help="Manage the whisper-server container")
+    sub_server_sub = sub_server.add_subparsers(dest="server_action", metavar="action")
+    # main() prints this help when no action is given (no default action).
+    sub_server.set_defaults(server_parser=sub_server)
+
+    sub_server_sub.add_parser("start", help="Start (or create) digue container")
+    sub_server_sub.add_parser("stop", help="Stop digue container")
+    sub_server_sub.add_parser("destroy", help="Stop and remove digue container")
+    sub_server_sub.add_parser("status", help="Show server status")
     sub_dictate = subparsers.add_parser("dictate", help="Toggle recording/transcription")
     sub_dictate.add_argument(
         "-p",
@@ -3491,7 +3496,7 @@ def cmd_download(args: argparse.Namespace, config: dict[str, dict[str, Any]]) ->
     return 0
 
 
-def cmd_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+def cmd_server_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if is_server_running(config):
         print("server is already running", file=sys.stderr)
         return 0
@@ -3525,7 +3530,7 @@ def cmd_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
     return 1
 
 
-def cmd_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+def cmd_server_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if _is_remote(config):
         print("Backend is 'remote': there is no local container to stop", file=sys.stderr)
         return 1
@@ -3538,7 +3543,7 @@ def cmd_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int
     return 0
 
 
-def cmd_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+def cmd_server_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     if _is_remote(config):
         print("Backend is 'remote': there is no local container to remove", file=sys.stderr)
         return 1
@@ -3551,7 +3556,7 @@ def cmd_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> 
     return 0
 
 
-def cmd_status(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+def cmd_server_status(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     port = config["server"]["port"]
     if _is_remote(config):
         http_ok = is_server_running(config)
@@ -4280,6 +4285,11 @@ def main() -> None:
         if args.config_action == "init":
             sys.exit(_config_init(args))
 
+    if command == "server" and args.server_action is None:
+        # No default action, like the bare `digue`: show what is available.
+        args.server_parser.print_help()
+        sys.exit(1)
+
     try:
         config = load_config(args.config)
     except (OSError, ValueError) as exc:
@@ -4289,10 +4299,10 @@ def main() -> None:
 
     commands = {
         "download": cmd_download,
-        "start": cmd_start,
-        "stop": cmd_stop,
-        "destroy": cmd_destroy,
-        "status": cmd_status,
+        "server-start": cmd_server_start,
+        "server-stop": cmd_server_stop,
+        "server-destroy": cmd_server_destroy,
+        "server-status": cmd_server_status,
         "dictate": cmd_dictate,
         "transcribe": cmd_transcribe,
         "detect-language": cmd_detect_language,
@@ -4305,7 +4315,7 @@ def main() -> None:
         "doctor": cmd_doctor,
     }
 
-    handler = commands.get(command)
+    handler = commands.get(f"{command}-{args.server_action}" if command == "server" else command)
     if handler is None:
         parser.print_help()
         sys.exit(1)

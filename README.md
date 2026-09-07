@@ -164,10 +164,10 @@ digue detect-language audio.mp3 --json  # code, probability, and all probabiliti
 digue detect-language audio.mp3 -v   # show conversion progress on stderr
 digue download                       # download model for detected backend
 digue download small                 # download a specific model
-digue start                          # start (or create) server container
-digue stop                           # stop server container
-digue destroy                        # stop and remove container
-digue status                         # show server status
+digue server start                   # start (or create) server container
+digue server stop                    # stop server container
+digue server destroy                 # stop and remove container
+digue server status                  # show server status
 
 # Dictation storage
 digue clean                          # list recordings/transcripts, ask, remove all
@@ -369,9 +369,9 @@ Then set `backend = "remote"` in the client's config:
 backend = "remote"
 ```
 
-With the tunnel active, `digue` works normally on the client. The `remote` backend also tells `digue` to never create, start, or stop a local container: `digue start`, `stop`, and `destroy` refuse to run, `digue status` only checks the port, and a failed transcription points you to the tunnel instead of suggesting `digue start`. Without this setting, `digue` would try to spin up a local container if it could not reach the port.
+With the tunnel active, `digue` works normally on the client. The `remote` backend also tells `digue` to never create, start, or stop a local container: `digue server start`, `server stop`, and `server destroy` refuse to run, `digue server status` only checks the port, and a failed transcription points you to the tunnel instead of suggesting `digue server start`. Without this setting, `digue` would try to spin up a local container if it could not reach the port.
 
-To manage the container itself, run the commands (`digue download`, `start`, `destroy`) on the remote machine.
+To manage the container itself, run the commands (`digue download`, `server start`, `server destroy`) on the remote machine.
 
 If the server is already reachable on your network (no tunnel needed), point `digue` straight at it:
 

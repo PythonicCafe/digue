@@ -194,7 +194,7 @@ class TestDockerMissing:
         config_path = tmp_path / "config.toml"
         config_path.write_text('[server]\nbackend = "cpu"\n')
         with (
-            patch.object(sys, "argv", ["digue", "--config", str(config_path), "status"]),
+            patch.object(sys, "argv", ["digue", "--config", str(config_path), "server", "status"]),
             patch("digue.is_server_running", return_value=False),
             patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", "docker")),
             pytest.raises(SystemExit) as exc_info,
@@ -2529,30 +2529,30 @@ class TestContainerFailures:
         mock_wait.assert_not_called()
 
     @patch("digue.stop_container", side_effect=RuntimeError("stop failed"))
-    def test_cmd_stop_does_not_report_false_success(self, mock_stop, capsys):
-        assert digue.cmd_stop(MagicMock(), digue._default_config()) == 1
+    def test_cmd_server_stop_does_not_report_false_success(self, mock_stop, capsys):
+        assert digue.cmd_server_stop(MagicMock(), digue._default_config()) == 1
         assert "Error: stop failed" in capsys.readouterr().err
 
     @patch("digue.remove_container", side_effect=RuntimeError("remove failed"))
-    def test_cmd_destroy_does_not_report_false_success(self, mock_remove, capsys):
-        assert digue.cmd_destroy(MagicMock(), digue._default_config()) == 1
+    def test_cmd_server_destroy_does_not_report_false_success(self, mock_remove, capsys):
+        assert digue.cmd_server_destroy(MagicMock(), digue._default_config()) == 1
         assert "Error: remove failed" in capsys.readouterr().err
 
     @patch("digue.start_container", side_effect=RuntimeError("start failed"))
     @patch("digue.container_status", return_value="exited")
     @patch("digue.is_server_running", return_value=False)
-    def test_cmd_start_does_not_report_false_success(self, mock_running, mock_status, mock_start, capsys):
-        assert digue.cmd_start(MagicMock(), digue._default_config()) == 1
+    def test_cmd_server_start_does_not_report_false_success(self, mock_running, mock_status, mock_start, capsys):
+        assert digue.cmd_server_start(MagicMock(), digue._default_config()) == 1
         assert "Error: start failed" in capsys.readouterr().err
 
     @patch("digue._wait_for_server", return_value=False)
     @patch("digue.start_container")
     @patch("digue.container_status", return_value="exited")
     @patch("digue.is_server_running", return_value=False)
-    def test_cmd_start_timeout_hint_names_the_digue_container(
+    def test_cmd_server_start_timeout_hint_names_the_digue_container(
         self, mock_running, mock_status, mock_start, mock_wait, capsys
     ):
-        assert digue.cmd_start(MagicMock(), digue._default_config()) == 1
+        assert digue.cmd_server_start(MagicMock(), digue._default_config()) == 1
         err = capsys.readouterr().err
         assert f"docker logs {digue.CONTAINER_NAME}" in err
         assert "whisper-server" not in err
@@ -2588,20 +2588,20 @@ class TestRemoteBackend:
 
     def test_hint_local_suggests_start(self):
         config = digue._default_config()
-        assert digue.server_not_running_hint(config) == "Run: digue start"
+        assert digue.server_not_running_hint(config) == "Run: digue server start"
 
     @patch("digue.is_server_running", return_value=True)
-    def test_cmd_status_remote(self, mock_running, capsys):
+    def test_cmd_server_status_remote(self, mock_running, capsys):
         config = digue._default_config()
         config["server"]["backend"] = "remote"
-        assert digue.cmd_status(MagicMock(), config) == 0
+        assert digue.cmd_server_status(MagicMock(), config) == 0
         assert "remote" in capsys.readouterr().err
 
     @patch("digue.is_server_running", return_value=False)
-    def test_cmd_status_remote_not_responding(self, mock_running, capsys):
+    def test_cmd_server_status_remote_not_responding(self, mock_running, capsys):
         config = digue._default_config()
         config["server"]["backend"] = "remote"
-        assert digue.cmd_status(MagicMock(), config) == 1
+        assert digue.cmd_server_status(MagicMock(), config) == 1
 
 
 class TestRemoteHost:
@@ -2662,11 +2662,11 @@ class TestRemoteHost:
         assert "ssh -NfL" in hint
 
     @patch("digue.is_server_running", return_value=False)
-    def test_cmd_status_remote_shows_host(self, mock_running, capsys):
+    def test_cmd_server_status_remote_shows_host(self, mock_running, capsys):
         config = digue._default_config()
         config["server"]["backend"] = "remote"
         config["server"]["remote_host"] = "10.0.0.5"
-        digue.cmd_status(MagicMock(), config)
+        digue.cmd_server_status(MagicMock(), config)
         assert "10.0.0.5:8178" in capsys.readouterr().err
 
 
@@ -3029,9 +3029,12 @@ class TestConfigCommand:
 class TestCreateParser:
     def test_all_subcommands_parse(self):
         parser = digue.create_parser()
-        for cmd in ("detect", "download", "start", "stop", "destroy", "status", "dictate", "config", "benchmark"):
+        for cmd in ("detect", "download", "dictate", "config", "benchmark"):
             args = parser.parse_args([cmd])
             assert args.command == cmd
+        for action in ("start", "stop", "destroy", "status"):
+            args = parser.parse_args(["server", action])
+            assert args.command == "server" and args.server_action == action
 
     def test_version_flag(self, capsys):
         parser = digue.create_parser()
