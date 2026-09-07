@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import contextlib
 import json
 import math
 import os
@@ -2204,6 +2205,100 @@ class TestDictateDaemon:
         assert result == 1
         assert not daemon_pid.exists()
         mock_start.assert_called_once()
+
+    def test_remove_daemon_state_reads_and_unlinks_while_locked(self, tmp_path):
+        daemon_file = tmp_path / "digue-daemon.pid"
+        daemon_file.write_text("99 delivering 555")
+        lock_active = False
+        operations = []
+
+        @contextlib.contextmanager
+        def tracked_lock():
+            nonlocal lock_active
+            lock_active = True
+            operations.append("enter")
+            try:
+                yield
+            finally:
+                operations.append("exit")
+                lock_active = False
+
+        original_read_text = Path.read_text
+        original_unlink = Path.unlink
+
+        def tracked_read_text(path, *args, **kwargs):
+            assert lock_active
+            operations.append("read")
+            return original_read_text(path, *args, **kwargs)
+
+        def tracked_unlink(path, *args, **kwargs):
+            assert lock_active
+            operations.append("unlink")
+            return original_unlink(path, *args, **kwargs)
+
+        with (
+            patch("digue._dictate_lock", side_effect=tracked_lock),
+            patch("digue._daemon_pid_file", return_value=daemon_file),
+            patch.object(Path, "read_text", tracked_read_text),
+            patch.object(Path, "unlink", tracked_unlink),
+        ):
+            assert digue._remove_daemon_state(99) is True
+
+        assert operations == ["enter", "read", "unlink", "exit"]
+
+    def test_remove_daemon_state_serializes_with_state_publication(self, tmp_path):
+        daemon_file = tmp_path / "digue-daemon.pid"
+        daemon_file.write_text("99 delivering 555")
+        remover_locked = threading.Event()
+        release_remover = threading.Event()
+        publisher_started = threading.Event()
+        errors = []
+
+        original_read_text = Path.read_text
+
+        def pause_after_lock(path, *args, **kwargs):
+            result = original_read_text(path, *args, **kwargs)
+            if path == daemon_file:
+                remover_locked.set()
+                assert release_remover.wait(1)
+            return result
+
+        def remove_state():
+            try:
+                assert digue._remove_daemon_state(99) is True
+            except BaseException as exc:
+                errors.append(exc)
+
+        def publish_state():
+            try:
+                assert remover_locked.wait(1)
+                publisher_started.set()
+                with digue._dictate_lock():
+                    digue._write_daemon_state(100, "recording")
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._process_starttime", return_value="777"),
+            patch.object(Path, "read_text", pause_after_lock),
+        ):
+            remover = threading.Thread(target=remove_state)
+            publisher = threading.Thread(target=publish_state)
+            remover.start()
+            assert remover_locked.wait(1)
+            publisher.start()
+            assert publisher_started.wait(1)
+            publisher.join(timeout=0.05)
+            assert publisher.is_alive()
+            release_remover.set()
+            remover.join(timeout=1)
+            publisher.join(timeout=1)
+            assert not remover.is_alive()
+            assert not publisher.is_alive()
+
+        assert errors == []
+        assert daemon_file.read_text() == "100 recording 777"
 
     def test_old_daemon_does_not_remove_new_daemon_state(self, tmp_path):
         """A delivering take may finish while a newer take is recording."""

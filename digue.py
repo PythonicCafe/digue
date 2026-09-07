@@ -1998,16 +1998,17 @@ def _daemon_alive(entry: tuple[int, str, str]) -> bool:
 
 
 def _remove_daemon_state(daemon_pid: int) -> bool:
-    """Removes the global state only while it still belongs to this daemon."""
-    daemon_file = _daemon_pid_file()
-    try:
-        current_pid = daemon_file.read_text().split()[0]
-        if int(current_pid) != daemon_pid:
+    """Removes this daemon's state while locked; callers must not hold the dictate lock."""
+    with _dictate_lock():
+        daemon_file = _daemon_pid_file()
+        try:
+            current_pid = daemon_file.read_text().split()[0]
+            if int(current_pid) != daemon_pid:
+                return False
+            daemon_file.unlink()
+            return True
+        except (OSError, ValueError, IndexError):
             return False
-        daemon_file.unlink()
-        return True
-    except (OSError, ValueError, IndexError):
-        return False
 
 
 def _is_daemon_alive() -> bool:
