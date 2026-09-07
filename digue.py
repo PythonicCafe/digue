@@ -307,6 +307,81 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
             raise ValueError(f"Invalid models.{backend}: {model!r}; expected one of: {options}")
 
 
+def _check_section_keys(section: str, table: dict[str, Any]) -> None:
+    """Validates key names (and models values) of a raw config section.
+
+    Accepts kebab-case and snake_case spellings (merge normalizes later) but
+    rejects unknown keys, models backends or models outside AVAILABLE_MODELS,
+    and keys that collide after normalizing hyphens.
+    """
+    defaults = _default_config()[section]
+    seen: dict[str, str] = {}
+    for key, value in table.items():
+        canonical = key.replace("-", "_")
+        if canonical in seen:
+            raise ValueError(
+                f'Conflicting keys in [{section}]: "{seen[canonical]}" and "{key}" '
+                "differ only by kebab-case/snake_case spelling"
+            )
+        seen[canonical] = key
+        if section == "models":
+            if canonical not in DEFAULT_MODELS:
+                backends = ", ".join(DEFAULT_MODELS)
+                raise ValueError(f'Unknown models key "{key}"; valid backends: {backends}')
+            if not isinstance(value, str) or value not in AVAILABLE_MODELS:
+                options = ", ".join(AVAILABLE_MODELS)
+                raise ValueError(f"Invalid models.{key}: {value!r}; expected one of: {options}")
+        elif canonical not in defaults:
+            import difflib
+
+            # the file format is kebab-case (see CONFIG_TEMPLATE): suggest and
+            # list the names the user would actually write
+            valid_keys = [name.replace("_", "-") for name in defaults]
+            matches = difflib.get_close_matches(canonical.replace("_", "-"), valid_keys, n=1)
+            suggestion = f'; did you mean "{matches[0]}"?' if matches else ""
+            raise ValueError(f'Unknown {section} key "{key}"{suggestion}; valid keys: {", ".join(valid_keys)}')
+
+
+def _validate_host_config(hosts: dict[str, Any]) -> None:
+    """Validates every [host.<hostname>] table, not just the current machine's.
+
+    The config file is versioned in dotfiles and shared across machines, so a
+    typo under another host must fail here too.
+    """
+    for hostname, sections in hosts.items():
+        if not isinstance(sections, dict):
+            raise ValueError(f"[host.{hostname}] must be a table of configuration sections")
+        for name, value in sections.items():
+            if name not in _default_config():
+                example_section = "server"
+                if isinstance(value, dict):
+                    example_section = next((key for key in value if key in _default_config()), "server")
+                raise ValueError(
+                    f'Unknown host subsection "{name}"; if the hostname contains dots, '
+                    f'quote it: [host."{hostname}.{name}".{example_section}]'
+                )
+            if not isinstance(value, dict):
+                raise ValueError(f"Section [host.{hostname}.{name}] must be a table of key = value pairs")
+            _check_section_keys(name, value)
+
+
+def _validate_config_structure(user_config: dict[str, Any]) -> None:
+    """Validates section and key names of the raw TOML, before any merging."""
+    for name, value in user_config.items():
+        if name == "host":
+            if not isinstance(value, dict):
+                raise ValueError("[host] must be a table of per-host configuration tables")
+            _validate_host_config(value)
+            continue
+        if name not in _default_config():
+            valid = ", ".join((*_default_config(), "host"))
+            raise ValueError(f'Unknown section "{name}"; valid sections: {valid}')
+        if not isinstance(value, dict):
+            kind = type(value).__name__
+            raise ValueError(f"Section [{name}] must be a table of key = value pairs, got {kind}")
+        _check_section_keys(name, value)
+
+
 def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     """Loads config from TOML file, falling back to defaults for missing keys.
 
@@ -322,6 +397,7 @@ def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, An
     if path.exists():
         with path.open("rb") as fobj:
             user_config: dict[str, Any] = tomllib.load(fobj)
+        _validate_config_structure(user_config)
         for section, defaults in config.items():
             if section in user_config:
                 _merge_section(config[section], user_config[section])

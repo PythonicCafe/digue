@@ -2501,7 +2501,7 @@ class TestHostOverrides:
         assert config["models"]["cpu"] == "medium"
         assert config["models"]["nvidia"] == "large-v3-turbo"
 
-    def test_unknown_keys_in_host_section_are_ignored(self, tmp_path):
+    def test_unknown_keys_in_host_section_are_rejected(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             textwrap.dedent("""\
@@ -2509,9 +2509,8 @@ class TestHostOverrides:
             no-such-key = true
         """)
         )
-        with patch("socket.gethostname", return_value="thinkpad"):
-            config = digue.load_config(config_path)
-        assert config["server"]["backend"] == "auto"
+        with patch("socket.gethostname", return_value="thinkpad"), pytest.raises(ValueError, match="no-such-key"):
+            digue.load_config(config_path)
 
     def test_gethostname_called_once_with_host_section(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -2524,6 +2523,143 @@ class TestHostOverrides:
         with patch("socket.gethostname", return_value="laptop") as mock_hostname:
             digue.load_config(config_path)
         assert mock_hostname.call_count == 1
+
+
+class TestConfigStructureValidation:
+    """Section and key names are validated on the raw TOML, before merging,
+    so a typo fails loudly even inside [host.<x>] tables that belong to other
+    machines (the file is versioned in dotfiles and shared across them)."""
+
+    def write_config(self, tmp_path, toml):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(textwrap.dedent(toml))
+        return config_path
+
+    def load_with_hostname(self, tmp_path, toml, hostname="thinkpad"):
+        config_path = self.write_config(tmp_path, toml)
+        with patch("socket.gethostname", return_value=hostname):
+            return digue.load_config(config_path)
+
+    def test_unknown_top_level_section_lists_valid_ones(self, tmp_path):
+        config_path = self.write_config(tmp_path, '[serv]\nbackend = "cpu"\n')
+        with pytest.raises(ValueError) as excinfo:
+            digue.load_config(config_path)
+        message = str(excinfo.value)
+        assert '"serv"' in message
+        for name in ("server", "transcribe", "dictate", "models", "host"):
+            assert name in message
+
+    def test_host_is_a_valid_top_level_section(self, tmp_path):
+        config = self.load_with_hostname(tmp_path, '[host.desktop.server]\nbackend = "cpu"\n')
+        assert config["server"]["backend"] == "auto"
+
+    def test_section_value_must_be_a_table(self, tmp_path):
+        config_path = self.write_config(tmp_path, 'server = "cpu"\n')
+        with pytest.raises(ValueError, match=r"\[server\].*must be a table"):
+            digue.load_config(config_path)
+
+    def test_unknown_key_suggests_close_match(self, tmp_path):
+        config_path = self.write_config(tmp_path, '[server]\nbackends = "cpu"\n')
+        with pytest.raises(ValueError, match=r'Unknown server key "backends".*did you mean "backend"'):
+            digue.load_config(config_path)
+
+    def test_unknown_key_without_match_lists_valid_keys(self, tmp_path):
+        config_path = self.write_config(tmp_path, "[server]\nxyzzy = 1\n")
+        with pytest.raises(ValueError) as excinfo:
+            digue.load_config(config_path)
+        message = str(excinfo.value)
+        assert '"xyzzy"' in message
+        assert "port" in message
+
+    def test_suggestions_and_valid_keys_use_the_kebab_case_of_the_file_format(self, tmp_path):
+        """The file and `config init` template are kebab-case; suggesting the
+        internal snake_case name (max_duration) would send the user to write a
+        key that only works by accident."""
+        config_path = self.write_config(tmp_path, "[dictate]\nmax-durations = 5\n")
+        with pytest.raises(ValueError) as excinfo:
+            digue.load_config(config_path)
+        message = str(excinfo.value)
+        assert 'did you mean "max-duration"' in message
+        assert "audio-dir" in message and "save-audio" in message
+        assert "max_duration" not in message and "audio_dir" not in message
+
+    def test_snake_and_kebab_keys_are_both_accepted(self, tmp_path):
+        config = self.load_with_hostname(
+            tmp_path,
+            """\
+            [server]
+            data_dir = "/opt/d1"
+            bind-ip = "0.0.0.0"
+
+            [dictate]
+            max-duration = 42
+            input_mode = "type"
+        """,
+        )
+        assert config["server"]["data_dir"] == "/opt/d1"
+        assert config["server"]["bind_ip"] == "0.0.0.0"
+        assert config["dictate"]["max_duration"] == 42
+        assert config["dictate"]["input_mode"] == "type"
+
+    def test_kebab_and_snake_collision_after_normalization_is_rejected(self, tmp_path):
+        config_path = self.write_config(tmp_path, '[server]\ndata-dir = "/a"\ndata_dir = "/b"\n')
+        with pytest.raises(ValueError, match=r'Conflicting.*"data-dir".*"data_dir"'):
+            digue.load_config(config_path)
+
+    def test_models_rejects_unknown_backends(self, tmp_path):
+        config_path = self.write_config(tmp_path, '[models]\nremote = "small"\n')
+        with pytest.raises(ValueError, match=r'Unknown models key "remote"'):
+            digue.load_config(config_path)
+
+    def test_models_rejects_values_outside_available_models(self, tmp_path):
+        config_path = self.write_config(tmp_path, '[models]\ncpu = "giant"\n')
+        with pytest.raises(ValueError, match=r"Invalid models\.cpu.*giant"):
+            digue.load_config(config_path)
+
+    def test_models_accepts_valid_backends_and_values(self, tmp_path):
+        config = self.load_with_hostname(tmp_path, '[models]\nnvidia = "tiny"\ncpu = "large-v3"\n')
+        assert config["models"]["nvidia"] == "tiny"
+        assert config["models"]["cpu"] == "large-v3"
+
+    def test_host_keys_are_validated_for_other_hosts(self, tmp_path):
+        with pytest.raises(ValueError, match=r'Unknown server key "no-such-key"'):
+            self.load_with_hostname(tmp_path, "[host.desktop.server]\nno-such-key = true\n")
+
+    def test_host_models_are_validated_for_other_hosts(self, tmp_path):
+        with pytest.raises(ValueError, match=r"Invalid models\.cpu.*giant"):
+            self.load_with_hostname(tmp_path, '[host.desktop.models]\ncpu = "giant"\n')
+
+    def test_unquoted_dotted_hostname_hints_quoting_without_asserting_cause(self, tmp_path):
+        """[host.thinkpad.local.server] unquoted parses as hostname "thinkpad"
+        with subsection "local"; the message suggests the quoting fix but must
+        not claim the hostname was the actual problem."""
+        config_path = self.write_config(tmp_path, '[host.thinkpad.local.server]\nbackend = "cpu"\n')
+        with pytest.raises(ValueError) as excinfo:
+            digue.load_config(config_path)
+        message = str(excinfo.value)
+        assert 'Unknown host subsection "local"' in message
+        assert "if the hostname contains dots, quote it" in message
+        assert '[host."thinkpad.local".server]' in message
+
+    def test_host_unknown_subsection_without_dots_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match=r'Unknown host subsection "serves"'):
+            self.load_with_hostname(tmp_path, '[host.desktop.serves]\nbackend = "cpu"\n')
+
+    def test_host_subsection_value_must_be_a_table(self, tmp_path):
+        with pytest.raises(ValueError, match=r"host\.desktop\.server.*must be a table"):
+            self.load_with_hostname(tmp_path, '[host.desktop]\nserver = "cpu"\n')
+
+    def test_main_exits_1_without_traceback_on_invalid_config(self, tmp_path, capsys):
+        config_path = self.write_config(tmp_path, '[serv]\nbackend = "cpu"\n')
+        with (
+            patch.object(sys, "argv", ["digue", "--config", str(config_path), "config", "show"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            digue.main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Error: failed to load configuration" in err
+        assert "Traceback" not in err
 
 
 # -- CLI parser ---------------------------------------------------------------
