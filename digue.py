@@ -445,6 +445,11 @@ def pull_image(image: str) -> None:
     print(f"Pull complete: {image}", file=sys.stderr)
 
 
+def _is_remote(config: dict[str, dict[str, Any]]) -> bool:
+    """Returns whether the validated configuration selects a remote server."""
+    return bool(config["server"]["backend"] == "remote")
+
+
 def resolve_backend(config: dict[str, dict[str, Any]]) -> str:
     """Returns the backend to use, respecting config override or auto-detecting."""
     configured = config["server"].get("backend", "auto")
@@ -688,7 +693,7 @@ def server_host(config: dict[str, dict[str, Any]]) -> str:
     127.0.0.1 for an SSH tunnel). For local backends, probes the address Docker
     binds, except that the wildcard bind is reached through loopback.
     """
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         return str(config["server"].get("remote_host") or "127.0.0.1")
     bind_ip = str(config["server"].get("bind_ip", "127.0.0.1"))
     return "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
@@ -749,7 +754,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
     if is_server_running(config):
         return None
 
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         host = config["server"].get("remote_host") or "127.0.0.1"
         if not silent:
             notify(
@@ -790,7 +795,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
 
 def server_not_running_hint(config: dict[str, dict[str, Any]]) -> str:
     """Returns the actionable hint shown when the server is not responding."""
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         host = config["server"].get("remote_host") or "127.0.0.1"
         if host == "127.0.0.1":
             return (
@@ -2752,7 +2757,7 @@ def cmd_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
         print("server is already running", file=sys.stderr)
         return 0
 
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         print(server_not_running_hint(config), file=sys.stderr)
         return 1
 
@@ -2782,7 +2787,7 @@ def cmd_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
 
 
 def cmd_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         print("Backend is 'remote': there is no local container to stop", file=sys.stderr)
         return 1
     try:
@@ -2795,7 +2800,7 @@ def cmd_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int
 
 
 def cmd_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         print("Backend is 'remote': there is no local container to remove", file=sys.stderr)
         return 1
     try:
@@ -2809,7 +2814,7 @@ def cmd_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> 
 
 def cmd_status(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     port = config["server"]["port"]
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         http_ok = is_server_running(config)
         host = config["server"].get("remote_host") or "127.0.0.1"
         print(
@@ -3259,7 +3264,7 @@ def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str,
 
 def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
 
-    if resolve_backend(config) == "remote":
+    if _is_remote(config):
         print("Error: benchmark creates local containers; it is not available with backend 'remote'", file=sys.stderr)
         return 1
 

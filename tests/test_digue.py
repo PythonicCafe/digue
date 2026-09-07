@@ -1402,6 +1402,17 @@ class TestRemoteBackend:
 
 
 class TestRemoteHost:
+    @patch("urllib.request.urlopen")
+    @patch("digue.detect_backend")
+    def test_server_probes_do_not_detect_auto_backend(self, mock_detect_backend, mock_urlopen):
+        config = digue._default_config()
+
+        digue.is_server_running(config)
+        digue.server_url(config)
+        digue.server_not_running_hint(config)
+
+        mock_detect_backend.assert_not_called()
+
     def test_server_host_localhost_for_local_backends(self):
         config = digue._default_config()
         config["server"]["remote_host"] = "10.0.0.5"
