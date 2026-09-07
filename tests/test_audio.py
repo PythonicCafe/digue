@@ -440,6 +440,24 @@ class TestSaveAudioConfig:
         config = digue.load_config(config_path)
         assert config["dictate"]["save_audio"] is False
 
+    def test_flac_source_skips_ffmpeg_when_saving_flac(self, tmp_path):
+        rec_file = tmp_path / "rec.flac"
+        rec_file.write_bytes(b"fLaC")
+        audio_dir = tmp_path / "audio"
+
+        with patch("digue._compress_audio") as mock_compress:
+            saved, _ = digue.save_audio(
+                rec_file,
+                audio_dir,
+                audio_format="flac",
+                timestamp="20260904-120000",
+                take_id="0123456789abcdef",
+            )
+
+        mock_compress.assert_not_called()
+        assert saved.suffix == ".flac"
+        assert saved.read_bytes() == b"fLaC"
+
     @patch("digue._compress_audio")
     def test_save_audio_passes_backend(self, mock_compress, tmp_path):
         rec_file = tmp_path / "rec.wav"

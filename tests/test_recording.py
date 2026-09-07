@@ -167,6 +167,86 @@ class TestRecordingCommand:
         with pytest.raises(RuntimeError, match="Unknown recorder"):
             digue.recording_command(tmp_path / "rec.wav", recorder="sox")
 
+    def test_pw_record_omits_target_when_device_is_empty(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="pw-record", device="")
+        assert "--target" not in argv
+
+    def test_pw_record_passes_target(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="pw-record", device="alsa_input.usb")
+        assert argv[argv.index("--target") + 1] == "alsa_input.usb"
+
+    def test_arecord_passes_device(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="arecord", device="hw:2,0")
+        assert argv[argv.index("-D") + 1] == "hw:2,0"
+
+    def test_arecord_omits_device_when_empty(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="arecord", device="")
+        assert "-D" not in argv
+
+    def test_pw_record_adds_container_for_flac_suffix(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.flac", recorder="pw-record")
+        assert argv[argv.index("--container") + 1] == "flac"
+
+    def test_pw_record_wav_has_no_container_flag(self, tmp_path):
+        argv = digue.recording_command(tmp_path / "rec.wav", recorder="pw-record")
+        assert "--container" not in argv
+
+
+class TestLiveRecordingFormat:
+    def test_wav_audio_format_always_records_wav(self):
+        config = digue._default_config()
+        config["dictate"]["audio_format"] = "wav"
+        with patch("digue._pw_record_supports_flac", return_value=True):
+            assert digue._live_recording_suffix(config) == ".wav"
+
+    def test_flac_with_pw_record_support_records_flac(self):
+        config = digue._default_config()
+        config["dictate"]["audio_format"] = "flac"
+        config["dictate"]["recorder"] = "pw-record"
+        with patch("digue._pw_record_supports_flac", return_value=True):
+            assert digue._live_recording_suffix(config) == ".flac"
+
+    def test_flac_without_container_falls_back_to_wav(self):
+        config = digue._default_config()
+        config["dictate"]["audio_format"] = "flac"
+        config["dictate"]["recorder"] = "pw-record"
+        with patch("digue._pw_record_supports_flac", return_value=False):
+            assert digue._live_recording_suffix(config) == ".wav"
+
+    def test_arecord_never_records_flac(self):
+        config = digue._default_config()
+        config["dictate"]["audio_format"] = "flac"
+        config["dictate"]["recorder"] = "arecord"
+        with patch("digue._pw_record_supports_flac", return_value=True):
+            assert digue._live_recording_suffix(config) == ".wav"
+
+    def test_supports_flac_parses_list_containers(self, tmp_path):
+        binary = tmp_path / "pw-record"
+        binary.write_bytes(b"")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        listed = MagicMock(stdout="    wav: WAV (Microsoft)\n    flac: FLAC (Free Lossless Audio Codec)\n")
+        with (
+            patch("digue._cache_dir", return_value=cache),
+            patch("shutil.which", return_value=str(binary)),
+            patch("subprocess.run", return_value=listed),
+        ):
+            assert digue._pw_record_supports_flac() is True
+        assert "flac" in (cache / "pw-record-containers").read_text()
+
+    def test_supports_flac_false_when_missing(self, tmp_path):
+        binary = tmp_path / "pw-record"
+        binary.write_bytes(b"")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        listed = MagicMock(stdout="    wav: WAV (Microsoft)\n")
+        with (
+            patch("digue._cache_dir", return_value=cache),
+            patch("shutil.which", return_value=str(binary)),
+            patch("subprocess.run", return_value=listed),
+        ):
+            assert digue._pw_record_supports_flac() is False
+
 
 class TestStartRecording:
     @patch("subprocess.Popen")
@@ -183,7 +263,7 @@ class TestStartRecording:
         assert processes.watchdog is None
         assert processes.rec_file is not None
         assert processes.rec_file.name.startswith("digue-")
-        assert processes.rec_file.suffix == ".wav"
+        assert processes.rec_file.suffix in {".wav", ".flac"}
         assert mock_popen.call_args[1].get("start_new_session") is True
 
     @patch("digue._spawn_limit_watchdog")
@@ -202,6 +282,24 @@ class TestStartRecording:
         assert processes.recorder is recorder
         assert processes.watchdog is watchdog
         mock_watchdog.assert_called_once_with(recorder.pid, 300)
+
+    def test_start_recording_passes_device_to_recorder(self, tmp_path):
+        recorder = MagicMock(pid=os.getpid())
+        config = digue._default_config()
+        config["dictate"]["max_duration"] = 0
+        config["dictate"]["recorder"] = "pw-record"
+        config["dictate"]["device"] = "alsa_input.usb"
+        config["dictate"]["audio_format"] = "wav"
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._live_recording_suffix", return_value=".wav"),
+            patch("subprocess.Popen", return_value=recorder) as mock_popen,
+        ):
+            digue.start_recording(config)
+
+        argv = mock_popen.call_args[0][0]
+        assert argv[argv.index("--target") + 1] == "alsa_input.usb"
 
 
 class TestStartRecordingPublishesTakeState:
@@ -262,6 +360,27 @@ class TestStartRecordingPublishesTakeState:
         config = digue._default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), pytest.raises(FileNotFoundError):
+            digue.start_recording(config)
+
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_immediate_nonzero_exit_raises_with_stderr(self, tmp_path):
+        config = digue._default_config()
+        dead = MagicMock(pid=4242)
+        dead.poll.return_value = 1
+
+        def fake_popen(argv, stdout=None, stderr=None, start_new_session=False):
+            if stderr is not None:
+                stderr.write("no such node 'usb-mic'\n")
+                stderr.flush()
+            return dead
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._live_recording_suffix", return_value=".wav"),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            pytest.raises(RuntimeError, match="pw-record failed: no such node"),
+        ):
             digue.start_recording(config)
 
         assert list(tmp_path.glob("digue-take-*.json")) == []

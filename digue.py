@@ -227,6 +227,7 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "display_server": "auto",
             "input_mode": "paste",
             "recorder": "auto",
+            "device": "",
             "max_duration": DEFAULT_MAX_RECORD_SECONDS,
             "save_audio": True,
             "audio_format": "flac",
@@ -296,6 +297,7 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
     require_choice("dictate", "input_mode", ("paste", "type"))
     require_choice("dictate", "recorder", ("auto", "pw-record", "arecord"))
     require_choice("dictate", "audio_format", ("wav", "flac", "opus"))
+    require_type("dictate", "device", str)
     require_type("dictate", "save_audio", bool)
     max_duration = require_type("dictate", "max_duration", int)
     if max_duration < 0:
@@ -1510,11 +1512,13 @@ def _saved_stem(timestamp: str, take_id: str | None) -> str:
     return f"{timestamp}-{take_id}" if take_id else timestamp
 
 
-def _rec_file() -> Path:
+def _rec_file(suffix: str = ".wav") -> Path:
     """Returns a unique recording path without creating the audio file."""
     import secrets
 
-    return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}.wav"
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}{suffix}"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1526,25 +1530,150 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def recording_command(rec_file: str | Path, recorder: str = "auto") -> list[str]:
+def _resolve_recorder(recorder: str) -> str:
+    """Resolves "auto" to pw-record when present, else arecord."""
+    import shutil
+
+    if recorder != "auto":
+        return recorder
+    if shutil.which("pw-record"):
+        return "pw-record"
+    if shutil.which("arecord"):
+        return "arecord"
+    return "pw-record"
+
+
+def _cache_dir() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    path = base / "digue"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _pw_record_supports_flac() -> bool:
+    """True when this pw-record's libsndfile was built with the flac container.
+
+    Result is cached under XDG_CACHE_HOME, keyed by the binary path and mtime,
+    so a libsndfile upgrade is picked up and a missing binary is not.
+    """
+    import shutil
+    import subprocess
+
+    binary = shutil.which("pw-record")
+    if binary is None:
+        return False
+    path = Path(binary)
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return False
+    cache_path = _cache_dir() / "pw-record-containers"
+    cache_key = f"{path.resolve()}\n{mtime_ns}\n"
+    try:
+        cached = cache_path.read_text()
+    except OSError:
+        cached = ""
+    if cached.startswith(cache_key):
+        names = {line.strip() for line in cached[len(cache_key) :].splitlines() if line.strip()}
+        return "flac" in names
+    try:
+        result = subprocess.run(
+            [str(path), "--list-containers"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    containers: list[str] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped or ":" not in stripped:
+            continue
+        containers.append(stripped.split(":", 1)[0].strip())
+    with contextlib.suppress(OSError):
+        cache_path.write_text(cache_key + "\n".join(containers) + "\n")
+    return "flac" in containers
+
+
+def _live_recording_suffix(config: dict[str, dict[str, Any]]) -> str:
+    """Suffix of the live take file: .flac when pw-record can write it, else .wav."""
+    if config["dictate"]["audio_format"] != "flac":
+        return ".wav"
+    if _resolve_recorder(config["dictate"]["recorder"]) != "pw-record":
+        return ".wav"
+    if _pw_record_supports_flac():
+        return ".flac"
+    return ".wav"
+
+
+def recording_command(
+    rec_file: str | Path,
+    recorder: str = "auto",
+    device: str = "",
+    container: str | None = None,
+) -> list[str]:
     """Builds the argv that records mono 16 kHz s16 audio to rec_file.
 
     recorder: "auto" (pw-record if available, else arecord), "pw-record", or "arecord".
+    device: empty keeps the system default; otherwise pw-record --target / arecord -D.
+    container: pw-record --container (e.g. "flac"); inferred from a .flac suffix.
     """
-    import shutil
-
-    if recorder == "auto":
-        if shutil.which("pw-record"):
-            recorder = "pw-record"
-        elif shutil.which("arecord"):
-            recorder = "arecord"
-        else:
-            recorder = "pw-record"
+    recorder = _resolve_recorder(recorder)
+    rec_path = Path(rec_file)
+    if container is None and rec_path.suffix.lower() == ".flac":
+        container = "flac"
     if recorder == "pw-record":
-        return ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", str(rec_file)]
+        argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16"]
+        if device:
+            argv.extend(["--target", device])
+        if container:
+            argv.extend(["--container", container])
+        argv.append(str(rec_path))
+        return argv
     if recorder == "arecord":
-        return ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1", str(rec_file)]
+        argv = ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1"]
+        if device:
+            argv.extend(["-D", device])
+        argv.append(str(rec_path))
+        return argv
     raise RuntimeError(f"Unknown recorder: {recorder}. Use 'auto', 'pw-record', or 'arecord'.")
+
+
+def _popen_recorder(argv: list[str], *, start_new_session: bool = True) -> subprocess.Popen[bytes]:
+    """Starts the recorder. Raises RuntimeError if it exits non-zero immediately."""
+    import subprocess
+    import time
+
+    err_path = _runtime_dir() / f"digue-recorder-err-{os.getpid()}"
+    with err_path.open("w") as err_file:
+        try:
+            recorder = subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=err_file,
+                start_new_session=start_new_session,
+            )
+        except Exception:
+            err_path.unlink(missing_ok=True)
+            raise
+        exit_code = recorder.poll()
+        if exit_code is None:
+            deadline = time.monotonic() + 0.15
+            while recorder.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            exit_code = recorder.poll()
+    if isinstance(exit_code, int) and exit_code != 0:
+        detail = err_path.read_text(errors="replace").strip() or f"exit code {exit_code}"
+        err_path.unlink(missing_ok=True)
+        compact = " ".join(detail.split())
+        if len(compact) > 400:
+            compact = compact[:400] + "..."
+        raise RuntimeError(f"{Path(argv[0]).name} failed: {compact}")
+    err_path.unlink(missing_ok=True)
+    return recorder
 
 
 @dataclass(frozen=True)
@@ -1933,10 +2062,9 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     retains Popen handles so it can reap both children.
     """
     import dataclasses
-    import subprocess
     import time
 
-    rec_file = _rec_file()
+    rec_file = _rec_file(_live_recording_suffix(config))
     take_id = new_take_id()
     max_duration = config["dictate"]["max_duration"]
     daemon_starttime = _process_starttime(os.getpid())
@@ -1952,14 +2080,14 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
         daemon_starttime=int(daemon_starttime),
     )
     _write_take_state(state)
-    argv = recording_command(rec_file, recorder=config["dictate"]["recorder"])
+    argv = recording_command(
+        rec_file,
+        recorder=config["dictate"]["recorder"],
+        device=str(config["dictate"].get("device") or ""),
+        container="flac" if rec_file.suffix.lower() == ".flac" else None,
+    )
     try:
-        recorder = subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        recorder = _popen_recorder(argv)
     except Exception:
         _take_state_file(take_id).unlink(missing_ok=True)
         raise
@@ -2473,9 +2601,11 @@ def save_audio(
     timestamp = timestamp or now_timestamp()
     month_dir = audio_dir / month_dir_for(timestamp)
     month_dir.mkdir(parents=True, exist_ok=True)
-    saved = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
-    _copy_file_exclusive(Path(rec_file), saved)
-    if audio_format != "wav":
+    source = Path(rec_file)
+    source_suffix = source.suffix.lower() if source.suffix.lower() in {".wav", ".flac", ".opus"} else ".wav"
+    saved = month_dir / f"{_saved_stem(timestamp, take_id)}{source_suffix}"
+    _copy_file_exclusive(source, saved)
+    if audio_format != "wav" and saved.suffix.lower() != f".{audio_format}":
         saved = _compress_audio(saved, audio_format, backend=backend)
     return saved, timestamp
 
@@ -2933,7 +3063,7 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         _remove_daemon_state(daemon_pid)
         return 1
     except Exception as exc:
-        notify(f"Failed to start recording: {exc}", timeout_ms=5000)
+        notify(f"Failed to start recording: {exc}", timeout_ms=10000)
         _remove_daemon_state(daemon_pid)
         return 1
     recorder_pid = processes.recorder.pid
@@ -3088,21 +3218,97 @@ def record_benchmark_audio(
     output_path: str | Path, duration_seconds: int = 10, config: dict[str, dict[str, Any]] | None = None
 ) -> None:
     """Records audio from microphone for benchmark, with the configured recorder."""
-    import subprocess
     import time
 
     recorder = config["dictate"]["recorder"] if config else "auto"
+    device = str(config["dictate"].get("device") or "") if config else ""
     print(f"Recording {duration_seconds}s from microphone...", file=sys.stderr)
     print("(speak something so there is content to transcribe)", file=sys.stderr)
-    proc = subprocess.Popen(
-        recording_command(output_path, recorder=recorder),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    proc = _popen_recorder(
+        recording_command(output_path, recorder=recorder, device=device),
+        start_new_session=False,
     )
     time.sleep(duration_seconds)
     proc.terminate()
     time.sleep(0.5)
     print(f"Recorded: {output_path}", file=sys.stderr)
+
+
+def transcribe_file(
+    audio_path: str | Path,
+    config: dict[str, dict[str, Any]] | None = None,
+    *,
+    language: str | None = None,
+    response_format: str | None = None,
+    prompt: str | None = None,
+    verbose: bool = False,
+) -> str:
+    """Ensures the server is up and transcribes audio_path. Returns the text.
+
+    config None loads the user config. language / response_format / prompt
+    default to the [transcribe] section. Raises RuntimeError if the server
+    cannot be reached.
+    """
+    config = load_config() if config is None else config
+    ensure_server(config, silent=not verbose)
+    if not is_server_running(config):
+        raise RuntimeError(f"server is not running. {server_not_running_hint(config)}")
+    transcribe_cfg = config["transcribe"]
+    fmt = response_format or str(transcribe_cfg.get("output_format", "text"))
+    wrap_subtitles = fmt != "timestamps"
+    result = transcribe(
+        server_url(config),
+        audio_path,
+        language or str(transcribe_cfg["language"]),
+        "vtt" if fmt == "timestamps" else fmt,
+        verbose=verbose,
+        prompt=prompt if prompt is not None else (transcribe_cfg.get("prompt") or None),
+        max_line_length=int(transcribe_cfg.get("max_line_length", 42)),
+        max_lines=int(transcribe_cfg.get("max_lines", 2)),
+        wrap_cues=wrap_subtitles,
+    )
+    if fmt == "timestamps":
+        return _convert_content(result, "vtt", "timestamps")
+    return result
+
+
+def record_to(
+    output_path: str | Path,
+    seconds: float,
+    config: dict[str, dict[str, Any]] | None = None,
+) -> Path:
+    """Records from the microphone into output_path for seconds, then returns it.
+
+    Honors [dictate] recorder, device and (for a .flac path) native FLAC when
+    pw-record supports it. Raises RuntimeError if the recorder exits at start
+    (bad --target, missing PCM, ...). Does not transcribe or paste.
+    """
+    import time
+
+    config = load_config() if config is None else config
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    device = str(config["dictate"].get("device") or "")
+    container = "flac" if output_path.suffix.lower() == ".flac" else None
+    argv = recording_command(
+        output_path,
+        recorder=config["dictate"]["recorder"],
+        device=device,
+        container=container,
+    )
+    proc = _popen_recorder(argv, start_new_session=False)
+    try:
+        time.sleep(seconds)
+    except BaseException:
+        proc.terminate()
+        raise
+    proc.terminate()
+    deadline = time.monotonic() + 1.0
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError(f"recorder produced no audio at {output_path}")
+    return output_path
 
 
 # -- CLI ----------------------------------------------------------------------
@@ -3165,9 +3371,14 @@ CONFIG_TEMPLATE = """\
 # save-audio = true             # save the recording as a backup
 # audio-format = "flac"         # format of the saved recording: "flac" (lossless,
                                 #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
-                                #   or "wav". Requires ffmpeg for flac/opus
+                                #   or "wav". pw-record writes flac natively when
+                                #   libsndfile has the container; otherwise ffmpeg
+                                #   compresses a WAV (arecord always needs this)
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
+# device = ""                   # capture source; empty = system default.
+                                #   pw-record: --target NAME (node name or serial)
+                                #   arecord: -D NAME (PCM; arecord -l lists cards)
 
 # -- Models per backend -------------------------------------------------------
 [models]
@@ -4182,6 +4393,30 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
         status = ok_mark if found else skip_mark
         location = found or "not found"
         print(f"  [{status}] {tool}: {location} -- {description}", file=sys.stderr)
+
+    print("\n=== Capture device ===", file=sys.stderr)
+    configured = str(config["dictate"].get("device") or "")
+    print(f"  Configured: {configured or '(system default)'}", file=sys.stderr)
+    if shutil.which("arecord"):
+        try:
+            listed = subprocess.run(
+                ["arecord", "-l"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+                text=True,
+            )
+            for line in listed.stdout.splitlines():
+                if line.strip():
+                    print(f"  {line}", file=sys.stderr)
+        except (OSError, subprocess.TimeoutExpired):
+            print("  arecord -l failed", file=sys.stderr)
+    if shutil.which("pw-record"):
+        print(
+            "  pw-record --target NAME (node name or serial). This build has no --list-targets;",
+            file=sys.stderr,
+        )
+        print("  find sources with: pactl list sources short   or   wpctl status", file=sys.stderr)
 
     print("\n=== GPU detection ===", file=sys.stderr)
     detected = detect_backend()

@@ -456,6 +456,22 @@ class TestDictateDaemon:
 
         assert first != second
 
+    def test_recorder_startup_error_is_notified(self, tmp_path):
+        config = digue._default_config()
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.start_recording", side_effect=RuntimeError("pw-record failed: no such node")),
+            patch("digue.notify") as mock_notify,
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        message = mock_notify.call_args.args[0]
+        assert message.startswith("Failed to start recording:")
+        assert "no such node" in message
+        assert not (tmp_path / "digue-daemon.pid").exists()
+
 
 class TestDictateInterrupt:
     @patch("digue.stop_recording_pid", return_value=None)

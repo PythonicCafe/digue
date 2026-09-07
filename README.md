@@ -275,9 +275,14 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # save-audio = true             # save the recording as a backup
 # audio-format = "flac"         # format of the saved recording: "flac" (lossless,
                                 #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
-                                #   or "wav". Requires ffmpeg for flac/opus
+                                #   or "wav". pw-record writes flac natively when
+                                #   libsndfile has the container; otherwise ffmpeg
+                                #   compresses a WAV (arecord always needs this)
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
+# device = ""                   # capture source; empty = system default.
+                                #   pw-record: --target NAME (node name or serial)
+                                #   arecord: -D NAME (PCM; arecord -l lists cards)
 
 # -- Models per backend -------------------------------------------------------
 [models]
@@ -339,7 +344,7 @@ Without ffmpeg, unsupported formats produce a clear error instead of a raw HTTP 
 
 ## Recording
 
-Dictation uses PipeWire's `pw-record` by default and falls back to ALSA's `arecord` when PipeWire is not available (`recorder = "auto"`). Needed packages:
+Dictation uses PipeWire's `pw-record` by default and falls back to ALSA's `arecord` when PipeWire is not available (`recorder = "auto"`). Set `device` to a capture source (`pw-record --target NAME`, `arecord -D NAME`); empty keeps the system default. `pw-record` has no `--list-targets` -- list sources with `pactl list sources short` or `wpctl status`; `arecord -l` lists ALSA cards (`digue doctor` prints both). Needed packages:
 
 ```bash
 sudo apt install pipewire        # default recorder (pw-record)
@@ -350,7 +355,9 @@ The first `digue dictate` invocation stays alive as the recording daemon. Pressi
 
 The recorder runs in its own process group, so it can survive a killed daemon. The daemon normally enforces `max-duration` (default 300s, set `0` for unlimited), stops the recorder, and reports that the limit was reached. A detached watchdog is only a safety killer: if the daemon is killed abruptly, it stops the recorder a few seconds after the limit but does not notify or transcribe. The next `digue dictate` recovers and delivers an orphaned recording, and returns without starting a new one.
 
-The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression; flac/opus require ffmpeg - without it digue keeps the WAV and warns). Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you run `digue transcribe` on it.
+The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression). When `audio-format = "flac"` and `pw-record --list-containers` lists `flac`, the live take is already FLAC (no ffmpeg). `arecord` cannot write FLAC, and a `pw-record` without libFLAC still records WAV then compresses with ffmpeg (host, then the local container); without ffmpeg digue keeps the WAV and warns. Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you run `digue transcribe` on it.
+
+If the recorder exits at start (unknown `--target`, missing PCM, missing binary), digue notifies and prints the recorder's own error so the device name can be fixed.
 
 ## Text output
 
@@ -432,6 +439,20 @@ for id in $(seq 48271 48302); do
         --method org.freedesktop.Notifications.CloseNotification "$id" >/dev/null
 done
 ```
+
+## Python API
+
+The CLI is the main interface; the same module works as a library (no daemon, no paste):
+
+```python
+import digue
+
+config = digue.load_config()  # default path, or load_config("path/to/config.toml")
+text = digue.transcribe_file("meeting.wav")  # starts the server if needed
+digue.record_to("take.flac", seconds=8, config=config)
+```
+
+`transcribe_file` uses `[transcribe]` (language, prompt, output-format). `record_to` uses `[dictate]` `recorder` / `device`, and writes FLAC natively when the path ends in `.flac` and `pw-record` supports that container. A recorder that exits at start raises `RuntimeError` with its stderr.
 
 ## Tests
 

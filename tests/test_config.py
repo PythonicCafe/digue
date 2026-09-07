@@ -388,6 +388,7 @@ class TestConfigValueValidation:
             ('[dictate]\naudio-format = "invalid"\n', "dictate.audio_format"),
             ('[dictate]\nsave-audio = "yes"\n', "dictate.save_audio"),
             ("[server]\ndata-dir = 42\n", "server.data_dir"),
+            ("[dictate]\ndevice = 42\n", "dictate.device"),
             ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
         ),
     )
