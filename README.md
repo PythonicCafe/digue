@@ -6,7 +6,7 @@ Press a keybinding to start recording, press again to stop. The transcribed text
 
 ## How it works
 
-`digue` manages a whisper-server Docker container with automatic GPU detection. On first run it detects your hardware, downloads the model, pulls the right Docker image, and creates the container. Subsequent runs just start/stop it.
+`digue` manages a whisper-server Docker container with automatic GPU detection. On first run it detects your hardware, downloads the model, pulls the right Docker image and creates the container. Subsequent runs just start/stop it.
 
 Supported backends:
 
@@ -56,7 +56,7 @@ One machine, not a ranking of AMD iGPUs. Re-run with `digue benchmark --sample -
 
 ### Quantized models
 
-whisper.cpp runs integer-quantized models, and `ggerganov/whisper.cpp` on Hugging Face (where `digue` downloads from) publishes them next to the f16 files. `-q8_0` is the first step worth trying: about 55% of the size, accuracy in practice unchanged on a short dictation, and in one AMD iGPU run `large-v3-turbo-q8_0` was a little faster than f16 (same transcript). `-q5_0`/`-q5_1` go to about 35% and can drop proper names ("Gedit" -> "G-Edit"); they are also not always faster -- on CPU, `medium-q5_0` was slower than `medium-q8_0`. Measure with `digue benchmark` before changing a default.
+whisper.cpp runs integer-quantized models and `ggerganov/whisper.cpp` on Hugging Face (where `digue` downloads from) publishes them next to the f16 files. `-q8_0` is the first step worth trying: about 55% of the size, accuracy in practice unchanged on a short dictation and in one AMD iGPU run `large-v3-turbo-q8_0` was a little faster than f16 (same transcript). `-q5_0`/`-q5_1` go to about 35% and can drop proper names ("Gedit" -> "G-Edit"); they are also not always faster -- on CPU, `medium-q5_0` was slower than `medium-q8_0`. Measure with `digue benchmark` before changing a default.
 
 `digue models` lists every name (and which files are already in `<data-dir>/models`). Any of them works wherever a model is named: `[models]`, `digue download <model>` and `digue benchmark -m`. The `.en` variants are English-only. Sizes (MiB): `large-v3-turbo` 1549, `-q8_0` 834, `-q5_0` 547; `medium` 1463, `-q8_0` 785, `-q5_0` 514; `small` 465, `-q8_0` 252, `-q5_1` 181; `large-v3` 2952, `-q5_0` 1031.
 
@@ -104,11 +104,11 @@ On Debian/Ubuntu, `pipx` itself comes from the distribution (`sudo apt install p
 
 Point your window manager keybinding at `~/.local/bin/digue` directly; no `bash -c` or activation script is needed. The launcher is not a standalone executable: it still uses the Python interpreter and environment managed by `pipx`.
 
-Plain `pip install digue` also works inside a virtual environment you manage yourself. Avoid `sudo pip install` and `pip install --user` on modern Debian/Ubuntu: PEP 668 marks the distribution Python as externally managed, so pip refuses them, and bypassing that protection (`--break-system-packages`) can break system tools.
+Plain `pip install digue` also works inside a virtual environment you manage yourself. Avoid `sudo pip install` and `pip install --user` on modern Debian/Ubuntu: PEP 668 marks the distribution Python as externally managed, so pip refuses them and bypassing that protection (`--break-system-packages`) can break system tools.
 
 ### Without pipx or pip
 
-`digue` has no runtime dependencies beyond Python 3.11+, so the package directory can simply be copied somewhere and run with `python3 -m digue`. Clone the repository into a temporary directory, copy the `digue/` package to `~/.local/opt/`, and create a small launcher in `~/.local/bin/`:
+`digue` has no runtime dependencies beyond Python 3.11+, so the package directory can simply be copied somewhere and run with `python3 -m digue`. Clone the repository into a temporary directory, copy the `digue/` package to `~/.local/opt/` and create a small launcher in `~/.local/bin/`:
 
 ```bash
 git clone --depth 1 https://github.com/turicas/digue.git /tmp/digue
@@ -196,7 +196,7 @@ digue dictate -p "Turicas, Pythonic" # override the shared transcription prompt
 # Server management
 digue detect                         # print detected backend
 digue detect-language audio.mp3      # print detected language code
-digue detect-language audio.mp3 --json  # code, probability, and all probabilities
+digue detect-language audio.mp3 --json  # code, probability and all probabilities
 digue detect-language audio.mp3 -v   # show conversion progress on stderr
 digue models                         # list available models (size, already downloaded)
 digue download                       # download model for detected backend
@@ -263,9 +263,9 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`). 
 
 ### Shared and per-host configuration
 
-`[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe`, and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, `max-lines`, and `timeout` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
+`[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe` and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, `max-lines` and `timeout` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
 
-One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `transcribe`, `dictate`, `models`); keys there override the global sections when the hostname matches, and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved. Hostnames containing dots must be quoted (`[host."minipc.local".server]`); unquoted, TOML parses each dot as a nested table and the file is rejected.
+One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `transcribe`, `dictate`, `models`); keys there override the global sections when the hostname matches and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved. Hostnames containing dots must be quoted (`[host."minipc.local".server]`); unquoted, TOML parses each dot as a nested table and the file is rejected.
 
 ## Config command
 
@@ -299,11 +299,11 @@ sudo apt install pipewire        # default recorder (pw-record)
 sudo apt install alsa-utils      # fallback recorder (arecord)
 ```
 
-The first `digue dictate` invocation stays alive as the recording daemon. Pressing the keybinding again sends it a stop signal and returns immediately; the original process stops the recorder, transcribes, delivers the text, and archives the take. When run in a terminal, Ctrl+c also stops and transcribes. There is no global recording state: each take is tracked by its own state file in `$XDG_RUNTIME_DIR` (`digue-take-<take_id>.json`), which follows the cycle `starting` (recording file reserved) -> `recording` (recorder pid and /proc starttime published) -> `recovering` (the daemon died and the next toggle claimed the take). The owner itself is tracked by the daemon file (`digue-daemon.pid`: `starting` -> `recording` -> `delivering`); while it says `delivering` the daemon ignores further Ctrl+c and SIGTERM, and a new take may start. Recovery: a recorder still alive is stopped through its published identity and its audio delivered; a dead recorder's WAV goes straight to delivery, unless its transcript was already saved (the daemon died while archiving), in which case only the audio is archived and nothing is pasted again; an empty WAV is discarded with its state (a take without audio has nothing left to recover). The toggle that recovers a take delivers it and returns without starting a new recording (press again to record); while it is delivering, another press starts a new take normally. A state file that cannot be parsed is reported as unreadable and left untouched (the WAV is kept). A take whose delivery failed in a retryable way keeps its state and WAV, and the next `digue dictate` retries it; only `kill -9` aborts a delivery, and then the raw WAV and the take state stay in `$XDG_RUNTIME_DIR` for recovery. Because each take carries its own identity, a recovery never signals another take's recorder. A new take may start while an earlier one is still being delivered.
+The first `digue dictate` invocation stays alive as the recording daemon. Pressing the keybinding again sends it a stop signal and returns immediately; the original process stops the recorder, transcribes, delivers the text and archives the take. When run in a terminal, Ctrl+c also stops and transcribes. There is no global recording state: each take is tracked by its own state file in `$XDG_RUNTIME_DIR` (`digue-take-<take_id>.json`), which follows the cycle `starting` (recording file reserved) -> `recording` (recorder pid and /proc starttime published) -> `recovering` (the daemon died and the next toggle claimed the take). The owner itself is tracked by the daemon file (`digue-daemon.pid`: `starting` -> `recording` -> `delivering`); while it says `delivering` the daemon ignores further Ctrl+c and SIGTERM and a new take may start. Recovery: a recorder still alive is stopped through its published identity and its audio delivered; a dead recorder's WAV goes straight to delivery, unless its transcript was already saved (the daemon died while archiving), in which case only the audio is archived and nothing is pasted again; an empty WAV is discarded with its state (a take without audio has nothing left to recover). The toggle that recovers a take delivers it and returns without starting a new recording (press again to record); while it is delivering, another press starts a new take normally. A state file that cannot be parsed is reported as unreadable and left untouched (the WAV is kept). A take whose delivery failed in a retryable way keeps its state and WAV and the next `digue dictate` retries it; only `kill -9` aborts a delivery and then the raw WAV and the take state stay in `$XDG_RUNTIME_DIR` for recovery. Because each take carries its own identity, a recovery never signals another take's recorder. A new take may start while an earlier one is still being delivered.
 
-The recorder runs in its own process group, so it can survive a killed daemon. The daemon normally enforces `max-duration` (default 300s, set `0` for unlimited), stops the recorder, and reports that the limit was reached. A detached watchdog is only a safety killer: if the daemon is killed abruptly, it stops the recorder a few seconds after the limit but does not notify or transcribe. The next `digue dictate` recovers and delivers an orphaned recording, and returns without starting a new one.
+The recorder runs in its own process group, so it can survive a killed daemon. The daemon normally enforces `max-duration` (default 300s, set `0` for unlimited), stops the recorder and reports that the limit was reached. A detached watchdog is only a safety killer: if the daemon is killed abruptly, it stops the recorder a few seconds after the limit but does not notify or transcribe. The next `digue dictate` recovers and delivers an orphaned recording and returns without starting a new one.
 
-The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression). When `audio-format = "flac"` and `pw-record --list-containers` lists `flac`, the live take is already FLAC (no ffmpeg). `arecord` cannot write FLAC, and a `pw-record` without libFLAC still records WAV then compresses with ffmpeg (host, then the local container); without ffmpeg digue keeps the WAV and warns. Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you run `digue transcribe` on it.
+The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression). When `audio-format = "flac"` and `pw-record --list-containers` lists `flac`, the live take is already FLAC (no ffmpeg). `arecord` cannot write FLAC and a `pw-record` without libFLAC still records WAV then compresses with ffmpeg (host, then the local container); without ffmpeg digue keeps the WAV and warns. Set `save-audio = false` to keep only the transcript (a take that fails to transcribe or paste is still kept as WAV, since it was delivered nowhere). A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you run `digue transcribe` on it.
 
 If the recorder exits at start (unknown `--target`, missing PCM, missing binary), digue notifies and prints the recorder's own error so the device name can be fixed.
 
@@ -315,7 +315,7 @@ How the text lands on screen is controlled by `input-mode` and, for `paste`, by 
 
 - `input-mode = "paste"` copies the text to the clipboard and simulates `paste-key` in the focused window: instant and atomic. `input-mode = "type"` simulates keystrokes (`xdotool type` / `wtype -`): works anywhere text can be typed, but is slower (~12 ms/char) and may drop characters in slow apps.
 - `paste-key = "ctrl+v"` (default) is what GUI apps expect; **terminals ignore it** (most treat Ctrl+V as "insert next key literally"), so a dictation into a terminal pastes nothing.
-- `paste-key = "ctrl+shift+v"` is the terminal shortcut, and browsers accept it (paste without formatting) -- but GTK/Qt apps such as gedit ignore it, LibreOffice opens Paste Special and VS Code toggles the Markdown preview.
+- `paste-key = "ctrl+shift+v"` is the terminal shortcut and browsers accept it (paste without formatting) -- but GTK/Qt apps such as gedit ignore it, LibreOffice opens Paste Special and VS Code toggles the Markdown preview.
 - `paste-key = "shift+insert"` is the X11-wide paste: terminals (xterm, urxvt, alacritty, gnome-terminal, kitty), GTK, Qt, browsers, LibreOffice and VS Code all paste on it. digue also fills the PRIMARY selection for this key, since xterm/urxvt/alacritty paste PRIMARY rather than the clipboard on Shift+Insert. This is the choice when you dictate into both terminals and GUI apps.
 
 Rule of thumb: `paste` with `shift+insert` if terminals are part of your day; `paste` with the default `ctrl+v` otherwise; `type` when an app accepts none of the paste keys.
@@ -340,7 +340,7 @@ Then set `backend = "remote"` in the client's config:
 backend = "remote"
 ```
 
-With the tunnel active, `digue` works normally on the client. The `remote` backend also tells `digue` to never create, start, or stop a local container: `digue server start`, `server stop`, and `server destroy` refuse to run, `digue server status` only checks the port, and a failed transcription points you to the tunnel instead of suggesting `digue server start`. Without this setting, `digue` would try to spin up a local container if it could not reach the port.
+With the tunnel active, `digue` works normally on the client. The `remote` backend also tells `digue` to never create, start, or stop a local container: `digue server start`, `server stop` and `server destroy` refuse to run, `digue server status` only checks the port and a failed transcription points you to the tunnel instead of suggesting `digue server start`. Without this setting, `digue` would try to spin up a local container if it could not reach the port.
 
 To manage the container itself, run the commands (`digue download`, `server start`, `server destroy`) on the remote machine.
 
@@ -368,7 +368,7 @@ Host digue-remote
 
 ## Troubleshooting
 
-Run `digue doctor` to check dependencies and config, and to test compatible Docker images that are already downloaded. Images reported as `SKIP not pulled` are not tested or downloaded.
+Run `digue doctor` to check dependencies and config and to test compatible Docker images that are already downloaded. Images reported as `SKIP not pulled` are not tested or downloaded.
 
 Common issues:
 
@@ -401,7 +401,7 @@ text = digue.transcribe_file("meeting.wav")  # starts the server if needed
 digue.record_to("take.flac", seconds=8, config=config)
 ```
 
-`transcribe_file` uses `[transcribe]` (language, prompt, output-format). `record_to` uses `[dictate]` `recorder` / `device`, and writes FLAC natively when the path ends in `.flac` and `pw-record` supports that container; otherwise (arecord, or a `pw-record` without the flac container) it records WAV under the same stem, says so on stderr, and returns the `.wav` path -- always use the returned path. A recorder that exits at start raises `RuntimeError` with its stderr.
+`transcribe_file` uses `[transcribe]` (language, prompt, output-format). `record_to` uses `[dictate]` `recorder` / `device` and writes FLAC natively when the path ends in `.flac` and `pw-record` supports that container; otherwise (arecord, or a `pw-record` without the flac container) it records WAV under the same stem, says so on stderr and returns the `.wav` path -- always use the returned path. A recorder that exits at start raises `RuntimeError` with its stderr.
 
 ## Tests
 
@@ -424,7 +424,7 @@ Bump `__version__` in `digue/__init__.py` before building (the package version c
 
 ## Audio storage
 
-Every dictation is saved as a `<YYYYMMDD-HHMMSS>-<take_id>.txt` transcript plus the recording (compressed per `audio-format`, default `flac`) unless `save-audio = false`, under `<data-dir>/audio/YYYY/MM/` (one folder per month). The take id (16 hex chars) keeps overlapping takes that end in the same second from overwriting each other's files; older files without the id (plain `<YYYYMMDD-HHMMSS>.<ext>`) are still recognized. The timestamp has no colons, so filenames are shell-friendly to complete. These are kept as backup and not cleaned up automatically; `digue clean` lists what there is and removes it after confirmation (`-f` skips the confirmation, and empty month directories are removed too). Only files in the dictation layout are touched (`YYYY/MM/<timestamp>[-<take_id>].wav|flac|opus|txt`), so anything else living under `audio-dir` is left alone.
+Every dictation is saved as a `<YYYYMMDD-HHMMSS>-<take_id>.txt` transcript plus the recording (compressed per `audio-format`, default `flac`) unless `save-audio = false`, under `<data-dir>/audio/YYYY/MM/` (one folder per month). The take id (16 hex chars) keeps overlapping takes that end in the same second from overwriting each other's files; older files without the id (plain `<YYYYMMDD-HHMMSS>.<ext>`) are still recognized. The timestamp has no colons, so filenames are shell-friendly to complete. These are kept as backup and not cleaned up automatically; `digue clean` lists what there is and removes it after confirmation (`-f` skips the confirmation and empty month directories are removed too). Only files in the dictation layout are touched (`YYYY/MM/<timestamp>[-<take_id>].wav|flac|opus|txt`), so anything else living under `audio-dir` is left alone.
 
 ## License
 
