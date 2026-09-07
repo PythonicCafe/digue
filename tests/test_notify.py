@@ -1,5 +1,6 @@
 """Tests for desktop notifications and their lifecycle."""
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -66,6 +67,15 @@ class TestNotifyClose:
         cmd = mock_run.call_args[0][0]
         assert "gdbus" in cmd
         assert any("CloseNotification" in arg for arg in cmd)
+        assert cmd[-1] == str(notify_mod.NOTIFY_REPLACE_ID + os.getpid() % notify_mod.NOTIFY_ID_SLOTS)
+
+    @patch("subprocess.run")
+    def test_closes_another_daemon_slot(self, mock_run):
+        """A recovery closes the popup of the dead daemon it recovers, whose
+        slot comes from that daemon's pid, not the recoverer's."""
+        notify_mod.notify_close(pid=32 * 100 + 7)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[-1] == str(notify_mod.NOTIFY_REPLACE_ID + 7)
 
 
 class TestNotifyLifecycle:

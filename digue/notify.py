@@ -43,7 +43,7 @@ def send_notification(message: str, timeout_ms: int = 0) -> None:
                 "-a",
                 "digue",
                 "--replace-id",
-                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
+                str(notification_id()),
                 "-t",
                 str(timeout_ms),
                 "digue",
@@ -69,8 +69,14 @@ def send_notification(message: str, timeout_ms: int = 0) -> None:
             _notify_send_warned = True
 
 
-def notify_close() -> None:
-    """Closes the current digue notification via D-Bus."""
+def notification_id(pid: int | None = None) -> int:
+    """The notification slot of a digue process (this one by default)."""
+    return NOTIFY_REPLACE_ID + (os.getpid() if pid is None else pid) % NOTIFY_ID_SLOTS
+
+
+def notify_close(pid: int | None = None) -> None:
+    """Closes a digue notification via D-Bus: this process's slot, or the
+    slot of another (usually dead) daemon whose pid is known."""
     import subprocess
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
@@ -85,7 +91,7 @@ def notify_close() -> None:
                 "/org/freedesktop/Notifications",
                 "--method",
                 "org.freedesktop.Notifications.CloseNotification",
-                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
+                str(notification_id(pid)),
             ],
             capture_output=True,
             timeout=5,

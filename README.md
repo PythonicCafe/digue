@@ -435,7 +435,7 @@ Common issues:
 - **No desktop notifications**: install `libnotify-bin`. All messages also print to stderr.
 - **Config syntax error**: `digue` fails with a `tomllib` parse error pointing at the line - fix `~/.config/digue/config.toml` (or run `digue config init -f` to start over).
 - **"Recorder not found"**: install PipeWire (`apt install pipewire`, for `pw-record`) or ALSA (`apt install alsa-utils`, for `arecord`).
-- **A dictation notification got stuck**: concurrent dictations use 32 notification slots, from ID 48271 through 48302, based on the daemon PID. Successful delivery replaces the progress popup with a 3s Pasted/Typed toast; errors replace it with a notification that expires in 5-10s. `kill -9` may leave one behind. Click it, or close all digue slots with:
+- **A dictation notification got stuck**: concurrent dictations use 32 notification slots, from ID 48271 through 48302, based on the daemon PID. Successful delivery replaces the progress popup with a 3s Pasted/Typed toast; errors replace it with a notification that expires in 5-10s. `kill -9` may leave one behind; the next toggle closes the slot of the daemon it recovers. If one still lingers, click it, or close all digue slots with:
 
 ```bash
 for id in $(seq 48271 48302); do

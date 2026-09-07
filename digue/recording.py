@@ -545,7 +545,11 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
     """
     from digue.audio import _archive_recovered_take, _delivered_transcript
     from digue.dictate import TERMINAL_OUTCOMES, DeliveryResult, finish_dictation
+    from digue.notify import notify_close
 
+    # The dead daemon's "Recording..." popup (timeout 0) is in its own slot
+    # and would otherwise stay until the manual fix in the README.
+    notify_close(take.daemon_pid)
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
         # failure of this toggle (the new take's exit code still dominates).
@@ -619,7 +623,9 @@ def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> 
     was nothing to rescue (the state is then removed) or the rescue failed
     (the state is kept, so the next toggle retries)."""
     from digue.audio import now_timestamp, rescue_recording
+    from digue.notify import notify_close
 
+    notify_close(take.daemon_pid)
     rec_file: Path | None = take.rec_file
     if take.recorder_pid is not None:
         rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
