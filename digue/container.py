@@ -732,6 +732,9 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
         ]
         if shutil.which("nvidia-smi"):
             test_images.append(("ghcr.io/ggml-org/whisper.cpp:main-cuda", "CUDA (main-cuda)"))
+        if image not in {known for known, _label in test_images}:
+            # a custom image from the config is the one that matters most here
+            test_images.append((image, "configured image"))
 
         for test_image, label in test_images:
             print(f"  Testing {label}...", end="", file=sys.stderr, flush=True)

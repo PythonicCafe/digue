@@ -759,6 +759,23 @@ class TestCmdDoctor:
         assert "] pw-record:" in err
         assert "] arecord:" in err
 
+    def test_tests_a_custom_configured_image_too(self, capsys):
+        """A custom `image` (a local build, another tag) is the one whose
+        compatibility matters; it must not be skipped because it is not in
+        the built-in list."""
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "localhost/whisper:custom"
+        with (
+            patch("digue.container.image_exists", return_value=False),
+            patch("shutil.which", return_value=None),
+            patch("digue.container.detect_backend", return_value="cpu"),
+        ):
+            container_mod.cmd_doctor(MagicMock(), config)
+        err = capsys.readouterr().err
+        assert "Testing configured image..." in err
+        assert "Image: localhost/whisper:custom" in err
+
     def test_prints_selected_config_path(self, tmp_path, capsys):
         target = tmp_path / "selected.toml"
         target.write_text("")
