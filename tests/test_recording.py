@@ -102,6 +102,24 @@ class TestTakeState:
         assert wav_path.exists()
         assert str(state_path) in capsys.readouterr().err
 
+    def test_unreadable_state_notifies_the_desktop_once(self, tmp_path, capsys):
+        """Under a hotkey nobody reads stderr; the first sighting gets a
+        desktop notification, the following toggles only the stderr line."""
+        state_path = tmp_path / "digue-take-0123456789abcdef.json"
+        state_path.write_text('{"version":')
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch("digue.notify.send_notification") as mock_notify,
+        ):
+            assert recording_mod._take_states() == []
+            assert recording_mod._take_states() == []
+
+        assert mock_notify.call_count == 1
+        assert str(state_path) in mock_notify.call_args.args[0]
+        assert state_path.exists()
+        assert capsys.readouterr().err.count(str(state_path)) == 1  # the notified one is printed by the mock
+
 
 class TestStateFilesAreWrittenAtomically:
     """Path.write_text truncates before writing: a concurrent toggle reading in

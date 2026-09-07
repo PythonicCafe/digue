@@ -394,8 +394,25 @@ def _read_take_state(state_path: Path) -> TakeState | None:
             raise ValueError("take_id does not match the state filename")
         return take
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        print(f"Unreadable take state at {state_path}: {exc}", file=sys.stderr)
+        _report_unreadable_take_state(state_path, exc)
         return None
+
+
+def _report_unreadable_take_state(state_path: Path, exc: Exception) -> None:
+    """Reports a malformed take state: stderr every time, and a desktop
+    notification the first time only (a marker sibling records that it was
+    shown). The state is never touched, so under a hotkey the stderr line
+    alone would repeat forever where nobody reads it."""
+    from digue.notify import send_notification
+
+    message = f"Unreadable take state at {state_path}: {exc}"
+    marker = state_path.with_name(f".{state_path.name}.reported")
+    if marker.exists():
+        print(message, file=sys.stderr)
+        return
+    send_notification(f"{message}. The recording it describes stays in the runtime dir.", timeout_ms=15000)
+    with contextlib.suppress(OSError):
+        marker.touch()
 
 
 def _mark_take_delivering(take_id: str) -> None:
