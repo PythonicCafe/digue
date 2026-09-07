@@ -1565,6 +1565,28 @@ class TestOrphanTakeClaim:
         assert states[0].recoverer_pid == os.getpid()
 
 
+class TestBenchmarkTempFiles:
+    def test_recorded_benchmark_audio_lives_in_the_private_runtime_dir(self, tmp_path):
+        """A fixed name in /tmp could be a symlink planted by another local
+        user; the runtime dir is 0700 and owned by the user."""
+        config = digue._default_config()
+        config["server"]["backend"] = "cpu"
+        args = argparse.Namespace(audio=None)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.record_benchmark_audio") as mock_record,
+            patch("digue.run_benchmark"),
+        ):
+            assert digue.cmd_benchmark(args, config) == 0
+
+        assert mock_record.call_args[0][0].parent == tmp_path
+
+    def test_benchmark_models_sample_lives_in_the_private_runtime_dir(self, tmp_path):
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            assert benchmark_models.sample_path().parent == tmp_path
+
+
 class TestRecoverClaimedTake:
     """Recovery of a claimed orphan runs outside the dictate lock: a live
     recorder with a valid identity is stopped through it, a dead one's WAV
@@ -3455,6 +3477,97 @@ class TestBenchmarkModels:
             benchmark_models.main()
 
         manager.__exit__.assert_called_once()
+
+
+class TestBenchmarkModelsConfig:
+    def test_main_rejects_remote_before_downloading_sample(self, capsys):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        with (
+            patch("benchmark_models.create_parser") as mock_parser,
+            patch("benchmark_models.download_sample") as mock_download,
+            patch("benchmark_models.digue.load_config", return_value=config),
+        ):
+            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
+                backends=None, models=["small"], runs=1
+            )
+            result = benchmark_models.main()
+
+        assert result == 1
+        mock_download.assert_not_called()
+        assert "remote" in capsys.readouterr().err
+
+    def test_main_uses_resolved_backend_for_case_selection(self, capsys):
+        """A forced backend in config wins over detection, exactly like
+        run_benchmark: the auto list must follow resolve_backend."""
+        config = digue._default_config()
+        config["server"]["backend"] = "cpu"
+        with (
+            patch("benchmark_models.create_parser") as mock_parser,
+            patch("benchmark_models.download_sample"),
+            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.digue.detect_backend", return_value="intel"),
+            patch("benchmark_models.digue.preserve_container_for_benchmark"),
+            patch("benchmark_models.benchmark_case", return_value=None),
+        ):
+            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
+                backends=None, models=["small"], runs=1
+            )
+            assert benchmark_models.main() == 0
+
+        err = capsys.readouterr().err
+        assert "Backends: cpu\n" in err
+        assert "intel" not in err
+
+    def test_case_clears_custom_image_for_other_backends(self, tmp_path):
+        config = digue._default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "x"
+        config["server"]["data_dir"] = str(tmp_path)
+        with (
+            patch("benchmark_models.digue.create_container") as mock_create,
+            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.digue.transcribe", return_value="hello"),
+            patch("benchmark_models.digue.container_exists", return_value=False),
+        ):
+            assert benchmark_models.benchmark_case(config, "intel", "small") is not None
+
+        bench_config, backend = mock_create.call_args.args
+        assert backend == "intel"
+        assert bench_config["server"]["image"] == ""
+        assert digue.resolve_image(backend, bench_config) == digue.DOCKER_IMAGES["intel"]
+
+    def test_case_keeps_custom_image_for_resolved_backend(self, tmp_path):
+        config = digue._default_config()
+        config["server"]["backend"] = "cpu"
+        config["server"]["image"] = "x"
+        config["server"]["data_dir"] = str(tmp_path)
+        with (
+            patch("benchmark_models.digue.create_container") as mock_create,
+            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.digue.transcribe", return_value="hello"),
+            patch("benchmark_models.digue.container_exists", return_value=False),
+        ):
+            assert benchmark_models.benchmark_case(config, "cpu", "small") is not None
+
+        bench_config, backend = mock_create.call_args.args
+        assert backend == "cpu"
+        assert bench_config["server"]["image"] == "x"
+
+    def test_models_argument_rejects_unknown_model(self, capsys):
+        with pytest.raises(SystemExit):
+            benchmark_models.create_parser().parse_args(["--models", "giant"])
+
+        assert "invalid choice" in capsys.readouterr().err
+
+    def test_runs_rejects_non_positive_values(self):
+        parser = benchmark_models.create_parser()
+        for bad in ("0", "-1"):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["--runs", bad])
+
+        assert parser.parse_args(["--runs", "2"]).runs == 2
+        assert parser.parse_args([]).runs == benchmark_models.RUNS
 
 
 class TestCmdConvert:

@@ -3742,7 +3742,9 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
             print(f"Error: file not found: {audio_path}", file=sys.stderr)
             return 1
     else:
-        audio_path = Path("/tmp/digue-bench.wav")
+        # the runtime dir is private to the user; a fixed name in /tmp could be
+        # a symlink planted by another local user
+        audio_path = _runtime_dir() / "digue-bench.wav"
         record_benchmark_audio(audio_path, config=config)
         print(file=sys.stderr)
 
