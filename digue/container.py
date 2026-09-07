@@ -568,6 +568,13 @@ def _download_file(url: str, output: Path, label: str, with_notification: bool =
                 part_file.write(block)
                 downloaded += len(block)
                 hook(downloaded, 1, total_size)
+        # http.client's read(amt) returns b"" on a connection that closed
+        # early instead of raising IncompleteRead (a documented compatibility
+        # choice), so the loop above ends normally on a truncated body. A
+        # short model file published as complete means a crash-looping
+        # container at the next start.
+        if total_size > 0 and downloaded != total_size:
+            raise RuntimeError(f"Download of {label} ended early: {downloaded} of {total_size} bytes")
     except BaseException:
         # No resume support, so a partial file is only clutter next to the models.
         part_path.unlink(missing_ok=True)

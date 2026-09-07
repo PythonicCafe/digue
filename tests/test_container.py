@@ -452,6 +452,25 @@ class TestDownloadModel:
         mock_urlopen.assert_called_once()
         assert (tmp_path / "ggml-small.bin").read_bytes() == b"complete"
 
+    def test_truncated_body_is_not_published(self, tmp_path):
+        """Regression: http.client's read(amt) returns b"" when the server
+        closes early (no IncompleteRead), so a 10-byte Content-Length answered
+        with 4 bytes ended the loop normally and the short file became the
+        model -- and a crash-looping container."""
+        response = MagicMock()
+        response.headers = {"Content-Length": "10"}
+        response.read.side_effect = [b"half", b""]
+        response.__enter__.return_value = response
+
+        with (
+            patch("urllib.request.urlopen", return_value=response),
+            pytest.raises(RuntimeError, match="ended early: 4 of 10 bytes"),
+        ):
+            container_mod._download_file("http://example/model.bin", tmp_path / "ggml-small.bin", "ggml-small.bin")
+
+        assert not (tmp_path / "ggml-small.bin").exists()
+        assert not (tmp_path / "ggml-small.bin.part").exists()
+
     def test_interrupted_download_leaves_no_part_file(self, tmp_path):
         """A failed download left ggml-*.bin.part behind in the models dir."""
         response = MagicMock()
