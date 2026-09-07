@@ -65,7 +65,7 @@ class TestDictateDaemon:
         assert errors == []
         assert results == [0, 0]
         mock_start.assert_called_once_with(config)
-        assert all(call.args[1] == 0 for call in mock_kill.call_args_list)
+        assert all(recorded_call.args[1] == 0 for recorded_call in mock_kill.call_args_list)
 
     def test_dictate_toggle_works_when_stderr_has_no_isatty(self, tmp_path, monkeypatch):
         class NonFileStderr:
@@ -388,7 +388,7 @@ class TestDictateDaemon:
             patch("os.kill") as mock_kill,
         ):
             digue.dictate_toggle(config)
-        return [call.args for call in mock_kill.call_args_list if call.args[1] == 15]
+        return [recorded_call.args for recorded_call in mock_kill.call_args_list if recorded_call.args[1] == 15]
 
     def test_toggle_does_not_signal_a_recycled_daemon_pid(self, tmp_path):
         """The daemon file may outlive its daemon (SIGKILL, crash before the
@@ -426,7 +426,7 @@ class TestDictateDaemon:
             result = digue.dictate_toggle(config)
 
         assert result == 0
-        assert [call.args for call in mock_kill.call_args_list if call.args[1] != 0] == []
+        assert [recorded_call.args for recorded_call in mock_kill.call_args_list if recorded_call.args[1] != 0] == []
         assert mock_notify.call_count == 1
         assert "starting" in mock_notify.call_args.args[0].lower()
         assert mock_notify.call_args.kwargs.get("timeout_ms", 0) > 0

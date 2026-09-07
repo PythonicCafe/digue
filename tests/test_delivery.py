@@ -20,14 +20,14 @@ class TestSendText:
     @patch("subprocess.run")
     def test_x11_uses_xclip(self, mock_run):
         digue.send_text("hello", display_server="x11")
-        cmds = [call[0][0] for call in mock_run.call_args_list]
+        cmds = [recorded_call[0][0] for recorded_call in mock_run.call_args_list]
         assert cmds[0][0] == "xclip"
         assert cmds[1][0] == "xdotool"
 
     @patch("subprocess.run")
     def test_wayland_uses_wl_copy(self, mock_run):
         digue.send_text("hello", display_server="wayland")
-        cmds = [call[0][0] for call in mock_run.call_args_list]
+        cmds = [recorded_call[0][0] for recorded_call in mock_run.call_args_list]
         assert cmds[0][0] == "wl-copy"
         assert cmds[1][0] == "wtype"
 

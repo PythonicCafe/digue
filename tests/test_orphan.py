@@ -761,7 +761,9 @@ class TestSurplusOrphanRescue:
             assert metadata["state"] == "rescued"
             assert metadata["take_id"] == take.take_id
         assert list(tmp_path.glob("digue-take-*.json")) == []
-        rescued_notifies = [call for call in mock_notify.call_args_list if "rescued to" in str(call.args)]
+        rescued_notifies = [
+            recorded_call for recorded_call in mock_notify.call_args_list if "rescued to" in str(recorded_call.args)
+        ]
         assert len(rescued_notifies) == 1
         message = rescued_notifies[0].args[0]
         assert "2 recordings rescued to" in message

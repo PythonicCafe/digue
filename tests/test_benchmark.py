@@ -146,7 +146,7 @@ class TestBenchmarkRespectsConfig:
         ):
             digue.run_benchmark(tmp_path / "audio.wav", config)
 
-        backends = [call.args[1] for call in mock_create.call_args_list]
+        backends = [recorded_call.args[1] for recorded_call in mock_create.call_args_list]
         assert backends == ["cpu", "cpu"]
 
     def test_custom_image_applies_only_to_the_resolved_backend(self, tmp_path, capsys):
