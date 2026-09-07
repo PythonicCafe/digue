@@ -2617,6 +2617,120 @@ class TestDetectLanguageVerbose:
         assert mock_detect.call_args[1]["verbose"] is False
 
 
+class TestCmdClean:
+    def _make_audio_files(self, audio_dir):
+        month = audio_dir / "2026" / "09"
+        month.mkdir(parents=True)
+        (month / "2026-09-01T10:00:00.flac").write_bytes(b"audio")
+        (month / "2026-09-01T10:00:00.txt").write_text("transcript")
+        (month / "2026-09-02T11:00:00.flac").write_bytes(b"audio")
+        return month
+
+    def _args(self, force=False, what="both"):
+        args = MagicMock()
+        args.force = force
+        args.what = what
+        return args
+
+    def test_lists_and_asks_without_force(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "2 file(s)" in err  # recordings
+        assert "1 file(s)" in err  # transcripts
+        assert "Aborted" in err
+        assert (audio_dir / "2026" / "09" / "2026-09-01T10:00:00.flac").exists()
+
+    def test_removes_on_confirmation(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+        assert list(audio_dir.rglob("*.txt")) == []
+
+    def test_force_removes_without_asking(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        def fail_input(prompt):
+            raise AssertionError("input() must not be called with --force")
+
+        monkeypatch.setattr("builtins.input", fail_input)
+
+        result = digue.cmd_clean(self._args(force=True), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+
+    def test_what_recordings_keeps_transcripts(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True, what="recordings"), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+        assert list(audio_dir.rglob("*.txt"))
+
+    def test_what_transcripts_keeps_recordings(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.txt")) == []
+        assert list(audio_dir.rglob("*.flac"))
+
+    def test_removes_empty_month_directories(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        digue.cmd_clean(self._args(force=True), config)
+
+        assert not (audio_dir / "2026" / "09").exists()
+
+    def test_nothing_to_remove(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
+        assert "Nothing to remove" in capsys.readouterr().err
+
+    def test_missing_audio_dir(self, tmp_path, capsys):
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "nonexistent")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
+
+
 class TestDetectDisplayServer:
     def test_wayland(self, monkeypatch):
         monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
@@ -2691,14 +2805,29 @@ class TestSendText:
         assert config["dictation"]["input_mode"] == "paste"
 
 
+class TestTimestampFormat:
+    def test_format_has_no_colon_or_dash_in_date(self):
+        """Filenames must be shell-friendly: YYYYMMDD-HHMMSS (no ':' to escape)."""
+        timestamp = digue.now_timestamp()
+        assert len(timestamp) == 15
+        assert timestamp[8] == "-"
+        assert ":" not in timestamp
+        assert "-" not in timestamp[:8]
+
+    def test_month_directory_uses_timestamp_not_wall_clock(self):
+        """The YYYY/MM path comes from the timestamp, so audio and .txt land together."""
+        assert digue.month_dir_for("20260904-123456") == Path("2026") / "09"
+
+
 class TestSaveAudio:
-    def test_copies_with_timestamp(self, tmp_path):
+    def test_copies_with_timestamp_in_month_directory(self, tmp_path):
         rec_file = tmp_path / "rec.wav"
         rec_file.write_bytes(b"wav data")
         audio_dir = tmp_path / "audio"
         saved, timestamp = digue.save_audio(rec_file, audio_dir)
         assert saved.exists()
-        assert saved.parent == audio_dir
+        # <audio_dir>/YYYY/MM/<timestamp>.wav
+        assert saved.parent == audio_dir / timestamp[:4] / timestamp[4:6]
         assert timestamp in saved.name
 
 
@@ -2743,7 +2872,7 @@ class TestCompressAudio:
 class TestSaveAudioConfig:
     def test_default_saves_audio(self):
         config = digue._default_config()
-        assert config["dictation"]["save_audio"] is True
+        assert config["dictate"]["save_audio"] is True
 
     def test_loads_kebab_key(self, tmp_path):
         import textwrap
@@ -2751,12 +2880,12 @@ class TestSaveAudioConfig:
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             textwrap.dedent("""\
-            [dictation]
+            [dictate]
             save-audio = false
         """)
         )
         config = digue.load_config(config_path)
-        assert config["dictation"]["save_audio"] is False
+        assert config["dictate"]["save_audio"] is False
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
@@ -2773,14 +2902,14 @@ class TestSaveAudioConfig:
         mock_stop.return_value = rec_file
         audio_dir = tmp_path / "audio"
         config = digue._default_config()
-        config["dictation"]["save_audio"] = False
-        config["dictation"]["audio_dir"] = str(audio_dir)
+        config["dictate"]["save_audio"] = False
+        config["dictate"]["audio_dir"] = str(audio_dir)
 
         result = digue.dictate_toggle(config)
 
         assert result == 0
         mock_save.assert_not_called()
-        txt_files = list(audio_dir.glob("*.txt"))
+        txt_files = list(audio_dir.rglob("*.txt"))
         assert len(txt_files) == 1
         assert txt_files[0].read_text().strip() == "hello"
 

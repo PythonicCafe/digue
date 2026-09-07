@@ -1323,8 +1323,28 @@ def _pid_file():
     return _runtime_dir() / "digue.pid"
 
 
-def _rec_file():
-    return _runtime_dir() / "digue.wav"
+def now_timestamp() -> str:
+    """Shell-friendly timestamp for filenames: YYYYMMDD-HHMMSS (no ':' to escape)."""
+    import datetime
+
+    return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def month_dir_for(timestamp: str) -> Path:
+    """Returns the YYYY/MM relative path for a YYYYMMDD-HHMMSS timestamp.
+
+    Derived from the timestamp itself (not from now()), so the .txt always
+    lands beside the audio saved with the same timestamp even across midnight.
+    """
+    return Path(timestamp[:4]) / timestamp[4:6]
+
+
+def _rec_file() -> Path:
+    """Returns a unique recording path without creating the audio file."""
+    import os
+    import secrets
+
+    return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}.wav"
 
 
 def is_recording():
@@ -1544,7 +1564,7 @@ def send_text(text, display_server="auto", input_mode="paste"):
 # -- Dictation ------------------------------------------------------------------
 
 
-def _compress_audio(rec_file, audio_format):
+def _compress_audio(rec_file: str | Path, audio_format: str) -> Path:
     """Compresses a WAV recording in place. Returns the new path (rec_file swapped).
 
     audio_format: "wav" (no-op), "flac", or "opus".
@@ -1557,16 +1577,15 @@ def _compress_audio(rec_file, audio_format):
     """
     import shutil
     import subprocess
-    from pathlib import Path
 
     if audio_format == "wav":
-        return rec_file
+        return Path(rec_file)
     if not shutil.which("ffmpeg"):
         print(
             f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
             file=sys.stderr,
         )
-        return rec_file
+        return Path(rec_file)
 
     rec_file = Path(rec_file)
     converted = rec_file.with_suffix(f".{audio_format}")
@@ -1590,20 +1609,25 @@ def _compress_audio(rec_file, audio_format):
     return converted
 
 
-def save_audio(rec_file, audio_dir, audio_format="wav"):
-    """Copies audio to timestamped file in audio_dir. Returns (saved_path, timestamp).
+def save_audio(
+    rec_file: str | Path, audio_dir: str | Path, audio_format: str = "wav", timestamp: str | None = None
+) -> tuple[Path, str]:
+    """Copies audio to <audio_dir>/YYYY/MM/<timestamp>.<ext>. Returns (saved_path, timestamp).
 
+    The timestamp comes from the caller (dictate_toggle generates it when the
+    take stops, so the audio and its transcript share the same name even when
+    archiving runs later). Without one, the current time is used.
     audio_format "flac" or "opus" compresses the copy; the live recording file
     is kept as WAV and removed after saving.
     """
-    import datetime
     import shutil
     from pathlib import Path
 
     audio_dir = Path(audio_dir)
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    saved = audio_dir / f"{timestamp}.wav"
+    timestamp = timestamp or now_timestamp()
+    month_dir = audio_dir / month_dir_for(timestamp)
+    month_dir.mkdir(parents=True, exist_ok=True)
+    saved = month_dir / f"{timestamp}.wav"
     shutil.copy2(rec_file, saved)
     if audio_format != "wav":
         saved = _compress_audio(saved, audio_format)
@@ -1620,6 +1644,18 @@ def normalize_pasted_text(text):
     return " ".join(text.split())
 
 
+def _write_transcript(audio_dir: Path, timestamp: str, text: str) -> Path:
+    """Writes the transcript next to the recording: <audio_dir>/YYYY/MM/<timestamp>.txt.
+
+    The month folder comes from the timestamp itself (not from now()), so the
+    .txt always lands beside the audio saved with the same timestamp.
+    """
+    text_path = audio_dir / month_dir_for(timestamp) / f"{timestamp}.txt"
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text(text + "\n")
+    return text_path
+
+
 def dictate_toggle(config):
     """Toggle recording/transcription. Returns exit code."""
     import datetime
@@ -1631,17 +1667,17 @@ def dictate_toggle(config):
             notify("Empty or missing audio file", timeout_ms=5000)
             return 1
 
-        audio_dir = config["dictation"]["audio_dir"]
+        audio_dir = config["dictate"]["audio_dir"]
         Path(audio_dir).mkdir(parents=True, exist_ok=True)
-        if config["dictation"]["save_audio"]:
-            _saved, timestamp = save_audio(rec_file, audio_dir, config["dictation"].get("audio_format", "wav"))
+        if config["dictate"]["save_audio"]:
+            _saved, timestamp = save_audio(rec_file, audio_dir, config["dictate"].get("audio_format", "wav"))
         else:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            timestamp = now_timestamp()
 
         notify("Transcribing...")
         try:
             url = server_url(config)
-            language = config["dictation"]["language"]
+            language = config["transcribe"]["language"]
             text = normalize_pasted_text(transcribe(url, rec_file, language))
         except Exception as exc:
             notify(f"Transcription failed: {exc}", timeout_ms=10000)
@@ -1649,8 +1685,7 @@ def dictate_toggle(config):
         finally:
             rec_file.unlink(missing_ok=True)
 
-        text_path = Path(audio_dir) / f"{timestamp}.txt"
-        text_path.write_text(text + "\n")
+        text_path = _write_transcript(Path(audio_dir), timestamp, text)
 
         if not text:
             notify("No speech detected", timeout_ms=5000)
@@ -1659,8 +1694,8 @@ def dictate_toggle(config):
         try:
             send_text(
                 text,
-                display_server=config["dictation"]["display_server"],
-                input_mode=config["dictation"]["input_mode"],
+                display_server=config["dictate"]["display_server"],
+                input_mode=config["dictate"]["input_mode"],
             )
         except Exception as exc:
             notify(f"Paste failed: {exc}", timeout_ms=10000)
@@ -2661,6 +2696,71 @@ def _config_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """Removes dictation recordings and/or transcripts from the audio directory.
+
+    Lists what it found and asks for confirmation; --force removes right away.
+    --what selects what is removed: recordings, transcripts, or both (default).
+    """
+    import contextlib
+    from pathlib import Path
+
+    audio_dir = Path(config["dictate"]["audio_dir"])
+    if not audio_dir.exists():
+        print(f"Audio directory does not exist: {audio_dir}", file=sys.stderr)
+        return 0
+
+    what = args.what
+    recordings = (
+        sorted(path for pattern in ("*.wav", "*.flac", "*.opus") for path in audio_dir.rglob(pattern) if path.is_file())
+        if what in ("recordings", "both")
+        else []
+    )
+    transcripts = (
+        sorted(path for path in audio_dir.rglob("*.txt") if path.is_file())
+        if what
+        in (
+            "transcripts",
+            "both",
+        )
+        else []
+    )
+
+    total_mb = sum(path.stat().st_size for path in recordings) / (1024 * 1024)
+    print(f"Audio directory: {audio_dir}", file=sys.stderr)
+    print(f"  Recordings: {len(recordings)} file(s), {total_mb:.1f} MB", file=sys.stderr)
+    print(f"  Transcripts: {len(transcripts)} file(s)", file=sys.stderr)
+
+    if not recordings and not transcripts:
+        print("Nothing to remove.", file=sys.stderr)
+        return 0
+
+    total = len(recordings) + len(transcripts)
+    if not args.force:
+        answer = input(f"Remove all {total} file(s)? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted.", file=sys.stderr)
+            return 1
+
+    count = 0
+    for path in recordings:
+        path.unlink()
+        count += 1
+    for path in transcripts:
+        path.unlink()
+        count += 1
+
+    # Remove now-empty month/year directories (deepest first)
+    for directory in sorted((parent for parent in audio_dir.rglob("*") if parent.is_dir()), reverse=True):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+    with contextlib.suppress(OSError):
+        audio_dir.rmdir()
+
+    print(f"Removed {count} file(s).", file=sys.stderr)
+    return 0
+
+
 def cmd_doctor(args, config):
     """Checks system dependencies and tests which Docker images work."""
     import shutil
@@ -2804,6 +2904,7 @@ def main():
         "batch-simplify-vtt": cmd_batch_simplify_vtt,
         "benchmark": cmd_benchmark,
         "config": cmd_config,
+        "clean": cmd_clean,
         "doctor": cmd_doctor,
     }
 
