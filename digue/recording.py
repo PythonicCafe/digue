@@ -135,7 +135,11 @@ def _pw_record_supports_flac() -> bool:
 
 
 def _live_recording_suffix(config: dict[str, dict[str, Any]]) -> str:
-    """Suffix of the live take file: .flac when pw-record can write it, else .wav."""
+    """Suffix of the live take file: .flac when pw-record can write it, else .wav.
+
+    Both are LIVE_RECORDING_SUFFIXES: the take state and the /proc fd scan
+    accept exactly these.
+    """
     if config["dictate"]["audio_format"] != "flac":
         return ".wav"
     if _resolve_recorder(config["dictate"]["recorder"]) != "pw-record":
@@ -224,6 +228,10 @@ class RecordingProcesses:
 
 TAKE_STATE_VERSION = 1
 
+# Suffixes a live take may have in the runtime dir: .wav, or .flac when
+# pw-record writes the flac container natively (_live_recording_suffix).
+LIVE_RECORDING_SUFFIXES = frozenset((".wav", ".flac"))
+
 TAKE_STATES = ("starting", "recording", "delivering", "recovering")
 
 
@@ -294,9 +302,9 @@ class TakeState:
         if (
             relative_rec_file.parent != Path(".")
             or not relative_rec_file.name.startswith("digue-")
-            or not relative_rec_file.name.endswith(".wav")
+            or relative_rec_file.suffix not in LIVE_RECORDING_SUFFIXES
         ):
-            raise ValueError("rec_file must be named digue-*.wav directly inside the runtime directory")
+            raise ValueError("rec_file must be named digue-*.wav or .flac directly inside the runtime directory")
 
 
 def new_take_id() -> str:
@@ -820,7 +828,11 @@ def _recording_file_of(pid: int) -> Path | None:
             target = Path(os.readlink(fd_link))
         except OSError:
             continue
-        if target.parent == runtime_dir and target.suffix == ".wav" and target.name.startswith("digue-"):
+        if (
+            target.parent == runtime_dir
+            and target.suffix in LIVE_RECORDING_SUFFIXES
+            and target.name.startswith("digue-")
+        ):
             return target
     return None
 

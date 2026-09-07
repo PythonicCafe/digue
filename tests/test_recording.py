@@ -308,6 +308,58 @@ class TestStartRecording:
         assert argv[argv.index("--target") + 1] == "alsa_input.usb"
 
 
+class TestNativeFlacTake:
+    """With audio-format = "flac" and a pw-record whose libsndfile has the flac
+    container, the live take is a .flac: the take state and the /proc fd scan
+    must accept it, or the default config cannot record at all on such a
+    machine (the state validator raised before the recorder even started)."""
+
+    @patch("subprocess.Popen")
+    def test_start_recording_publishes_a_flac_take(self, mock_popen, tmp_path):
+        mock_popen.return_value = MagicMock(pid=os.getpid())
+        config = _default_config()
+        config["dictate"]["max_duration"] = 0
+        config["dictate"]["recorder"] = "pw-record"
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch("digue.recording._pw_record_supports_flac", return_value=True),
+        ):
+            processes = recording_mod.start_recording(config)
+            states = recording_mod._take_states()
+
+        assert processes.rec_file is not None and processes.rec_file.suffix == ".flac"
+        assert [take.state for take in states] == ["recording"]
+        assert states[0].rec_file == processes.rec_file
+        argv = mock_popen.call_args[0][0]
+        assert argv[argv.index("--container") + 1] == "flac"
+
+    def test_take_state_accepts_flac_and_rejects_other_suffixes(self, tmp_path):
+        def make(name):
+            return recording_mod.TakeState(
+                version=recording_mod.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=1,
+                state="starting",
+                rec_file=tmp_path / name,
+                daemon_pid=1,
+                daemon_starttime=1,
+            )
+
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
+            assert make("digue-take.flac").rec_file.suffix == ".flac"
+            with pytest.raises(ValueError, match="digue-\\*\\.wav or \\.flac"):
+                make("digue-take.opus")
+
+    def test_recording_file_of_finds_an_open_flac(self, tmp_path):
+        flac = tmp_path / "digue-take.flac"
+        with flac.open("wb") as open_flac, patch("digue.recording._runtime_dir", return_value=tmp_path):
+            open_flac.write(b"x")
+            found = recording_mod._recording_file_of(os.getpid())
+
+        assert found == flac.resolve()
+
+
 class TestStartRecordingPublishesTakeState:
     """The take identity is published before the recorder exists and gains the
     recorder identity before the watchdog is spawned: publishing the state is
