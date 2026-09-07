@@ -439,6 +439,64 @@ class TestCompressAudio:
         assert not (tmp_path / "rec.flac").exists()
 
 
+class TestArchiveRecordingAfterCopy:
+    """save_audio copies the live file to <stem>.<ext> and only then
+    compresses it. When the compression raises (ffmpeg timeout, a docker exec
+    error), the copy is already complete and has the exact name the rescue
+    would use, so rescuing collided and the live recording stayed in the
+    runtime dir with no state pointing at it -- and the user was told the
+    audio had failed to save although a good copy existed."""
+
+    def make_config(self, tmp_path):
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["audio_format"] = "flac"
+        return config
+
+    def test_compression_error_after_the_copy_keeps_the_copy_and_removes_the_live_file(self, tmp_path):
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"RIFF" * 100)
+        config = self.make_config(tmp_path)
+
+        def boom(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired("ffmpeg", 600)
+
+        with (
+            patch("digue.audio._run_compression", side_effect=boom),
+            patch("digue.notify.send_notification") as mock_notify,
+        ):
+            archived, rescued_path = audio_mod._archive_recording(
+                config, rec_file, "20260906-120000", "0123456789abcdef"
+            )
+
+        saved = tmp_path / "audio" / "2026" / "09" / "20260906-120000-0123456789abcdef.wav"
+        assert archived is False
+        assert rescued_path == saved
+        assert saved.read_bytes() == b"RIFF" * 100
+        assert not rec_file.exists()
+        assert sorted(path.name for path in saved.parent.iterdir()) == [saved.name]
+        message = mock_notify.call_args.args[0]
+        assert "compress" in message and str(saved) in message
+
+    def test_copy_failure_still_rescues(self, tmp_path):
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"RIFF" * 100)
+        config = self.make_config(tmp_path)
+
+        with (
+            patch("digue.audio._copy_file_exclusive", side_effect=OSError("disk full")),
+            patch("digue.notify.send_notification"),
+        ):
+            archived, rescued_path = audio_mod._archive_recording(
+                config, rec_file, "20260906-120000", "0123456789abcdef"
+            )
+
+        assert archived is False
+        assert rescued_path == tmp_path / "audio" / "2026" / "09" / "20260906-120000-0123456789abcdef.wav"
+        assert rescued_path.read_bytes() == b"RIFF" * 100
+        assert not rec_file.exists()
+
+
 class TestSaveAudioConfig:
     def test_default_saves_audio(self):
         config = _default_config()

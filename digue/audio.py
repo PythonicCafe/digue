@@ -263,8 +263,15 @@ def _archive_recording(
     config: dict[str, dict[str, Any]], rec_file: Path, timestamp: str, take_id: str | None
 ) -> tuple[bool, Path | None]:
     """Archives a delivered recording: copy + compression when save-audio is on
-    (the slow part), then removes the live WAV. Returns (archived, rescued_path):
-    on failure the raw WAV is rescued (moved) instead and the user is told."""
+    (the slow part), then removes the live file. Returns (archived, rescued_path).
+
+    On failure the live recording is kept somewhere the user can find it:
+    when the exclusive copy already completed and only the compression
+    raised (ffmpeg timeout, docker exec error), that copy is the rescue --
+    it has the exact name `rescue_recording` would use, so rescuing again
+    would collide and strand the live file in the runtime dir; otherwise
+    the live file is rescued (moved) as is. Either way the user is told.
+    """
     from digue.container import _is_remote
     from digue.notify import send_notification
 
@@ -284,12 +291,30 @@ def _archive_recording(
         rec_file.unlink(missing_ok=True)
         return True, None
     except Exception as save_exc:
+        uncompressed = _completed_copy(rec_file, audio_dir, timestamp, take_id)
+        if uncompressed is not None:
+            rec_file.unlink(missing_ok=True)
+            send_notification(
+                f"Failed to compress audio: {save_exc}; uncompressed copy kept at {uncompressed}", timeout_ms=10000
+            )
+            return False, uncompressed
         rescued_path = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         message = f"Failed to save audio: {save_exc}"
         if rescued_path:
             message += f"; uncompressed copy kept at {rescued_path}"
         send_notification(message, timeout_ms=10000)
         return False, rescued_path
+
+
+def _completed_copy(rec_file: Path, audio_dir: Path, timestamp: str, take_id: str | None) -> Path | None:
+    """The uncompressed copy `save_audio` makes before compressing, when it is
+    complete (same size as the live file); None when it does not exist or the
+    copy itself is what failed (partial)."""
+    copy = audio_dir / month_dir_for(timestamp) / f"{_saved_stem(timestamp, take_id)}{rec_file.suffix.lower()}"
+    with contextlib.suppress(OSError):
+        if copy.stat().st_size == rec_file.stat().st_size:
+            return copy
+    return None
 
 
 def _delivered_transcript(audio_dir: Path, take_id: str) -> Path | None:
