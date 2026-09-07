@@ -93,6 +93,7 @@ def _default_config():
             "recorder": "auto",
             "max_duration": DEFAULT_MAX_RECORD_SECONDS,
             "save_audio": True,
+            "audio_format": "flac",
         },
         "models": dict(DEFAULT_MODELS),
     }
@@ -1008,11 +1009,61 @@ def send_text(text, display_server="auto", input_mode="paste"):
         raise RuntimeError(f"{paste_cmd[0]} not found. Install with: sudo apt install {paste_pkg}")
 
 
-# -- Dictate ------------------------------------------------------------------
+# -- Dictation ------------------------------------------------------------------
 
 
-def save_audio(rec_file, audio_dir):
-    """Copies audio to timestamped file in audio_dir. Returns (saved_path, timestamp)."""
+def _compress_audio(rec_file, audio_format):
+    """Compresses a WAV recording in place. Returns the new path (rec_file swapped).
+
+    audio_format: "wav" (no-op), "flac", or "opus".
+    - flac: lossless, ~35% of WAV for speech, decodable by whisper-server natively
+      (verified). Safe choice: the archive is bit-exact to what was transcribed.
+    - opus: ~7% of WAV at 24 kbit/s (lossy). Speech quality is excellent, but the
+      archive is not identical to the input; whisper-server rejects opus, so a
+      retranscription goes through the ffmpeg fallback.
+    Requires ffmpeg (which is optional for dictation otherwise).
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    if audio_format == "wav":
+        return rec_file
+    if not shutil.which("ffmpeg"):
+        print(
+            f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
+            file=sys.stderr,
+        )
+        return rec_file
+
+    rec_file = Path(rec_file)
+    converted = rec_file.with_suffix(f".{audio_format}")
+    codec_args = {
+        "flac": ["-c:a", "flac"],
+        "opus": ["-c:a", "libopus", "-b:a", "24k"],
+    }
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(rec_file), *codec_args[audio_format], str(converted)],
+        capture_output=True,
+        timeout=600,
+    )
+    if result.returncode != 0 or not converted.exists():
+        print(
+            f"Warning: ffmpeg failed to compress recording ({result.stderr.decode().strip()[:150]}); keeping WAV",
+            file=sys.stderr,
+        )
+        converted.unlink(missing_ok=True)
+        return rec_file
+    rec_file.unlink(missing_ok=True)
+    return converted
+
+
+def save_audio(rec_file, audio_dir, audio_format="wav"):
+    """Copies audio to timestamped file in audio_dir. Returns (saved_path, timestamp).
+
+    audio_format "flac" or "opus" compresses the copy; the live recording file
+    is kept as WAV and removed after saving.
+    """
     import datetime
     import shutil
     from pathlib import Path
@@ -1022,6 +1073,8 @@ def save_audio(rec_file, audio_dir):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     saved = audio_dir / f"{timestamp}.wav"
     shutil.copy2(rec_file, saved)
+    if audio_format != "wav":
+        saved = _compress_audio(saved, audio_format)
     return saved, timestamp
 
 
@@ -1049,7 +1102,7 @@ def dictate_toggle(config):
         audio_dir = config["dictation"]["audio_dir"]
         Path(audio_dir).mkdir(parents=True, exist_ok=True)
         if config["dictation"]["save_audio"]:
-            _saved, timestamp = save_audio(rec_file, audio_dir)
+            _saved, timestamp = save_audio(rec_file, audio_dir, config["dictation"].get("audio_format", "wav"))
         else:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -1262,7 +1315,10 @@ language = "auto"               # language for transcription: "auto", "pt", "en"
 # display-server = "auto"       # "auto" (detect), "x11", or "wayland"
 # input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
                                 #   keystrokes; useful in terminals)
-# save-audio = true             # save the .wav recording as a backup
+# save-audio = true             # save the recording as a backup
+# audio-format = "flac"         # format of the saved recording: "flac" (lossless,
+                                #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
+                                #   or "wav". Requires ffmpeg for flac/opus
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
 

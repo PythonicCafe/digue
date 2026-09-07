@@ -207,7 +207,10 @@ language = "auto"               # language for transcription: "auto", "pt", "en"
 # audio-dir = ""                # where recordings are saved (default: <data-dir>/audio)
 # recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
 # max-duration = 300            # stop recording after N seconds (0 = unlimited)
-# save-audio = true             # save the .wav recording as a backup
+# save-audio = true             # save the recording as a backup
+# audio-format = "flac"         # format of the saved recording: "flac" (lossless,
+                                #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
+                                #   or "wav". Requires ffmpeg for flac/opus
 # input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
                                 #   keystrokes; useful in terminals)
 # display-server = "auto"       # "auto" (detect), "x11", or "wayland"
@@ -276,7 +279,7 @@ sudo apt install alsa-utils      # fallback recorder (arecord)
 
 The recorder runs in its own process group, so it keeps recording even if the `digue` process is killed; it stops either when you press the key again or when `max-duration` is reached (default 300s, set `0` for unlimited). The limit is enforced by an independent watchdog process: when it fires, it kills the recorder and sends a desktop notification ("Recording stopped: 300s limit reached") -- this bounds the worst-case recording size even if digue dies mid-recording.
 
-The recorded `.wav` is saved as a backup next to the `.txt` transcript. Set `save-audio = false` to keep only the transcript.
+The recording is saved as a backup next to the `.txt` transcript, compressed with `audio-format` (default `flac`: lossless, ~35% of the WAV size; `opus`: ~7%, lossy 24 kbit/s; `wav`: no compression; flac/opus require ffmpeg - without it digue keeps the WAV and warns). Set `save-audio = false` to keep only the transcript. A saved `.flac` is decodable by whisper-server natively; a saved `.opus` goes through the ffmpeg fallback if you ever retranscribe it.
 
 ## Text output
 
@@ -355,7 +358,7 @@ ruff check . --fix && ruff format --line-length 120
 
 ## Audio storage
 
-Every dictation is saved as a timestamped `.txt` transcript in the audio directory (default: `<data-dir>/audio/`), and the `.wav` recording as well unless `save-audio = false`. These are kept as backup and not cleaned up automatically.
+Every dictation is saved as a timestamped `.txt` transcript in the audio directory (default: `<data-dir>/audio/`), plus the recording (compressed per `audio-format`, default `flac`) unless `save-audio = false`. These are kept as backup and not cleaned up automatically.
 
 ## License
 

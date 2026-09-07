@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import sys
 import textwrap
 from pathlib import Path
@@ -1054,6 +1055,44 @@ class TestSaveAudio:
         assert saved.exists()
         assert saved.parent == audio_dir
         assert timestamp in saved.name
+
+
+class TestCompressAudio:
+    def test_wav_is_noop(self, tmp_path):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"data")
+        assert digue._compress_audio(rec, "wav") == rec
+
+    def test_flac_compresses_and_removes_wav(self, tmp_path):
+        import shutil
+        import wave
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not available")
+        rate = 16000
+        samples = b"".join(
+            int(8000 * math.sin(2 * math.pi * 440 * i / rate)).to_bytes(2, "little", signed=True) for i in range(rate)
+        )
+        rec = tmp_path / "rec.wav"
+        with wave.open(str(rec), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            wav.writeframes(samples)
+        wav_size = rec.stat().st_size
+
+        result = digue._compress_audio(rec, "flac")
+
+        assert result.suffix == ".flac"
+        assert result.exists()
+        assert not rec.exists()
+        assert result.stat().st_size < wav_size
+
+    def test_unknown_format_raises(self, tmp_path):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"data")
+        with pytest.raises(KeyError):
+            digue._compress_audio(rec, "mp3")
 
 
 class TestSaveAudioConfig:
