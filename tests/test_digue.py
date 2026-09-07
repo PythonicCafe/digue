@@ -276,8 +276,24 @@ class TestCreateContainer:
         models_dir = tmp_path / "models"
         models_dir.mkdir(parents=True)
         (models_dir / "ggml-small.bin").write_bytes(b"dummy")
+        (models_dir / digue.VAD_MODEL_FILENAME).write_bytes(b"dummy")
         digue.create_container(config, "cpu")
         mock_download.assert_not_called()
+
+    @patch("digue.download_model")
+    @patch("digue.pull_image")
+    @patch("digue._docker_run")
+    def test_downloads_when_vad_is_missing(self, mock_docker, mock_pull, mock_download, tmp_path):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = digue._default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(parents=True)
+        (models_dir / "ggml-small.bin").write_bytes(b"dummy")
+
+        digue.create_container(config, "cpu")
+
+        mock_download.assert_called_once_with("small", models_dir, with_notification=True)
 
 
 class TestImageExists:

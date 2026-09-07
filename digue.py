@@ -49,7 +49,8 @@ DOCKER_IMAGES = {
     "cpu": "ghcr.io/ggml-org/whisper.cpp:main-vulkan",
 }
 HUGGINGFACE_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-HUGGINGFACE_VAD_URL = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin"
+VAD_MODEL_FILENAME = "ggml-silero-v6.2.0.bin"
+HUGGINGFACE_VAD_URL = f"https://huggingface.co/ggml-org/whisper-vad/resolve/main/{VAD_MODEL_FILENAME}"
 RESPONSE_FORMATS = ("text", "vtt", "srt", "timestamps")
 SERVER_STARTUP_TIMEOUT = 180
 TRANSCRIPTION_TIMEOUT = 120
@@ -481,10 +482,12 @@ def create_container(config: dict[str, dict[str, Any]], backend: str | None = No
     model = model_for_backend(backend, config)
     image = resolve_image(backend, config)
 
-    # Ensure model is downloaded before creating the container (avoids crash loop)
+    # Ensure models are downloaded before creating the container (avoids crash loop)
     model_path = models_dir / f"ggml-{model}.bin"
-    if not model_path.exists():
-        print(f"Model not found: {model_path.name}. Downloading...", file=sys.stderr, flush=True)
+    vad_path = models_dir / VAD_MODEL_FILENAME
+    if not model_path.exists() or not vad_path.exists():
+        missing = model_path if not model_path.exists() else vad_path
+        print(f"Model not found: {missing.name}. Downloading...", file=sys.stderr, flush=True)
         download_model(model, models_dir, with_notification=True)
 
     pull_image(image)
@@ -521,7 +524,7 @@ def create_container(config: dict[str, dict[str, Any]], backend: str | None = No
         "8080",
         "--vad",
         "--vad-model",
-        "/models/ggml-silero-v6.2.0.bin",
+        f"/models/{VAD_MODEL_FILENAME}",
     ]
 
     result = _docker_run(cmd, timeout=60)
@@ -1342,11 +1345,11 @@ def download_model(model_name: str, models_dir: str | Path, with_notification: b
     models_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = models_dir / f"ggml-{model_name}.bin"
-    vad_path = models_dir / "ggml-silero-v6.2.0.bin"
+    vad_path = models_dir / VAD_MODEL_FILENAME
 
     for label, url, output in [
         (f"ggml-{model_name}.bin", f"{HUGGINGFACE_MODEL_URL}/ggml-{model_name}.bin", model_path),
-        ("ggml-silero-v6.2.0.bin (VAD)", HUGGINGFACE_VAD_URL, vad_path),
+        (f"{VAD_MODEL_FILENAME} (VAD)", HUGGINGFACE_VAD_URL, vad_path),
     ]:
         if output.exists():
             size_mb = output.stat().st_size / (1024 * 1024)
