@@ -11,6 +11,8 @@ from digue import dictate as dictate_mod
 from digue import notify as notify_mod
 from digue.config import _default_config, load_config
 
+_real_container_image = container_mod.container_image
+
 
 @pytest.fixture(autouse=True)
 def existing_container_has_the_configured_image(monkeypatch):
@@ -734,7 +736,7 @@ class TestServerStartImage:
 
     @patch("digue.container._docker_run")
     def test_container_image_reads_docker_inspect(self, mock_docker, monkeypatch):
-        monkeypatch.undo()  # the autouse fixture stubs container_image; this test is about the real one
+        monkeypatch.setattr(container_mod, "container_image", _real_container_image)
         mock_docker.return_value = MagicMock(returncode=0, stdout="ghcr.io/ggml-org/whisper.cpp:main\n")
         assert container_mod.container_image() == "ghcr.io/ggml-org/whisper.cpp:main"
         assert mock_docker.call_args.args[0] == [
