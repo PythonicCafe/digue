@@ -669,6 +669,8 @@ def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, An
 
 
 def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    import subprocess
+
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
     from digue.convert import _convert_content
 
@@ -721,7 +723,9 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
                 print(f"Saved: {output_path}", file=sys.stderr)
         else:
             print(result)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        # SubprocessError is not an OSError: ffmpeg's TimeoutExpired (600 s
+        # on a huge file) was the one operational failure still tracebacking
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0

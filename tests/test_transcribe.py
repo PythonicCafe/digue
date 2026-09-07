@@ -1,6 +1,7 @@
 """Tests for transcription, ffmpeg fallback, VTT, language detection, and transcribe CLI."""
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -630,7 +631,10 @@ class TestCmdTranscribeInput:
         mock_ensure.assert_not_called()
         mock_running.assert_not_called()
 
-    @pytest.mark.parametrize("failure", [RuntimeError("request failed"), OSError("disk full")])
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("request failed"), OSError("disk full"), subprocess.TimeoutExpired(["ffmpeg"], 600)],
+    )
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running", return_value=True)
     def test_operational_failure_returns_1_without_traceback(
@@ -651,7 +655,7 @@ class TestCmdTranscribeInput:
 
         transcribe_result = (
             patch("digue.transcribe.transcribe", side_effect=failure)
-            if isinstance(failure, RuntimeError)
+            if isinstance(failure, (RuntimeError, subprocess.SubprocessError))
             else patch("digue.transcribe.transcribe", return_value="text")
         )
         write_result = (
