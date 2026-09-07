@@ -1312,14 +1312,22 @@ def download_model(model_name, models_dir, with_notification=False):
 # -- Recording ----------------------------------------------------------------
 
 
-def _runtime_dir():
+def _runtime_dir() -> Path:
     import os
+    import tempfile
     from pathlib import Path
 
-    return Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    configured = os.environ.get("XDG_RUNTIME_DIR")
+    runtime_dir = Path(configured) if configured else Path(tempfile.gettempdir()) / f"digue-{os.getuid()}"
+    runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if runtime_dir.stat().st_uid != os.getuid():
+        raise RuntimeError(f"Runtime directory is not owned by the current user: {runtime_dir}")
+    if not configured:
+        runtime_dir.chmod(0o700)
+    return runtime_dir
 
 
-def _pid_file():
+def _pid_file() -> Path:
     return _runtime_dir() / "digue.pid"
 
 
@@ -1347,7 +1355,7 @@ def _rec_file() -> Path:
     return _runtime_dir() / f"digue-{now_timestamp()}-{os.getpid()}-{secrets.token_hex(4)}.wav"
 
 
-def is_recording():
+def is_recording() -> bool:
     pid_file = _pid_file()
     if not pid_file.exists():
         return False
@@ -1355,7 +1363,7 @@ def is_recording():
     return _pid_alive(pid)
 
 
-def _pid_alive(pid):
+def _pid_alive(pid: int) -> bool:
     import os
 
     try:
@@ -1365,7 +1373,7 @@ def _pid_alive(pid):
         return False
 
 
-def recording_command(rec_file, recorder="auto"):
+def recording_command(rec_file: str | Path, recorder: str = "auto") -> list[str]:
     """Builds the argv that records mono 16 kHz s16 audio to rec_file.
 
     recorder: "auto" (pw-record if available, else arecord), "pw-record", or "arecord".
@@ -1386,62 +1394,144 @@ def recording_command(rec_file, recorder="auto"):
     raise RuntimeError(f"Unknown recorder: {recorder}. Use 'auto', 'pw-record', or 'arecord'.")
 
 
-def start_recording(config):
-    """Starts the recorder in its own session, returns the PID.
+@dataclass(frozen=True)
+class RecordingProcesses:
+    """Processes owned by a recording daemon; the watchdog may be disabled."""
 
-    The recorder runs in a new process group so it keeps going even if digue
-    itself is killed (it stops when the duration limit is reached or on the
-    next toggle). The max-duration limit is enforced by an independent watchdog
-    process (sleep + kill) that survives digue: it kills the recorder group and
-    sends a desktop notification when the limit is reached.
+    recorder: subprocess.Popen[bytes]
+    watchdog: subprocess.Popen[bytes] | None
+    rec_file: Path | None = None
+
+
+def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
+    """Starts the recorder and safety watchdog, returning their owned handles.
+
+    The recorder runs in a new process group so it survives a killed daemon.
+    The PID file remains the recovery contract for a later invocation, while
+    the live daemon retains Popen handles so it can reap both children.
     """
     import subprocess
 
     rec_file = _rec_file()
     pid_file = _pid_file()
-    max_duration = config["dictation"]["max_duration"]
-    argv = recording_command(rec_file, recorder=config["dictation"]["recorder"])
-    proc = subprocess.Popen(
+    max_duration = config["dictate"]["max_duration"]
+    argv = recording_command(rec_file, recorder=config["dictate"]["recorder"])
+    recorder = subprocess.Popen(
         argv,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    pid_file.write_text(str(proc.pid))
-
-    if max_duration > 0:
-        _spawn_limit_watchdog(proc.pid, max_duration)
-
-    return proc.pid
+    pid_file.write_text(str(recorder.pid))
+    watchdog = _spawn_limit_watchdog(recorder.pid, max_duration) if max_duration > 0 else None
+    return RecordingProcesses(recorder=recorder, watchdog=watchdog, rec_file=rec_file)
 
 
-def _spawn_limit_watchdog(pgid, max_duration):
-    """Spawns a detached watchdog that kills the recording group after max_duration.
+def _process_starttime(pid: int, stat_path: Path | None = None) -> str | None:
+    """Returns Linux /proc starttime, which distinguishes recycled PIDs."""
+    path = stat_path or Path(f"/proc/{pid}/stat")
+    try:
+        stat = path.read_text()
+        fields_after_comm = stat[stat.rindex(")") + 2 :].split()
+        return fields_after_comm[19]
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        return None
 
-    Runs as an independent process (sh -c 'sleep N; ...') so the limit still
-    applies if digue itself is killed. On timeout it kills the group and
-    notifies the user. Killing an already-dead group is harmless (recording
-    stopped manually first => killpg fails silently).
+
+def _spawn_limit_watchdog(pgid: int, max_duration: int) -> subprocess.Popen[bytes]:
+    """Spawns an identity-checking safety killer and returns its handle.
+
+    The detached child survives a SIGKILLed daemon. Before signaling, it checks
+    Linux /proc starttime so a stale watchdog cannot kill a recycled PGID.
     """
-    import shutil
     import subprocess
 
-    notify_bin = shutil.which("notify-send")
-    message = f"Recording stopped: {max_duration}s limit reached"
-    if notify_bin:
-        notify_cmd = f'"{notify_bin}" -a digue -t 5000 Whisper "{message}"'
-    else:
-        notify_cmd = f'echo "[digue] {message}" >&2'
-    script = f"sleep {max_duration}; kill -TERM -{pgid} 2>/dev/null; {notify_cmd}"
-    subprocess.Popen(
-        ["sh", "-c", script],
+    starttime = _process_starttime(pgid)
+    if starttime is None:
+        raise RuntimeError(f"Cannot identify recorder process {pgid}")
+    script = """import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+pid = int(sys.argv[1])
+expected_starttime = sys.argv[2]
+time.sleep(int(sys.argv[3]))
+try:
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    current_starttime = stat[stat.rindex(")") + 2:].split()[19]
+    if current_starttime == expected_starttime:
+        os.killpg(pid, signal.SIGTERM)
+except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueError, IndexError):
+    pass
+"""
+    return subprocess.Popen(
+        [sys.executable, "-c", script, str(pgid), starttime, str(max_duration)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
 
-def _group_alive(pid):
+def _cancel_watchdog(watchdog: subprocess.Popen[bytes] | None) -> None:
+    """Cancels and reaps a watchdog after the owning daemon finishes normally."""
+    import subprocess
+
+    if watchdog is None:
+        return
+    if watchdog.poll() is None:
+        watchdog.terminate()
+    try:
+        watchdog.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        watchdog.kill()
+        watchdog.wait(timeout=5)
+
+
+def _wait_recorder_end(max_duration: int) -> str:
+    """Waits until the recorder dies, the duration limit hits, or a stop arrives.
+
+    Returns "died" (recorder ended on its own or was killed), "limit" (the
+    duration limit was reached), "manual" (a second toggle signaled the
+    daemon), or "interrupted" (Ctrl+c in a terminal: stop and deliver, like a
+    manual stop). Polls every 200ms; time.monotonic keeps the limit honest
+    across sleep() drift.
+    """
+    import time
+
+    start = time.monotonic()
+    while True:
+        if not is_recording():
+            return "died"
+        if _got_sigterm:
+            return "manual"
+        if _got_sigint:
+            return "interrupted"
+        if max_duration > 0 and time.monotonic() - start >= max_duration:
+            return "limit"
+        time.sleep(0.2)
+
+
+def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: int) -> str:
+    """Waits on the daemon's own recorder handle and reaps spontaneous exits."""
+    import time
+
+    start = time.monotonic()
+    while True:
+        if recorder.poll() is not None:
+            recorder.wait(timeout=0)
+            return "died"
+        if _got_sigterm:
+            return "manual"
+        if _got_sigint:
+            return "interrupted"
+        if max_duration > 0 and time.monotonic() - start >= max_duration:
+            return "limit"
+        time.sleep(0.2)
+
+
+def _group_alive(pid: int) -> bool:
     import os
 
     try:
@@ -1451,20 +1541,58 @@ def _group_alive(pid):
         return False
 
 
-def stop_recording():
-    """Stops the recording process group, returns the path to the audio file or None."""
+def _recording_file_of(pid: int) -> Path | None:
+    """Finds the audio file a recording PID is writing, via /proc/<pid>/fd.
+
+    The recorder argv carries the target path, so scanning its open file
+    descriptors is the single source of truth -- no state file can drift out
+    of sync (a timestamped rec_file name regenerated at stop time once made
+    stop_recording check a file the recorder never wrote). Returns None when
+    the process is already gone (its descriptors are closed).
+    """
+    import os
+    from pathlib import Path
+
+    runtime_dir = _runtime_dir()
+    try:
+        fd_links = list(Path(f"/proc/{pid}/fd").iterdir())
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    for fd_link in fd_links:
+        try:
+            target = Path(os.readlink(fd_link))
+        except OSError:
+            continue
+        if target.parent == runtime_dir and target.suffix == ".wav" and target.name.startswith("digue-"):
+            return target
+    return None
+
+
+def _validate_recording_file(rec_file: Path | None) -> Path | None:
+    """Returns a non-empty recording, removing an empty file when present."""
+    if rec_file is None or not rec_file.exists() or rec_file.stat().st_size == 0:
+        if rec_file is not None:
+            rec_file.unlink(missing_ok=True)
+        return None
+    return rec_file
+
+
+def stop_recording_pid(pid: int, rec_file: Path | None = None) -> Path | None:
+    """Stops the recorder process group `pid` and returns its audio file or None.
+
+    Used by the take's owner (the daemon that started this recorder). Never
+    touches the global pid file: with overlapping takes each daemon stops only
+    its own recorder -- a global stop would kill another take's recorder. The
+    owner passes the rec_file captured while the recorder was alive; without
+    it, the newest-runtime-wav fallback runs (single-take recovery only: with
+    concurrent takes it could grab another daemon's file).
+    """
     import contextlib
     import os
     import time
 
-    pid_file = _pid_file()
-    rec_file = _rec_file()
-
-    if not pid_file.exists():
-        return None
-
-    pid = int(pid_file.read_text().strip())
-    pid_file.unlink(missing_ok=True)
+    if rec_file is None:
+        rec_file = _recording_file_of(pid)
 
     for signal in (15, 9):  # SIGTERM, then SIGKILL if it does not exit
         with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -1473,16 +1601,47 @@ def stop_recording():
         if not _group_alive(pid):
             break
 
-    if not rec_file.exists() or rec_file.stat().st_size == 0:
-        rec_file.unlink(missing_ok=True)
+    if rec_file is None:
+        # fd scan found nothing (recorder already dead and descriptors closed);
+        # fall back to the newest digue-*.wav left in the runtime dir. Only for
+        # callers without a captured file: with concurrent takes this could
+        # grab another daemon's recording.
+        runtime_dir = _runtime_dir()
+        candidates = sorted(runtime_dir.glob("digue-*.wav"), key=lambda path: path.stat().st_mtime)
+        rec_file = candidates[-1] if candidates else None
+    return _validate_recording_file(rec_file)
+
+
+def _finish_owned_recorder(recorder: subprocess.Popen[bytes], rec_file: Path | None) -> Path | None:
+    """Stops a live owned recorder or validates output from an already reaped one."""
+    if recorder.poll() is None:
+        result = stop_recording_pid(recorder.pid, rec_file)
+        recorder.wait(timeout=5)
+        return result
+    return _validate_recording_file(rec_file)
+
+
+def stop_recording() -> Path | None:
+    """Stops the current recording (from the global pid file). Returns the audio file or None.
+
+    Recovery/legacy path: the daemon stops its own recorder via
+    stop_recording_pid; this reads the global pid file (last started recorder)
+    for callers outside the daemon flow.
+    """
+    pid_file = _pid_file()
+
+    if not pid_file.exists():
         return None
-    return rec_file
+
+    pid = int(pid_file.read_text().strip())
+    pid_file.unlink(missing_ok=True)
+    return stop_recording_pid(pid)
 
 
 # -- Clipboard ----------------------------------------------------------------
 
 
-def detect_display_server():
+def detect_display_server() -> str | None:
     """Detects whether the session is Wayland or X11."""
     import os
 
@@ -1493,7 +1652,7 @@ def detect_display_server():
     return None
 
 
-def send_text(text, display_server="auto", input_mode="paste"):
+def send_text(text: str, display_server: str = "auto", input_mode: str = "paste") -> None:
     """Sends text to the focused window.
 
     input_mode "paste" copies to the clipboard and simulates Ctrl+V.
@@ -1505,10 +1664,10 @@ def send_text(text, display_server="auto", input_mode="paste"):
     import subprocess
 
     if display_server == "auto":
-        display_server = detect_display_server()
-
-    if display_server is None:
-        raise RuntimeError("No DISPLAY or WAYLAND_DISPLAY set. Cannot access clipboard or send keystrokes.")
+        detected = detect_display_server()
+        if detected is None:
+            raise RuntimeError("No DISPLAY or WAYLAND_DISPLAY set. Cannot access clipboard or send keystrokes.")
+        display_server = detected
 
     if input_mode == "type":
         if display_server == "wayland":
@@ -1556,9 +1715,13 @@ def send_text(text, display_server="auto", input_mode="paste"):
         raise RuntimeError(f"{copy_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}")
 
     try:
-        subprocess.run(paste_cmd, capture_output=True, timeout=5)
+        subprocess.run(paste_cmd, capture_output=True, timeout=5, check=True)
     except FileNotFoundError:
         raise RuntimeError(f"{paste_cmd[0]} not found. Install with: sudo apt install {paste_pkg}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{paste_cmd[0]} timed out. Is a {display_server} session running?")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"{paste_cmd[0]} failed: {exc.stderr.decode().strip() if exc.stderr else 'unknown error'}")
 
 
 # -- Dictation ------------------------------------------------------------------
@@ -1634,7 +1797,7 @@ def save_audio(
     return saved, timestamp
 
 
-def normalize_pasted_text(text):
+def normalize_pasted_text(text: str) -> str:
     """Joins wrapped lines into a single clean line.
 
     Line breaks come from whisper segment boundaries (word-aligned once
@@ -1656,75 +1819,310 @@ def _write_transcript(audio_dir: Path, timestamp: str, text: str) -> Path:
     return text_path
 
 
-def dictate_toggle(config):
-    """Toggle recording/transcription. Returns exit code."""
-    import datetime
+def _dictate_lock() -> Any:
+    """Serializes short state transitions between concurrent toggle processes."""
+    import contextlib
+    import fcntl
+
+    @contextlib.contextmanager
+    def locked() -> Any:
+        lock_path = _runtime_dir() / "digue.lock"
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    return locked()
+
+
+def _daemon_pid_file() -> Path:
+    """The daemon is the digue process that started the recording and waits for it.
+
+    Content: "<pid> starting" while startup is reserved, "<pid> recording"
+    while the recorder is alive (a second toggle should stop it), and
+    "<pid> delivering" while the take is being delivered (a second toggle
+    must NOT stop it -- it starts a new take instead).
+    """
+    return _runtime_dir() / "digue-daemon.pid"
+
+
+def _recorder_pid_file(daemon_pid: int) -> Path:
+    """Per-take recorder pid file: this daemon owns exactly this recorder.
+
+    With overlapping takes a global recorder pid file would make one daemon's
+    wait/stop logic act on another daemon's recorder (seen in the wild: two
+    daemons waiting on the same pid; one delivered "Empty or missing audio
+    file" after the other overwrote the global pid file).
+    """
+    return _runtime_dir() / f"digue-recorder-{daemon_pid}.pid"
+
+
+def _daemon_state() -> tuple[int, str] | None:
+    daemon_file = _daemon_pid_file()
+    if not daemon_file.exists():
+        return None
+    try:
+        pid_text, _, state = daemon_file.read_text().strip().partition(" ")
+        return int(pid_text), state or "recording"
+    except (OSError, ValueError):
+        return None
+
+
+def _remove_daemon_state(daemon_pid: int) -> bool:
+    """Removes the global state only while it still belongs to this daemon."""
+    daemon_file = _daemon_pid_file()
+    try:
+        current_pid, _, _state = daemon_file.read_text().strip().partition(" ")
+        if int(current_pid) != daemon_pid:
+            return False
+        daemon_file.unlink()
+        return True
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+
+
+def _is_daemon_alive() -> bool:
+    entry = _daemon_state()
+    return entry is not None and _pid_alive(entry[0])
+
+
+# Set by the SIGTERM handler when a second toggle signals the daemon.
+_got_sigterm = False
+# Set by the SIGINT handler when the user presses Ctrl+c in a terminal.
+_got_sigint = False
+
+
+def _on_sigterm(_signum: int, _frame: object) -> None:
+    global _got_sigterm
+    _got_sigterm = True
+
+
+def _on_sigint(_signum: int, _frame: object) -> None:
+    global _got_sigint
+    _got_sigint = True
+
+
+def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -> int:
+    """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
+
+    Called by the daemon once the recorder is dead: manual stop (second toggle
+    signaled the daemon, which stopped the recorder) or duration limit (the
+    watchdog safety killer stopped it).
+    """
     from pathlib import Path
 
-    if is_recording():
-        rec_file = stop_recording()
-        if rec_file is None:
-            notify("Empty or missing audio file", timeout_ms=5000)
-            return 1
+    if rec_file is None:
+        notify("Empty or missing audio file", timeout_ms=5000)
+        return 1
 
-        audio_dir = config["dictate"]["audio_dir"]
-        Path(audio_dir).mkdir(parents=True, exist_ok=True)
-        if config["dictate"]["save_audio"]:
-            _saved, timestamp = save_audio(rec_file, audio_dir, config["dictate"].get("audio_format", "wav"))
-        else:
-            timestamp = now_timestamp()
+    audio_dir = Path(config["dictate"]["audio_dir"])
+    timestamp = now_timestamp()
 
-        notify("Transcribing...")
-        try:
-            url = server_url(config)
-            language = config["transcribe"]["language"]
-            text = normalize_pasted_text(transcribe(url, rec_file, language))
-        except Exception as exc:
-            notify(f"Transcription failed: {exc}", timeout_ms=10000)
-            return 1
-        finally:
+    def rescue_recording() -> Path | None:
+        """Keeps the live recording when the compressed archive could not be produced.
+
+        Moves the raw WAV to <audio_dir>/YYYY/MM/<timestamp>.wav (shutil.move
+        handles cross-filesystem); drops it when save-audio is disabled. On a
+        failed move, notifies and leaves the file in the runtime dir. Never raises.
+        """
+        if not config["dictate"]["save_audio"]:
             rec_file.unlink(missing_ok=True)
-
-        text_path = _write_transcript(Path(audio_dir), timestamp, text)
-
-        if not text:
-            notify("No speech detected", timeout_ms=5000)
-            return 0
-
+            return None
         try:
-            send_text(
-                text,
-                display_server=config["dictate"]["display_server"],
-                input_mode=config["dictate"]["input_mode"],
-            )
+            import shutil
+
+            month_dir = audio_dir / month_dir_for(timestamp)
+            month_dir.mkdir(parents=True, exist_ok=True)
+            archived = month_dir / f"{timestamp}.wav"
+            shutil.move(rec_file, archived)
+            return archived
+        except Exception as rescue_exc:
+            print(f"Failed to keep recording: {rescue_exc}; audio still at {rec_file}", file=sys.stderr)
+            return None
+
+    def archive_audio() -> bool:
+        """Runs the post-delivery archiving (copy + compression, the slow part)."""
+        try:
+            if config["dictate"]["save_audio"]:
+                save_audio(rec_file, audio_dir, config["dictate"].get("audio_format", "wav"), timestamp=timestamp)
+            rec_file.unlink(missing_ok=True)
+            return True
+        except Exception as save_exc:
+            rescued = rescue_recording()
+            message = f"Failed to save audio: {save_exc}"
+            if rescued:
+                message += f"; uncompressed copy kept at {rescued}"
+            notify(message, timeout_ms=10000)
+            return False
+
+    # Ctrl+c leaves "^C" echoed on the current terminal line; the \r redraw in
+    # notify() would write over it and leave stray glyphs ("v"). Start a fresh
+    # line for the transcription status.
+    if _stderr_is_tty():
+        print(file=sys.stderr, flush=True)
+    notify("Transcribing...")
+    try:
+        url = server_url(config)
+        language = config["transcribe"]["language"]
+        prompt = config["transcribe"].get("prompt") or None
+        text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt))
+    except Exception as exc:
+        archived = rescue_recording()
+        notify(f"Transcription failed: {exc}", timeout_ms=10000)
+        if archived:
+            print(f"Recording kept at: {archived}", file=sys.stderr)
+        return 1
+
+    if not text:
+        try:
+            _write_transcript(audio_dir, timestamp, text)
         except Exception as exc:
-            notify(f"Paste failed: {exc}", timeout_ms=10000)
+            notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
+            print(text, file=sys.stderr)
+            rescue_recording()
+            return 1
+        archive_audio()
+        notify("No speech detected", timeout_ms=5000)
+        return 0
+
+    try:
+        send_text(
+            text,
+            display_server=config["dictate"]["display_server"],
+            input_mode=config["dictate"]["input_mode"],
+        )
+    except Exception as exc:
+        notify(f"Paste failed: {exc}", timeout_ms=10000)
+        try:
+            text_path = _write_transcript(audio_dir, timestamp, text)
             print(f"Transcription saved to: {text_path}", file=sys.stderr)
+        except Exception as save_exc:
+            notify(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
+            print(text, file=sys.stderr)
+        archive_audio()
+        return 1
+    notify_close()
+
+    try:
+        text_path = _write_transcript(audio_dir, timestamp, text)
+    except Exception as exc:
+        notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
+        print(text, file=sys.stderr)
+        rescue_recording()
+        return 1
+    # Transcribing... is a \r-redrawn line (no newline); break before this one.
+    if _stderr_is_tty():
+        print(file=sys.stderr, flush=True)
+    print(f"Dictation done ({len(text)} chars): {text_path}", file=sys.stderr)
+    return 0 if archive_audio() else 1
+
+
+def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
+    """Toggle recording/transcription. Returns exit code.
+
+    First call starts the recorder and stays alive as a daemon, waiting for
+    the recording to end (manual stop via a second toggle, duration limit, or
+    recorder crash) to run the delivery flow. A second call while the daemon
+    is alive signals SIGTERM and exits immediately: the daemon does the work,
+    so the keybinding feels instant. Killing the daemon (pkill digue) leaves
+    the recorder alive -- the next toggle transcribes what kept recording.
+    """
+    import os
+
+    daemon_pid = os.getpid()
+    daemon_file = _daemon_pid_file()
+    with _dictate_lock():
+        entry = _daemon_state()
+        if entry is not None and _pid_alive(entry[0]):
+            current_daemon_pid, daemon_state = entry
+            if daemon_state == "recording":
+                import contextlib
+
+                with contextlib.suppress(OSError):
+                    os.kill(current_daemon_pid, 15)  # SIGTERM: daemon stops recording and delivers
+                return 0
+            if daemon_state == "starting":
+                # Startup is already owned by another toggle. It has no recorder
+                # to stop yet, so signaling it would abort or orphan the take.
+                return 0
+            # A delivering daemon owns its old take. A new recording may replace
+            # the global state; the old daemon removes it only if it still owns it.
+        elif is_recording():
+            # Recorder alive but no daemon at all (the daemon was killed, e.g.
+            # pkill digue): recover -- stop and deliver what kept recording.
+            rec_file = stop_recording()
+            daemon_file.unlink(missing_ok=True)
+            return finish_dictation(config, rec_file)
+        daemon_file.write_text(f"{daemon_pid} starting")
+
+    try:
+        result = ensure_server(config)
+        if result is None and not is_server_running(config):
+            notify(server_not_running_hint(config), timeout_ms=5000)
+            _remove_daemon_state(daemon_pid)
             return 1
-        notify(f"Pasted ({len(text)} chars)", timeout_ms=5000)
-        return 0
-    else:
-        try:
-            result = ensure_server(config)
-            if result is None and not is_server_running(config):
-                notify(server_not_running_hint(config), timeout_ms=5000)
-                return 1
-            start_recording(config)
-        except FileNotFoundError as exc:
-            notify(
-                f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
-                timeout_ms=10000,
-            )
-            return 1
-        except Exception as exc:
-            notify(f"Failed to start recording: {exc}", timeout_ms=5000)
-            return 1
-        limit = config["dictation"]["max_duration"]
-        if limit > 0:
-            notify(f"Recording... (max {limit}s, press again to stop)")
-        else:
-            notify("Recording... (press again to stop)")
-        return 0
+        limit = config["dictate"]["max_duration"]
+        message = (
+            f"Recording... (max {limit}s, press again to stop)" if limit > 0 else "Recording... (press again to stop)"
+        )
+        notify(message)
+        # running from a terminal: the user can also Ctrl+c to stop and transcribe.
+        # notify() redraws its line without a trailing newline on a TTY, so this
+        # starts with \n to sit on its own line.
+        if _stderr_is_tty():
+            print("\nPress Ctrl+c to stop recording and transcribe", file=sys.stderr, flush=True)
+
+        # Install handlers before publishing the daemon as recording: a second
+        # toggle must never hit the default SIGTERM action while the recorder lives.
+        global _got_sigterm
+        import signal
+
+        signal.signal(signal.SIGTERM, _on_sigterm)
+        # Ctrl+c in a terminal means "stop and transcribe": the daemon handles
+        # SIGINT itself (the global KeyboardInterrupt handler would discard the
+        # take and leave the recorder running).
+        signal.signal(signal.SIGINT, _on_sigint)
+        processes = start_recording(config)
+    except FileNotFoundError as exc:
+        notify(
+            f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
+            timeout_ms=10000,
+        )
+        _remove_daemon_state(daemon_pid)
+        return 1
+    except Exception as exc:
+        notify(f"Failed to start recording: {exc}", timeout_ms=5000)
+        _remove_daemon_state(daemon_pid)
+        return 1
+    recorder_pid = processes.recorder.pid
+    recorder_file = _recorder_pid_file(daemon_pid)
+    recorder_file.write_text(str(recorder_pid))
+    daemon_file.write_text(f"{daemon_pid} recording")
+    # capture the recording file while the recorder is alive: the fd scan is
+    # deterministic here; after death the fallback could grab another
+    # concurrent take's file (overlap scenario C).
+    rec_file = processes.rec_file or _recording_file_of(recorder_pid)
+    outcome = _wait_recorder_end_daemon(processes.recorder, limit)
+    _got_sigterm = False
+    _got_sigint = False
+    # the take is complete: mark delivering BEFORE stopping the recorder, so a
+    # concurrent toggle never lands in the kill window (it would be dropped:
+    # SIGTERM on a daemon that is already delivering is ignored by the gate).
+    daemon_file.write_text(f"{daemon_pid} delivering")
+    notify_close()
+    rec_file = _finish_owned_recorder(processes.recorder, rec_file)
+    _cancel_watchdog(processes.watchdog)
+    recorder_file.unlink(missing_ok=True)
+    if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
+        _pid_file().unlink(missing_ok=True)
+    if outcome == "limit":
+        notify(f"Recording stopped: {limit}s limit reached", timeout_ms=5000)
+    try:
+        return finish_dictation(config, rec_file)
+    finally:
+        _remove_daemon_state(daemon_pid)
 
 
 # -- Benchmark ----------------------------------------------------------------
@@ -1988,7 +2386,13 @@ def create_parser():
     subparsers.add_parser("stop", help="Stop digue container")
     subparsers.add_parser("destroy", help="Stop and remove digue container")
     subparsers.add_parser("status", help="Show server status")
-    subparsers.add_parser("dictate", help="Toggle recording/transcription (default when no command given)")
+    sub_dictate = subparsers.add_parser("dictate", help="Toggle recording/transcription")
+    sub_dictate.add_argument(
+        "-p",
+        "--prompt",
+        default=None,
+        help="Initial prompt to steer spelling of names/acronyms (overrides config transcribe.prompt)",
+    )
 
     sub_transcribe = subparsers.add_parser("transcribe", help="Transcribe an audio file")
     sub_transcribe.add_argument("audio", type=Path, help="Audio file to transcribe")
@@ -2245,7 +2649,9 @@ def cmd_status(args, config):
     return 0 if http_ok else 1
 
 
-def cmd_dictate(args, config):
+def cmd_dictate(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    if args.prompt is not None:
+        config["transcribe"]["prompt"] = args.prompt
     return dictate_toggle(config)
 
 
