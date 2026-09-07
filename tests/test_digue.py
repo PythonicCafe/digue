@@ -915,6 +915,13 @@ class TestCreateParser:
         args = parser.parse_args([])
         assert args.command is None
 
+    def test_version_flag(self, capsys):
+        parser = digue.create_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["--version"])
+        assert excinfo.value.code == 0
+        assert digue.__version__ in capsys.readouterr().out
+
 
 # -- Command handlers ---------------------------------------------------------
 

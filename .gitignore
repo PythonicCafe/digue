@@ -5,6 +5,8 @@
 *~
 .*.sw?
 .tags
+.cafezinho/
+whisper.cpp/
 data/*
 
 # Byte-compiled / optimized / DLL files

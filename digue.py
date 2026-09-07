@@ -1382,6 +1382,12 @@ def create_parser():
         metavar="path",
         help="Path to config.toml (default: ~/.config/digue/config.toml)",
     )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"digue {__version__}",
+    )
     parser.set_defaults(command=None)
 
     subparsers = parser.add_subparsers(dest="command", metavar="command")

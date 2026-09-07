@@ -14,17 +14,20 @@ authors = [
 ]
 keywords = ["whisper", "dictation", "speech-to-text", "transcription", "stt", "cli", "docker"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+    "Topic :: Utilities",
 ]
 
 [project.urls]
@@ -60,6 +63,15 @@ ignore = ["E203", "E231", "E501", "E701"]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["digue.py", "benchmark_models.py"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
