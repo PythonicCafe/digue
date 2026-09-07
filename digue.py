@@ -2032,7 +2032,7 @@ def _on_sigint(_signum: int, _frame: object) -> None:
     _got_sigint = True
 
 
-def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -> int:
+def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, limit_reached: bool = False) -> int:
     """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
 
     Called by the daemon once the recorder is dead: manual stop (second toggle
@@ -2095,7 +2095,10 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -
     # line for the transcription status.
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
-    notify("Transcribing...")
+    message = (
+        f"Limit reached ({config['dictate']['max_duration']}s), transcribing..." if limit_reached else "Transcribing..."
+    )
+    notify(message)
     try:
         url = server_url(config)
         language = config["transcribe"]["language"]
@@ -2249,10 +2252,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     recorder_file.unlink(missing_ok=True)
     if _pid_file().exists() and _pid_file().read_text().strip() == str(recorder_pid):
         _pid_file().unlink(missing_ok=True)
-    if outcome == "limit":
-        notify(f"Recording stopped: {limit}s limit reached", timeout_ms=5000)
     try:
-        return finish_dictation(config, rec_file)
+        return finish_dictation(config, rec_file, limit_reached=outcome == "limit")
     finally:
         _remove_daemon_state(daemon_pid)
 

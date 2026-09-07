@@ -3374,6 +3374,21 @@ class TestSaveAudioConfig:
 
 
 class TestDictateArchivesAfterDelivery:
+    @patch("digue.notify")
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
+    def test_limit_warning_remains_in_transcription_progress(self, mock_transcribe, mock_send, mock_notify, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        assert digue.finish_dictation(config, rec_file, limit_reached=True) == 0
+
+        first_message = mock_notify.call_args_list[0].args[0]
+        assert "Limit reached" in first_message
+        assert "transcribing" in first_message
+
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     @patch("digue.ensure_server")
