@@ -395,6 +395,42 @@ class TestDeliveryResult:
             assert digue.dictate_toggle(config) == exit_code
 
 
+class TestFinishDictationBackend:
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    def test_finish_dictation_passes_resolved_backend(self, mock_save, mock_transcribe, mock_send, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        with patch("digue.detect_backend") as mock_detect:
+            digue.finish_dictation(config, rec_file)
+
+        mock_save.assert_called_once()
+        assert mock_save.call_args[1]["backend"] == "remote"
+        mock_detect.assert_not_called()  # only remote-or-not matters here: no nvidia-smi/lspci per delivery
+
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    def test_finish_dictation_does_not_detect_hardware_for_a_local_backend(
+        self, mock_save, mock_transcribe, mock_send, tmp_path
+    ):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        with patch("digue.detect_backend") as mock_detect:
+            digue.finish_dictation(config, rec_file)
+
+        mock_detect.assert_not_called()
+        assert mock_save.call_args[1]["backend"] != "remote"
+
+
 class TestDictateArchivesAfterDelivery:
     @patch("digue.notify")
     @patch("digue.send_text")
