@@ -130,6 +130,42 @@ class TestRescueRecording:
         assert not any(path.name.startswith(".") for path in month_dir.iterdir())
         assert "Failed to keep recording" in capsys.readouterr().err
 
+    def test_filesystem_without_hard_links_falls_back_to_replace(self, tmp_path):
+        """vfat/exFAT and some FUSE mounts refuse os.link (EPERM/EOPNOTSUPP);
+        the rescue must still publish instead of stranding the take in the
+        runtime dir."""
+        import errno
+
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"audio")
+        audio_dir = tmp_path / "audio"
+
+        with patch("os.link", side_effect=OSError(errno.EPERM, "Operation not permitted")):
+            rescued = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        assert rescued == audio_dir / "2026" / "09" / "20260904-120000-0123456789abcdef.wav"
+        assert rescued.read_bytes() == b"audio"
+        assert not rec_file.exists()
+        assert sorted(path.name for path in rescued.parent.iterdir()) == [rescued.name]
+
+    def test_fallback_still_never_overwrites_an_existing_destination(self, tmp_path):
+        import errno
+
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"new audio")
+        timestamp = "20260904-120000"
+        existing = tmp_path / "audio" / "2026" / "09" / f"{timestamp}-0123456789abcdef.wav"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"old audio")
+
+        with patch("os.link", side_effect=OSError(errno.EOPNOTSUPP, "Operation not supported")):
+            rescued = audio_mod.rescue_recording(rec_file, tmp_path / "audio", timestamp, "0123456789abcdef")
+
+        assert rescued is None
+        assert existing.read_bytes() == b"old audio"
+        assert rec_file.read_bytes() == b"new audio"
+        assert sorted(path.name for path in existing.parent.iterdir()) == [existing.name]
+
 
 class TestTakeIdInSavedNames:
     """Two takes ending in the same second used to overwrite each other silently

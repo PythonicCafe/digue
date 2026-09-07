@@ -212,10 +212,10 @@ def rescue_recording(
 
     Copies the recording to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>
     (the live suffix is kept: a native FLAC take stays .flac) via an
-    exclusive temp sibling + flush + fsync + exclusive link (runtime dir and
+    exclusive temp sibling + flush + fsync + exclusive publish (runtime dir and
     audio-dir usually live on different filesystems, the destination must
     never be readable in a partial state, and an existing destination is
-    never overwritten), then removes the origin -- only after the destination
+    never overwritten; see _publish_exclusive), then removes the origin -- only after the destination
     is valid. Any failure before the publish removes the temp, preserves the
     origin and reports on stderr; once the destination is linked the rescue
     is done, and a failure to remove the origin is only reported (the caller
@@ -234,9 +234,7 @@ def rescue_recording(
             shutil.copyfileobj(source_file, temp_file)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        # os.link fails with FileExistsError instead of replacing: the publish
-        # step is as exclusive as the temp file (os.replace would clobber).
-        os.link(temp_archived, archived)
+        _publish_exclusive(temp_archived, archived)
     except Exception as rescue_exc:
         if temp_archived is not None:
             temp_archived.unlink(missing_ok=True)
@@ -248,6 +246,30 @@ def rescue_recording(
     except OSError as unlink_exc:
         print(f"Recording kept at {archived}, but the origin could not be removed: {unlink_exc}", file=sys.stderr)
     return archived
+
+
+def _publish_exclusive(temp_path: Path, destination: Path) -> None:
+    """Publishes temp_path as destination without ever overwriting it.
+
+    os.link fails with FileExistsError instead of replacing, so it is as
+    exclusive as the temp file. Filesystems without hard links (vfat/exFAT,
+    some FUSE mounts such as rclone or sshfs) refuse the link with EPERM or
+    EOPNOTSUPP; there the fallback is an existence check followed by
+    os.replace. That check-then-replace has a window another rescue could
+    slip into, accepted because the name already carries the take id: the
+    alternative was every rescue failing on such an audio-dir and the take
+    staying in the runtime dir (tmpfs, gone at reboot).
+    """
+    import errno
+
+    try:
+        os.link(temp_path, destination)
+    except OSError as exc:
+        if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.EXDEV):
+            raise
+        if destination.exists():
+            raise FileExistsError(errno.EEXIST, "destination already exists", str(destination)) from exc
+        os.replace(temp_path, destination)
 
 
 def _write_transcript(audio_dir: Path, timestamp: str, text: str, take_id: str | None = None) -> Path:
