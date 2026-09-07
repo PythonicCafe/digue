@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -72,10 +71,24 @@ AUDIO_EXTENSIONS = frozenset(
 )
 
 
+DEFAULT_LAST_CUE_DURATION_MS = 2_000
+
+
+@dataclass(frozen=True)
+class SubtitleCue:
+    """A subtitle cue whose boundaries are integer milliseconds."""
+
+    start_ms: int
+    end_ms: int | None
+    text: str
+
+
 # -- Config -------------------------------------------------------------------
 
 
 def _config_path() -> Path:
+    import os
+    from pathlib import Path
 
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".config"
@@ -83,6 +96,8 @@ def _config_path() -> Path:
 
 
 def _default_config() -> dict[str, dict[str, Any]]:
+    import os
+    from pathlib import Path
 
     xdg = os.environ.get("XDG_DATA_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
@@ -197,6 +212,7 @@ def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, An
     merged on top of the global ones, which in turn override the defaults.
     """
     import tomllib
+    from pathlib import Path
 
     config = _default_config()
     path = Path(config_path) if config_path else _config_path()
@@ -764,7 +780,162 @@ def transcribe(url, audio_path, language="auto", response_format="text", timeout
 # -- VTT simplification -------------------------------------------------------
 
 
-def _strip_vtt_tags(text):
+def _post_process_subtitle(content: str, response_format: str, max_line_length: int, max_lines: int) -> str:
+    """Cleans subtitle cues: strips outer spaces and wraps long cue text.
+
+    whisper cues start with a space (" Álvaro, ..."); subtitles should not.
+    Cues longer than max_line_length * max_lines are wrapped word-aligned over
+    up to max_lines lines (overflow stays on the last line, no truncation).
+    The block structure (index line, timestamp line, text line) of VTT and SRT
+    is preserved.
+    """
+    import re
+
+    timestamp_pattern = re.compile(r"^\s*\S+\s+-->\s+\S+")
+    index_pattern = re.compile(r"^\s*\d+\s*$")
+    output: list[str] = []
+    cue_texts: list[str] = []
+    awaiting_cue_start = True
+
+    def flush() -> None:
+        if not cue_texts:
+            return
+        text = " ".join(cue_texts).strip()
+        cue_texts.clear()
+        if not text:
+            return
+        output.extend(_wrap_cue_lines(text, max_line_length, max_lines))
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        is_timestamp = bool(timestamp_pattern.match(line)) and "-->" in stripped
+        is_index = awaiting_cue_start and bool(index_pattern.match(line)) and response_format == "srt"
+        is_header = stripped in ("WEBVTT", "NOTE") or stripped.startswith("Kind:") or stripped.startswith("Language:")
+        if is_timestamp or is_index or is_header:
+            flush()
+            output.append(stripped)
+            awaiting_cue_start = False
+        elif stripped:
+            cue_texts.append(stripped)
+        else:
+            flush()
+            if output and output[-1] != "":
+                output.append("")
+            awaiting_cue_start = True
+
+    flush()
+    # Collapse runs of blank lines (wrap may have added doubles)
+    cleaned: list[str] = []
+    for line in output:
+        if line == "" and cleaned and cleaned[-1] == "":
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip() + "\n"
+
+
+def transcribe(
+    url: str,
+    audio_path: str | Path,
+    language: str = "auto",
+    response_format: str = "text",
+    timeout: int | float = TRANSCRIPTION_TIMEOUT,
+    verbose: bool = False,
+    prompt: str | None = None,
+    max_line_length: int = 42,
+    max_lines: int = 2,
+    wrap_cues: bool = True,
+) -> str:
+    """Sends audio to the server and returns the response (text, VTT, or SRT).
+
+    Formats the server cannot decode are converted to WAV with ffmpeg in memory
+    (nothing is written to disk), either upfront (unknown extension) or as a
+    fallback after an HTTP 400. Status messages (conversion attempts etc.) print
+    only when verbose=True -- the CLI default is silent.
+
+    The "text" format is normalized to a single line (whisper segments start
+    with a space and the server joins them with newlines; the segment breaks
+    carry no semantic value - use vtt/srt when timestamps are needed).
+    prompt, when set, is sent as the whisper initial prompt (steers spelling of
+    names/acronyms).
+    VTT/SRT cues are space-stripped and wrapped word-aligned to max_line_length
+    chars over max_lines lines.
+    """
+    import urllib.error
+    from pathlib import Path
+
+    audio_path = Path(audio_path)
+    if audio_path.suffix.lower() not in NATIVE_FORMATS:
+        if verbose:
+            print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
+        wav_data = _convert_to_wav(audio_path)
+        result = _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data, prompt=prompt)
+        return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
+    try:
+        result = _send_audio(url, audio_path, language, response_format, timeout, prompt=prompt)
+        return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        if verbose:
+            print(
+                f"Server rejected {audio_path.name} (HTTP 400). Trying ffmpeg conversion...",
+                file=sys.stderr,
+                flush=True,
+            )
+        wav_data = _convert_to_wav(audio_path)
+        result = _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data, prompt=prompt)
+        return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
+
+
+def _finalize_output(
+    result: str, response_format: str, max_line_length: int, max_lines: int, wrap_cues: bool = True
+) -> str:
+    """Applies format-specific normalization to the server response."""
+    if response_format == "text":
+        return normalize_pasted_text(result)
+    if response_format in ("vtt", "srt"):
+        if not wrap_cues:
+            # Cues keep their single-line text (only stripped)
+            return _post_process_subtitle(result, response_format, max_line_length=10**9, max_lines=1)
+        return _post_process_subtitle(result, response_format, max_line_length, max_lines)
+    return result
+
+
+# -- VTT simplification -------------------------------------------------------
+
+
+def _wrap_cue_lines(text: str, max_line_length: int, max_lines: int) -> list[str]:
+    """Greedy word-wrap of a cue text into at most max_lines lines of max_line_length.
+
+    Words that do not fit are never truncated: overflow stays on the last line.
+    """
+    words = text.split()
+    if not words:
+        return []
+    if len(text) <= max_line_length:
+        return [text]
+    if max_lines <= 1:
+        return [" ".join(words)]
+
+    lines: list[str] = []
+    current = ""
+    for index, word in enumerate(words):
+        candidate = f"{current} {word}" if current else word
+        if len(candidate) > max_line_length and current:
+            lines.append(current)
+            if len(lines) == max_lines - 1:
+                # Overflow: last allowed line carries all remaining words
+                lines.append(" ".join(words[index:]))
+                return lines
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _strip_vtt_tags(text: str) -> str:
     """Removes inline VTT timing tags (YouTube word-level captions).
 
     Strips tags like ``<00:00:01.440>``, ``<c>``, ``</c>``.
@@ -776,8 +947,14 @@ def _strip_vtt_tags(text):
     return text.strip()
 
 
-def simplify_vtt(content):
-    """Simplifies a VTT file to timestamped plain text, removing duplications."""
+def simplify_vtt(content: str, keep_timestamps: bool = True) -> str:
+    """Simplifies a VTT file to timestamped plain text, removing duplications.
+
+    With keep_timestamps=False, returns the joined text without timestamps.
+    The deduplication only collapses exact repeats (the YouTube "rolling caption"
+    pattern repeats the full previous line verbatim); distinct cues with similar
+    text are kept.
+    """
     result_lines = []
     last_clean_text = ""
     current_timestamp = None
@@ -806,10 +983,8 @@ def simplify_vtt(content):
 
         if clean == last_clean_text:
             continue
-        if last_clean_text and last_clean_text.startswith(clean):
-            continue
 
-        result_lines.append(f"[{current_timestamp}] {clean}")
+        result_lines.append(clean if not keep_timestamps else f"[{current_timestamp}] {clean}")
         last_clean_text = clean
 
     return "\n".join(result_lines)
@@ -899,19 +1074,14 @@ def _download_file(url, output, label, with_notification=False):
     part_path = output.with_suffix(f"{output.suffix}.part")
     hook = _download_progress_hook(label, with_notification)
     block_size = 1024 * 1024
-    try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, part_path.open("wb") as part_file:
-            total_size = int(response.headers.get("Content-Length", -1))
-            downloaded = 0
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, part_path.open("wb") as part_file:
+        total_size = int(response.headers.get("Content-Length", -1))
+        downloaded = 0
+        hook(downloaded, 1, total_size)
+        while block := response.read(block_size):
+            part_file.write(block)
+            downloaded += len(block)
             hook(downloaded, 1, total_size)
-            while block := response.read(block_size):
-                part_file.write(block)
-                downloaded += len(block)
-                hook(downloaded, 1, total_size)
-    except BaseException:
-        # No resume support, so a partial file is only clutter next to the models.
-        part_path.unlink(missing_ok=True)
-        raise
     part_path.replace(output)
 
 
@@ -1514,12 +1684,8 @@ def _config_example():
     return CONFIG_TEMPLATE.format(port=DEFAULT_PORT)
 
 
-def _config_as_toml(config: dict[str, dict[str, Any]]) -> str:
-    """Renders the resolved config as TOML (section by section, strings quoted).
-
-    Keys use the kebab-case spelling of the template and README (data-dir),
-    so the output can be pasted back into config.toml as documented.
-    """
+def _config_as_toml(config):
+    """Renders the resolved config as TOML (section by section, strings quoted)."""
     lines = []
     for section, values in config.items():
         lines.append(f"[{section}]")
@@ -1529,8 +1695,8 @@ def _config_as_toml(config: dict[str, dict[str, Any]]) -> str:
             elif isinstance(value, int):
                 rendered = str(value)
             else:
-                rendered = '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-            lines.append(f"{key.replace('_', '-')} = {rendered}")
+                rendered = '"' + str(value).replace('"', '\\"') + '"'
+            lines.append(f"{key} = {rendered}")
         lines.append("")
     return "\n".join(lines)
 
@@ -1599,14 +1765,34 @@ def create_parser():
         help="Language code, e.g. pt, en (default: from config or auto)",
     )
 
-    sub_simplify = subparsers.add_parser("simplify-vtt", help="Simplify a VTT file to timestamped plain text")
-    sub_simplify.add_argument("input", help="Input VTT file (use - for stdin)")
-    sub_simplify.add_argument(
-        "-o",
-        "--output",
-        metavar="path",
+    sub_convert = subparsers.add_parser(
+        "convert", help="Convert between subtitle/text formats (vtt, srt, timestamps, text)"
+    )
+    sub_convert.add_argument(
+        "input",
+        help='Input file, or "-" for stdin (then -f/--from-format is required)',
+    )
+    sub_convert.add_argument(
+        "output",
+        nargs="?",
         default=None,
-        help="Output file (default: stdout)",
+        help='Output file (optional: "-" or omitted = stdout)',
+    )
+    sub_convert.add_argument(
+        "-f",
+        "--from-format",
+        dest="from_format",
+        choices=("vtt", "srt", "timestamps", "text"),
+        default=None,
+        help="Input format (required when input is -; otherwise guessed from the file extension)",
+    )
+    sub_convert.add_argument(
+        "-t",
+        "--to-format",
+        dest="to_format",
+        choices=("vtt", "srt", "timestamps", "text"),
+        default=None,
+        help="Output format: vtt, srt, timestamps, text (default: guessed from output extension, else text)",
     )
 
     sub_batch_transcribe = subparsers.add_parser(
@@ -1648,8 +1834,6 @@ def create_parser():
 
     sub_config = subparsers.add_parser("config", help="Show or initialize the configuration")
     sub_config_sub = sub_config.add_subparsers(dest="config_action", metavar="action")
-    # main() prints this help when no action is given (no default action).
-    sub_config.set_defaults(config_parser=sub_config)
 
     sub_config_show = sub_config_sub.add_parser("show", help="Show the resolved configuration")
     sub_config_show.add_argument(
@@ -1667,13 +1851,6 @@ def create_parser():
         "--force",
         action="store_true",
         help="Overwrite the config file if it already exists",
-    )
-    sub_config_init.add_argument(
-        "-o",
-        "--output",
-        metavar="path",
-        default=None,
-        help="Where to write the config file (default: -c/--config path, else ~/.config/digue/config.toml)",
     )
     subparsers.add_parser("doctor", help="Check system dependencies and test Docker images")
 
@@ -1809,83 +1986,229 @@ def cmd_transcribe(args, config):
     return 0
 
 
-def cmd_simplify_vtt(args, config):
+def _guess_format_from_extension(path: Path) -> str | None:
+    """Guesses the content format from a file extension, or None if unknown."""
+    return {
+        ".vtt": "vtt",
+        ".srt": "srt",
+        ".txt": "timestamps",  # digue-generated timestamped or plain text
+    }.get(path.suffix.lower())
+
+
+def _parse_timestamped_text(content: str) -> list[tuple[str | None, str]]:
+    """Parses digue-generated timestamped text into (timestamp, line) pairs.
+
+    Lines matching "[HH:MM:SS] text" carry their timestamp; any other line is
+    returned with timestamp None. Used by `digue convert` for timestamps->*
+    conversions.
+    """
+    import re
+
+    pairs: list[tuple[str | None, str]] = []
+    pattern = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = pattern.match(stripped)
+        if match:
+            pairs.append((match.group(1), match.group(2)))
+        else:
+            pairs.append((None, stripped))
+    return pairs
+
+
+def _parse_subtitle_timestamp(value: str) -> int:
+    """Parses an SRT or VTT timestamp as integer milliseconds."""
+    import re
+
+    match = re.fullmatch(r"(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})", value)
+    if not match:
+        raise ValueError(f"invalid subtitle timestamp: {value}")
+    raw_hours, raw_minutes, raw_seconds, raw_ms = match.groups()
+    hours = int(raw_hours) if raw_hours is not None else 0
+    minutes = int(raw_minutes)
+    seconds = int(raw_seconds)
+    milliseconds = int(raw_ms)
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError(f"invalid subtitle timestamp: {value}")
+    return ((hours * 60 + minutes) * 60 + seconds) * 1_000 + milliseconds
+
+
+def _format_subtitle_timestamp(milliseconds: int, output_format: str) -> str:
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1_000)
+    separator = "," if output_format == "srt" else "."
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{milliseconds:03d}"
+
+
+def _parse_subtitle_cues(content: str, input_format: str) -> list[SubtitleCue]:
+    """Parses basic VTT/SRT cues, retaining boundaries and multiline text."""
+    import re
+
+    timing_pattern = re.compile(r"^(\S+)\s+-->\s+(\S+)(?:\s+.*)?$")
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cues: list[SubtitleCue] = []
+    line_index = 0
+    while line_index < len(lines):
+        match = timing_pattern.match(lines[line_index].strip())
+        if not match:
+            line_index += 1
+            continue
+        start_ms = _parse_subtitle_timestamp(match.group(1))
+        end_ms = _parse_subtitle_timestamp(match.group(2))
+        if end_ms < start_ms:
+            raise ValueError("subtitle cue ends before it starts")
+        line_index += 1
+        text_lines: list[str] = []
+        while line_index < len(lines) and lines[line_index].strip():
+            text_lines.append(
+                _strip_vtt_tags(lines[line_index].strip()) if input_format == "vtt" else lines[line_index]
+            )
+            line_index += 1
+        text = "\n".join(line for line in text_lines if line)
+        if text:
+            cues.append(SubtitleCue(start_ms=start_ms, end_ms=end_ms, text=text))
+    if not cues:
+        raise ValueError(f"input does not look like a {input_format.upper()} file")
+    return cues
+
+
+def _render_subtitle_cues(cues: list[SubtitleCue], output_format: str) -> str:
+    lines = ["WEBVTT", ""] if output_format == "vtt" else []
+    for cue_index, cue in enumerate(cues, 1):
+        if cue.end_ms is None:
+            raise ValueError("subtitle cue has no end time")
+        if output_format == "srt":
+            lines.append(str(cue_index))
+        start = _format_subtitle_timestamp(cue.start_ms, output_format)
+        end = _format_subtitle_timestamp(cue.end_ms, output_format)
+        lines.extend((f"{start} --> {end}", cue.text, ""))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _timestamp_pairs_to_cues(pairs: list[tuple[str | None, str]], output_format: str) -> list[SubtitleCue]:
+    """Builds cues using the next start as end and two seconds for the last cue."""
+    import re
+
+    timestamp_pattern = re.compile(r"^(\d{2}):(\d{2}):(\d{2})$")
+    raw_starts_and_text = [(timestamp, text) for timestamp, text in pairs if timestamp is not None]
+    if not raw_starts_and_text:
+        raise ValueError(f"cannot convert text without timestamps to {output_format.upper()}")
+    starts_and_text: list[tuple[str, str]] = []
+    for timestamp, text in raw_starts_and_text:
+        if starts_and_text and starts_and_text[-1][0] == timestamp:
+            starts_and_text[-1] = (timestamp, f"{starts_and_text[-1][1]} {text}".strip())
+        else:
+            starts_and_text.append((timestamp, text))
+    starts: list[int] = []
+    for timestamp, _text in starts_and_text:
+        match = timestamp_pattern.fullmatch(timestamp or "")
+        if not match:
+            raise ValueError(f"invalid timestamp: {timestamp}")
+        hours, minutes, seconds = (int(part) for part in match.groups())
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError(f"invalid timestamp: {timestamp}")
+        starts.append(((hours * 60 + minutes) * 60 + seconds) * 1_000)
+    if any(next_start <= start for start, next_start in zip(starts, starts[1:], strict=False)):
+        raise ValueError("timestamps must be strictly increasing")
+    return [
+        SubtitleCue(
+            start_ms=start,
+            end_ms=starts[index + 1] if index + 1 < len(starts) else start + DEFAULT_LAST_CUE_DURATION_MS,
+            text=starts_and_text[index][1],
+        )
+        for index, start in enumerate(starts)
+    ]
+
+
+def _convert_content(content: str, from_format: str, to_format: str) -> str:
+    """Converts content between vtt/srt/timestamps/text formats."""
+    pairs: list[tuple[str | None, str]]
+    if from_format in ("vtt", "srt"):
+        cues = _parse_subtitle_cues(content, from_format)
+        if to_format in ("vtt", "srt"):
+            return _render_subtitle_cues(cues, to_format)
+        pairs = [
+            (_format_subtitle_timestamp(cue.start_ms, "vtt").split(".")[0], " ".join(cue.text.split())) for cue in cues
+        ]
+    elif from_format == "timestamps":
+        pairs = _parse_timestamped_text(content)
+    else:
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        pairs = [(None, line) for line in lines]
+    if not pairs:
+        raise ValueError("input is empty")
+
+    if to_format == "text":
+        return normalize_pasted_text(" ".join(text for _timestamp, text in pairs))
+    if to_format == "timestamps":
+        return "\n".join(f"[{timestamp}] {text}" if timestamp else text for timestamp, text in pairs)
+    if to_format in ("vtt", "srt"):
+        return _render_subtitle_cues(_timestamp_pairs_to_cues(pairs, to_format), to_format)
+    raise ValueError(f"unknown to-format: {to_format}")
+
+
+def cmd_convert(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """Converts between subtitle/text formats (vtt, srt, timestamps, text)."""
     from pathlib import Path
 
+    from_format = args.from_format
     if args.input == "-":
+        if not from_format:
+            print("Error: -f/--from-format is required when input is -", file=sys.stderr)
+            return 1
         content = sys.stdin.read()
+        input_path: Path | None = None
     else:
         input_path = Path(args.input)
         if not input_path.exists():
-            print(f"Error: file not found: {input_path}", file=sys.stderr)
+            print(f"Error: file not found: {args.input}", file=sys.stderr)
             return 1
+        if not input_path.is_file():
+            print(
+                f"Error: not a file: {input_path} (expected a subtitle or text file; got a directory?)",
+                file=sys.stderr,
+            )
+            return 1
+        if not from_format:
+            from_format = _guess_format_from_extension(input_path)
+            if not from_format:
+                print(
+                    f"Error: cannot guess input format from extension {input_path.suffix!r}; use -f/--from-format",
+                    file=sys.stderr,
+                )
+                return 1
         content = input_path.read_text()
 
-    result = simplify_vtt(content)
+    output_is_stdout = not args.output or args.output == "-"
+    to_format = args.to_format
+    if not to_format:
+        if not output_is_stdout and args.output:
+            to_format = _guess_format_from_extension(Path(args.output))
+        if not to_format:
+            # No extension to guess from: plain text is the safest default
+            to_format = "text"
 
-    if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(result + "\n")
-        print(f"Saved: {output_path}", file=sys.stderr)
-    else:
-        print(result)
-    return 0
-
-
-def _format_extension(response_format):
-    return {"text": ".txt", "vtt": ".vtt", "srt": ".srt"}[response_format]
-
-
-def cmd_batch_transcribe(args, config):
-    import time
-
-    ensure_server(config, silent=True)
-    if not is_server_running(config):
-        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
+    try:
+        result = _convert_content(content, from_format, to_format)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    language = args.language or config["dictation"]["language"]
-    url = server_url(config)
-    ext = _format_extension(args.response_format)
-
-    audio_files = sorted(
-        path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
-    )
-    if not audio_files:
-        print(f"No audio files found in {args.input_dir}", file=sys.stderr)
-        return 1
-
-    pending = []
-    for audio_file in audio_files:
-        output_file = args.output_dir / (audio_file.stem + ext)
-        if not output_file.exists():
-            pending.append((audio_file, output_file))
-
-    skipped = len(audio_files) - len(pending)
-    if skipped:
-        print(f"Skipping {skipped} already transcribed file(s)", file=sys.stderr)
-    if not pending:
-        print("All files already transcribed", file=sys.stderr)
+    if output_is_stdout:
+        print(result, end="" if result.endswith("\n") else "\n")
         return 0
 
-    for idx, (audio_file, output_file) in enumerate(pending, 1):
-        print(f"[{idx}/{len(pending)}] {audio_file.name}...", file=sys.stderr, flush=True)
-        start = time.perf_counter()
-        try:
-            result = transcribe(url, audio_file, language, args.response_format)
-            output_file.write_text(result + "\n")
-            elapsed = time.perf_counter() - start
-            print(f"  Saved: {output_file.name} ({elapsed:.1f}s)", file=sys.stderr)
-        except Exception as exc:
-            print(f"  Error: {exc}", file=sys.stderr)
-            continue
-
-    print(f"Done. Output: {args.output_dir}", file=sys.stderr)
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(result)
+    print(f"Saved: {output_path}", file=sys.stderr)
     return 0
 
 
-def cmd_batch_simplify_vtt(args, config):
+def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     vtt_files = sorted(path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() == ".vtt")
     if not vtt_files:
         print(f"No VTT files found in {args.input_dir}", file=sys.stderr)
@@ -1904,15 +2227,28 @@ def cmd_batch_simplify_vtt(args, config):
         print("All files already simplified", file=sys.stderr)
         return 0
 
+    succeeded = 0
+    failed = 0
     for idx, (vtt_file, output_file) in enumerate(pending, 1):
         print(f"[{idx}/{len(pending)}] {vtt_file.name}...", file=sys.stderr, flush=True)
-        content = vtt_file.read_text()
-        result = simplify_vtt(content)
-        output_file.write_text(result + "\n")
-        print(f"  Saved: {output_file.name}", file=sys.stderr)
+        temp_file = output_file.with_name(f".{output_file.name}.tmp")
+        try:
+            content = vtt_file.read_text()
+            result = simplify_vtt(content)
+            temp_file.write_text(result + "\n")
+            temp_file.replace(output_file)
+            succeeded += 1
+            print(f"  Saved: {output_file.name}", file=sys.stderr)
+        except Exception as exc:
+            failed += 1
+            temp_file.unlink(missing_ok=True)
+            print(f"  Error: {exc}", file=sys.stderr)
 
-    print(f"Done. Output: {args.output_dir}", file=sys.stderr)
-    return 0
+    print(
+        f"Done: {succeeded} succeeded, {failed} failed, {skipped} skipped. Output: {args.output_dir}",
+        file=sys.stderr,
+    )
+    return 1 if failed else 0
 
 
 def cmd_benchmark(args, config):
@@ -1936,10 +2272,11 @@ def cmd_benchmark(args, config):
     return 0
 
 
-def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+def cmd_config(args, config):
     import json
 
-    if args.output_format == "toml":
+    output_format = getattr(args, "output_format", "json")
+    if output_format == "toml":
         print(_config_as_toml(config), end="")
     else:
         print(json.dumps(config, default=str, ensure_ascii=False, indent=2))
@@ -1948,6 +2285,7 @@ def cmd_config(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
 
 def _config_init(args: argparse.Namespace) -> int:
     """Creates the config file from the template. Refuses to overwrite without --force."""
+    from pathlib import Path
 
     selected_path = args.output or vars(args).get("config")
     path = Path(selected_path).expanduser() if selected_path else _config_path()
@@ -1960,83 +2298,6 @@ def _config_init(args: argparse.Namespace) -> int:
     print(f"Config created: {path}", file=sys.stderr)
     if args.force:
         print("(existing file was overwritten)", file=sys.stderr)
-    return 0
-
-
-DICTATION_RECORDING_SUFFIXES = frozenset((".wav", ".flac", ".opus"))
-
-
-def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
-    """Lists <audio_dir>/YYYY/MM/<timestamp>.<suffix> files created by dictation.
-
-    Only that exact layout qualifies: audio-dir is user-configurable, and a
-    recursive *.wav/*.flac/*.txt glob pointed at a music folder would remove
-    the library. The stem is the now_timestamp() format, YYYYMMDD-HHMMSS.
-    """
-    import re
-
-    stem_pattern = re.compile(r"^\d{8}-\d{6}$")
-    found = []
-    for year_dir in audio_dir.glob("[0-9][0-9][0-9][0-9]"):
-        for month_dir in year_dir.glob("[0-9][0-9]"):
-            if not month_dir.is_dir():
-                continue
-            for path in month_dir.iterdir():
-                if path.is_file() and path.suffix.lower() in suffixes and stem_pattern.match(path.stem):
-                    found.append(path)
-    return sorted(found)
-
-
-def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    """Removes dictation recordings and/or transcripts from the audio directory.
-
-    Lists what it found and asks for confirmation; --force removes right away.
-    --what selects what is removed: recordings, transcripts, or both (default).
-    """
-
-    audio_dir = Path(config["dictate"]["audio_dir"])
-    if not audio_dir.exists():
-        print(f"Audio directory does not exist: {audio_dir}", file=sys.stderr)
-        return 0
-
-    what = args.what
-    recordings = _dictation_files(audio_dir, DICTATION_RECORDING_SUFFIXES) if what in ("recordings", "both") else []
-    transcripts = _dictation_files(audio_dir, frozenset((".txt",))) if what in ("transcripts", "both") else []
-
-    total_mb = sum(path.stat().st_size for path in recordings) / (1024 * 1024)
-    print(f"Audio directory: {audio_dir}", file=sys.stderr)
-    print(f"  Recordings: {len(recordings)} file(s), {total_mb:.1f} MB", file=sys.stderr)
-    print(f"  Transcripts: {len(transcripts)} file(s)", file=sys.stderr)
-
-    if not recordings and not transcripts:
-        print("Nothing to remove.", file=sys.stderr)
-        return 0
-
-    total = len(recordings) + len(transcripts)
-    if not args.force:
-        for path in sorted(recordings + transcripts):
-            print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
-        answer = input(f"Remove all {total} file(s)? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            print("Aborted.", file=sys.stderr)
-            return 1
-
-    count = 0
-    for path in recordings:
-        path.unlink()
-        count += 1
-    for path in transcripts:
-        path.unlink()
-        count += 1
-
-    # Remove now-empty month/year directories (deepest first)
-    for directory in sorted((parent for parent in audio_dir.rglob("*") if parent.is_dir()), reverse=True):
-        with contextlib.suppress(OSError):
-            directory.rmdir()
-    with contextlib.suppress(OSError):
-        audio_dir.rmdir()
-
-    print(f"Removed {count} file(s).", file=sys.stderr)
     return 0
 
 
@@ -2159,15 +2420,8 @@ def main():
     if command == "detect":
         sys.exit(cmd_detect(args))
 
-
-
-    if command == "config":
-        if args.config_action is None:
-            # No default action, like the bare `digue`: show what is available.
-            args.config_parser.print_help()
-            sys.exit(1)
-        if args.config_action == "init":
-            sys.exit(_config_init(args))
+    if command == "config" and getattr(args, "config_action", None) == "init":
+        sys.exit(_config_init(args))
 
     try:
         config = load_config(args.config)
@@ -2184,7 +2438,7 @@ def main():
         "status": cmd_status,
         "dictate": cmd_dictate,
         "transcribe": cmd_transcribe,
-        "simplify-vtt": cmd_simplify_vtt,
+        "convert": cmd_convert,
         "batch-transcribe": cmd_batch_transcribe,
         "batch-simplify-vtt": cmd_batch_simplify_vtt,
         "benchmark": cmd_benchmark,

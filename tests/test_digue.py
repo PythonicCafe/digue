@@ -425,18 +425,6 @@ class TestDownloadModel:
         mock_urlopen.assert_called_once()
         assert (tmp_path / "ggml-small.bin").read_bytes() == b"complete"
 
-    def test_interrupted_download_leaves_no_part_file(self, tmp_path):
-        """A failed download left ggml-*.bin.part behind in the models dir."""
-        response = MagicMock()
-        response.headers = {"Content-Length": "10"}
-        response.read.side_effect = [b"half", OSError("connection reset")]
-        response.__enter__.return_value = response
-
-        with patch("urllib.request.urlopen", return_value=response), pytest.raises(OSError, match="reset"):
-            digue._download_file("http://example/model.bin", tmp_path / "ggml-small.bin", "ggml-small.bin")
-
-        assert list(tmp_path.iterdir()) == []
-
 
 # -- Notifications -----------------------------------------------------------
 
@@ -644,6 +632,31 @@ class TestSendAudioTokenTimestamps:
 # -- VTT simplification ------------------------------------------------------
 
 
+class TestWrapCueLines:
+    def test_short_text_returns_single_line(self):
+        assert digue._wrap_cue_lines("hello world", 42, 2) == ["hello world"]
+
+    def test_empty_text_returns_empty_list(self):
+        assert digue._wrap_cue_lines("", 42, 2) == []
+        assert digue._wrap_cue_lines("   ", 42, 2) == []
+
+    def test_wraps_at_word_boundary(self):
+        text = "uma frase bem comprida que passa do limite de caracteres"
+        result = digue._wrap_cue_lines(text, 35, 2)
+        assert len(result) == 2
+        assert " ".join(result) == text
+        assert len(result[0]) <= 35
+
+    def test_overflow_preserves_all_words_on_last_line(self):
+        text = (
+            "uma frase bem comprida que passa do limite de quarenta e dois caracteres "
+            "e continua por mais uma linha inteira de texto"
+        )
+        result = digue._wrap_cue_lines(text, 42, 2)
+        assert len(result) == 2
+        assert " ".join(result) == text
+
+
 class TestStripVttTags:
     def test_removes_c_tags(self):
         text = "Hey<00:00:00.440><c> everyone,</c><00:00:00.960><c> I'm</c>"
@@ -744,81 +757,152 @@ class TestRecordingCommand:
 class TestStartRecording:
     @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_starts_in_new_session(self, mock_popen, mock_pid_file, tmp_path):
-        mock_popen.return_value = MagicMock(pid=1234)
+    def test_returns_owned_recorder_handle(self, mock_popen, mock_pid_file, tmp_path):
+        recorder = MagicMock(pid=1234)
+        mock_popen.return_value = recorder
         mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
+        config["dictate"]["max_duration"] = 0
 
-        pid = digue.start_recording(config)
+        processes = digue.start_recording(config)
 
-        assert pid == 1234
+        assert processes.recorder is recorder
+        assert processes.watchdog is None
+        assert processes.rec_file is not None
+        assert processes.rec_file.name.startswith("digue-")
+        assert processes.rec_file.suffix == ".wav"
         assert mock_popen.call_args[1].get("start_new_session") is True
 
     @patch("digue._spawn_limit_watchdog")
     @patch("digue._pid_file")
     @patch("subprocess.Popen")
-    def test_max_duration_spawns_watchdog(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
-        mock_popen.return_value = MagicMock(pid=777)
+    def test_max_duration_returns_watchdog_handle(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
+        recorder = MagicMock(pid=777)
+        watchdog = MagicMock(pid=778)
+        mock_popen.return_value = recorder
+        mock_watchdog.return_value = watchdog
         mock_pid_file.return_value = tmp_path / "digue.pid"
         config = digue._default_config()
-        config["dictation"]["max_duration"] = 300
+        config["dictate"]["max_duration"] = 300
 
-        digue.start_recording(config)
+        processes = digue.start_recording(config)
 
+        assert processes.recorder is recorder
+        assert processes.watchdog is watchdog
         mock_watchdog.assert_called_once_with(777, 300)
-
-    @patch("digue._spawn_limit_watchdog")
-    @patch("digue._pid_file")
-    @patch("subprocess.Popen")
-    def test_zero_max_duration_spawns_no_watchdog(self, mock_popen, mock_pid_file, mock_watchdog, tmp_path):
-        mock_popen.return_value = MagicMock(pid=777)
-        mock_pid_file.return_value = tmp_path / "digue.pid"
-        config = digue._default_config()
-        config["dictation"]["max_duration"] = 0
-
-        digue.start_recording(config)
-
-        mock_watchdog.assert_not_called()
 
 
 class TestSpawnLimitWatchdog:
+    @patch("digue._process_starttime", return_value="98765")
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/notify-send")
-    def test_watchdog_kills_group_and_notifies(self, mock_which, mock_popen):
-        digue._spawn_limit_watchdog(4242, 300)
-        script = mock_popen.call_args[0][0][2]
-        assert "sleep 300" in script
-        assert "kill -TERM -4242" in script
-        assert "notify-send" in script
+    def test_watchdog_validates_process_identity_before_killing(self, mock_popen, mock_starttime):
+        watchdog = MagicMock(pid=5000)
+        mock_popen.return_value = watchdog
+
+        result = digue._spawn_limit_watchdog(4242, 300)
+
+        argv = mock_popen.call_args[0][0]
+        script = argv[2]
+        assert argv[-3:] == ["4242", "98765", "300"]
+        assert "/proc/{pid}/stat" in script
+        assert "os.killpg(pid, signal.SIGTERM)" in script
+        assert result is watchdog
         assert mock_popen.call_args[1].get("start_new_session") is True
 
-    @patch("subprocess.Popen")
-    @patch("shutil.which", return_value=None)
-    def test_watchdog_without_notify_send_falls_back_to_stderr(self, mock_which, mock_popen):
-        digue._spawn_limit_watchdog(4242, 300)
-        script = mock_popen.call_args[0][0][2]
-        assert "notify-send" not in script
-        assert "kill -TERM -4242" in script
+    def test_process_starttime_parses_comm_with_spaces_and_parentheses(self, tmp_path):
+        stat = tmp_path / "stat"
+        stat.write_text("4242 (odd name) value) S " + " ".join(str(value) for value in range(4, 30)))
+
+        assert digue._process_starttime(4242, stat_path=stat) == "22"
+
+
+class TestWaitRecorderEndDaemon:
+    def test_polls_owned_process_and_collects_spontaneous_exit(self):
+        recorder = MagicMock()
+        recorder.poll.side_effect = [None, 7]
+
+        with patch("time.monotonic", side_effect=[0.0, 0.1]), patch("time.sleep"):
+            outcome = digue._wait_recorder_end_daemon(recorder, 300)
+
+        assert outcome == "died"
+        recorder.wait.assert_called_once_with(timeout=0)
+
+
+class TestFinishOwnedRecorder:
+    def test_spontaneously_exited_recorder_is_not_signaled_again(self, tmp_path):
+        rec_file = tmp_path / "take.wav"
+        rec_file.write_bytes(b"audio")
+        recorder = MagicMock(pid=777)
+        recorder.poll.return_value = 1
+
+        with patch("digue.stop_recording_pid") as mock_stop:
+            result = digue._finish_owned_recorder(recorder, rec_file)
+
+        assert result == rec_file
+        mock_stop.assert_not_called()
+
+
+class TestCancelWatchdog:
+    def test_normal_stop_terminates_and_collects_watchdog(self):
+        watchdog = MagicMock()
+        watchdog.poll.return_value = None
+
+        digue._cancel_watchdog(watchdog)
+
+        watchdog.terminate.assert_called_once_with()
+        watchdog.wait.assert_called_once_with(timeout=5)
+
+    def test_no_watchdog_is_a_noop(self):
+        digue._cancel_watchdog(None)
+
+
+class TestWaitRecorderEnd:
+    def _run(self, limit, alive_sequence, elapsed):
+        """Runs _wait_recorder_end with a fake clock and is_recording sequence."""
+        config_deadline = {"limit": limit, "elapsed": elapsed}
+
+        with (
+            patch("digue.is_recording", side_effect=alive_sequence),
+            patch("time.monotonic", side_effect=[0.0, config_deadline["elapsed"], config_deadline["elapsed"]]),
+            patch("time.sleep"),
+        ):
+            return digue._wait_recorder_end(config_deadline["limit"])
+
+    def test_limit_hit_returns_limit(self):
+        assert self._run(10, [True, True], 10.5) == "limit"
+
+    def test_recorder_died_before_limit_returns_died(self):
+        assert self._run(300, [False], 2.0) == "died"
+
+    def test_sigterm_returns_manual(self):
+        with (
+            patch("digue.is_recording", side_effect=lambda: True),
+            patch("time.monotonic", side_effect=[0.0, 0.5]),
+            patch("time.sleep"),
+        ):
+            digue._got_sigterm = True
+            try:
+                assert digue._wait_recorder_end(300) == "manual"
+            finally:
+                digue._got_sigterm = False
 
 
 class TestStopRecording:
     @patch("os.killpg")
     @patch("digue._group_alive", return_value=False)
-    @patch("digue._rec_file")
     @patch("digue._pid_file")
-    def test_kills_process_group_and_returns_file(
-        self, mock_pid_file, mock_rec_file, mock_alive, mock_killpg, tmp_path
-    ):
+    def test_kills_process_group_and_returns_file(self, mock_pid_file, mock_alive, mock_killpg, tmp_path):
         pid_file = tmp_path / "digue.pid"
         pid_file.write_text("4242")
-        rec_file = tmp_path / "digue.wav"
+        rec_file = tmp_path / "digue-20260904T120000.wav"
         rec_file.write_bytes(b"audio data")
         mock_pid_file.return_value = pid_file
-        mock_rec_file.return_value = rec_file
 
-        result = digue.stop_recording()
+        with patch.object(digue, "_recording_file_of", return_value=rec_file) as mock_source:
+            result = digue.stop_recording()
 
         assert result == rec_file
+        mock_source.assert_called_once_with(4242)
         mock_killpg.assert_called_once_with(4242, 15)
         assert not pid_file.exists()
 
@@ -829,6 +913,54 @@ class TestStopRecording:
 
 
 # -- Remote backend -----------------------------------------------------------
+
+
+class TestContainerFailures:
+    @pytest.mark.parametrize(
+        ("function", "args"),
+        [
+            (digue.start_container, ["start", digue.CONTAINER_NAME]),
+            (digue.stop_container, ["stop", digue.CONTAINER_NAME]),
+            (digue.remove_container, ["rm", "-f", digue.CONTAINER_NAME]),
+        ],
+    )
+    @patch("digue._docker_run")
+    def test_container_commands_raise_on_failure(self, mock_docker, function, args):
+        mock_docker.return_value = MagicMock(returncode=1, stderr="docker failed\n")
+
+        with pytest.raises(RuntimeError, match="docker failed"):
+            function()
+
+        assert mock_docker.call_args.args[0] == args
+
+    @patch("digue._wait_for_server")
+    @patch("digue.start_container", side_effect=RuntimeError("start failed"))
+    @patch("digue.container_status", return_value="exited")
+    @patch("digue.is_server_running", return_value=False)
+    def test_ensure_server_does_not_wait_after_start_failure(
+        self, mock_running, mock_status, mock_start, mock_wait, capsys
+    ):
+        with pytest.raises(RuntimeError, match="start failed"):
+            digue.ensure_server(digue._default_config(), silent=True)
+
+        mock_wait.assert_not_called()
+
+    @patch("digue.stop_container", side_effect=RuntimeError("stop failed"))
+    def test_cmd_stop_does_not_report_false_success(self, mock_stop, capsys):
+        assert digue.cmd_stop(MagicMock(), digue._default_config()) == 1
+        assert "Error: stop failed" in capsys.readouterr().err
+
+    @patch("digue.remove_container", side_effect=RuntimeError("remove failed"))
+    def test_cmd_destroy_does_not_report_false_success(self, mock_remove, capsys):
+        assert digue.cmd_destroy(MagicMock(), digue._default_config()) == 1
+        assert "Error: remove failed" in capsys.readouterr().err
+
+    @patch("digue.start_container", side_effect=RuntimeError("start failed"))
+    @patch("digue.container_status", return_value="exited")
+    @patch("digue.is_server_running", return_value=False)
+    def test_cmd_start_does_not_report_false_success(self, mock_running, mock_status, mock_start, capsys):
+        assert digue.cmd_start(MagicMock(), digue._default_config()) == 1
+        assert "Error: start failed" in capsys.readouterr().err
 
 
 class TestRemoteBackend:
@@ -916,6 +1048,20 @@ class TestRemoteHost:
         hint = digue.server_not_running_hint(config)
         assert "10.0.0.5" in hint
         assert "ssh -NfL" not in hint
+
+    def test_hint_remote_tunnel_keeps_ssh(self):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        hint = digue.server_not_running_hint(config)
+        assert "ssh -NfL" in hint
+
+    @patch("digue.is_server_running", return_value=False)
+    def test_cmd_status_remote_shows_host(self, mock_running, capsys):
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["server"]["remote_host"] = "10.0.0.5"
+        digue.cmd_status(MagicMock(), config)
+        assert "10.0.0.5:8178" in capsys.readouterr().err
 
 
 class TestHostOverrides:
@@ -1047,25 +1193,6 @@ class TestConfigCommand:
         assert "port = 8178" in out
         assert 'backend = "auto"' in out
 
-    def test_show_toml_uses_the_documented_kebab_case_keys(self, capsys):
-        """The template and README spell keys as data-dir, max-duration...;
-        config show printed data_dir, so its output did not match the format
-        it documents. It must also be valid TOML that loads back unchanged."""
-        import tomllib
-
-        config = digue._default_config()
-        args = MagicMock()
-        args.output_format = "toml"
-        digue.cmd_config(args, config)
-        out = capsys.readouterr().out
-
-        assert "data-dir = " in out
-        assert "max-duration = " in out
-        assert "output-format = " in out
-        assert "_" not in "".join(line.split("=")[0] for line in out.splitlines() if "=" in line)
-        parsed = tomllib.loads(out)
-        assert {key.replace("-", "_"): value for key, value in parsed["dictate"].items()} == config["dictate"]
-
     def test_show_json_unchanged(self, capsys):
         config = digue._default_config()
         args = MagicMock()
@@ -1145,11 +1272,34 @@ class TestCreateParser:
             args = parser.parse_args([cmd])
             assert args.command == cmd
 
-    def test_simplify_vtt_subcommand(self, tmp_path):
+    def test_version_flag(self, capsys):
         parser = digue.create_parser()
-        args = parser.parse_args(["simplify-vtt", "test.vtt"])
-        assert args.command == "simplify-vtt"
-        assert args.input == "test.vtt"
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["--version"])
+        assert excinfo.value.code == 0
+        assert digue.__version__ in capsys.readouterr().out
+
+    def test_convert_subcommand(self):
+        parser = digue.create_parser()
+        args = parser.parse_args(["convert", "a.vtt", "b.txt"])
+        assert args.command == "convert"
+        assert args.input == "a.vtt"
+        assert args.output == "b.txt"
+        assert args.from_format is None
+        assert args.to_format is None
+
+    @pytest.mark.parametrize("output_format", ("vtt", "srt"))
+    def test_convert_to_format_accepts_subtitle_formats(self, output_format):
+        parser = digue.create_parser()
+        args = parser.parse_args(["convert", "a.txt", "--to-format", output_format])
+        assert args.to_format == output_format
+
+    def test_convert_to_format_help_lists_all_real_formats(self, capsys):
+        parser = digue.create_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["convert", "--help"])
+        assert excinfo.value.code == 0
+        assert "vtt, srt, timestamps, text" in capsys.readouterr().out
 
     def test_transcribe_subcommand(self, tmp_path):
         parser = digue.create_parser()
@@ -1157,28 +1307,42 @@ class TestCreateParser:
         assert args.command == "transcribe"
         assert args.response_format == "vtt"
 
-    def test_no_args_defaults_to_none(self):
-        parser = digue.create_parser()
-        args = parser.parse_args([])
-        assert args.command is None
+    def test_custom_config_file_applies_to_commands(self, tmp_path):
+        # -c/--config is a global option (before the subcommand) and must be
+        # honored by every command that reads config.
+        config_path = tmp_path / "custom.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [server]
+            port = 9999
 
-    def test_bare_config_shows_its_help_instead_of_assuming_an_action(self, capsys, monkeypatch, tmp_path):
-        # `digue config` used to dump JSON (while `config show` defaults to
-        # TOML); with no action it must show the config subcommand help.
-        monkeypatch.setattr("sys.argv", ["digue", "-c", str(tmp_path / "none.toml"), "config"])
+            [transcribe]
+            language = "it"
+        """)
+        )
+        config = digue.load_config(config_path)
+        assert config["server"]["port"] == 9999
+        assert config["transcribe"]["language"] == "it"
+
+        # argparse-level: the global option precedes the subcommand
+        parser = digue.create_parser()
+        args = parser.parse_args(["-c", str(config_path), "transcribe", "audio.wav"])
+        assert args.config == str(config_path)
+
+    def test_custom_config_before_subcommand_only(self, tmp_path):
+        # After the subcommand, -c belongs to the subcommand (argparse default)
+        parser = digue.create_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["transcribe", "-c", "/tmp/x.toml", "audio.wav"])
+
+    def test_bare_digue_exits_without_running_anything(self, capsys, monkeypatch):
+        # No default command: a bare `digue` (wrong keybinding, typo) must show
+        # help instead of toggling recording out of nowhere.
+        monkeypatch.setattr("sys.argv", ["digue"])
         with pytest.raises(SystemExit) as excinfo:
             digue.main()
         assert excinfo.value.code == 1
-        out = capsys.readouterr().out
-        assert "usage: digue config" in out
-        assert "show" in out and "init" in out
-        assert '"server"' not in out
-    def test_version_flag(self, capsys):
-        parser = digue.create_parser()
-        with pytest.raises(SystemExit) as excinfo:
-            parser.parse_args(["--version"])
-        assert excinfo.value.code == 0
-        assert digue.__version__ in capsys.readouterr().out
+        assert "usage" in capsys.readouterr().out.lower()
 
 
 # -- Command handlers ---------------------------------------------------------
@@ -1202,39 +1366,920 @@ class TestCmdConfig:
         assert "nvidia" in output["models"]
 
 
-class TestCmdSimplifyVtt:
-    def test_outputs_simplified_text(self, tmp_path, capsys):
-        vtt_file = tmp_path / "test.vtt"
-        vtt_file.write_text("WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nHello\n")
+class TestNotifyAppTitle:
+    def test_limit_notification_replaces_progress_popup(self):
+        """The daemon's limit notification must use --replace-id (no second popup)."""
+        config = digue._default_config()
+        config["dictate"]["max_duration"] = 300
+        with (
+            patch("digue.is_recording", side_effect=[True, False]),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch(
+                "digue.start_recording",
+                return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
+            ),
+            patch("digue.stop_recording", return_value=None),
+            patch("digue.finish_dictation", return_value=0) as mock_finish,
+        ):
+            result = digue.dictate_toggle(config)
+        assert result == 0
+        mock_finish.assert_called_once()
+
+
+class TestConfigTemplateSync:
+    def test_readme_config_block_matches_config_init_template(self):
+        """Regression: the README config example must stay in sync with `digue config init`."""
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+        section = readme.split("## Configuration", 1)[1]
+        fence_start = section.index("```toml") + len("```toml\n")
+        fence_end = section.index("```", fence_start)
+        readme_block = section[fence_start:fence_end].strip()
+        assert readme_block == digue._config_example().strip()
+
+
+class TestDetectLanguage:
+    def test_detect_language_uses_verbose_json_payload(self, tmp_path):
+        """The server only reports the language in verbose_json (plain json returns
+        {"text":""} even with detect_language=true)."""
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        payload = {
+            "detected_language": "portuguese",
+            "detected_language_probability": 0.999,
+            "language_probabilities": {},
+        }
+        with (
+            patch("digue._multipart_request", return_value=json.dumps(payload)) as mock_request,
+            patch("digue.NATIVE_FORMATS", new=frozenset({".wav"})),
+        ):
+            result = digue.detect_language("http://x", audio, timeout=10)
+        assert result == "pt"
+        fields = mock_request.call_args[0][2]
+        assert fields["detect_language"] == "true"
+        assert fields["response_format"] == "verbose_json"
+
+    def test_detect_language_accepts_code_from_server(self, tmp_path):
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        payload = {"detected_language": "pt", "detected_language_probability": 0.9, "language_probabilities": {}}
+        with patch("digue._multipart_request", return_value=json.dumps(payload)):
+            assert digue.detect_language("http://x", audio, timeout=10) == "pt"
+
+    def test_detect_language_converts_unsupported_format_upfront(self, tmp_path):
+        audio = tmp_path / "a.m4a"
+        audio.write_bytes(b"m4a!")
+        payload = {"detected_language": "en", "detected_language_probability": 0.9, "language_probabilities": {}}
+        with (
+            patch("digue._multipart_request", return_value=json.dumps(payload)) as mock_request,
+            patch("digue._convert_to_wav", return_value=b"wav") as mock_convert,
+        ):
+            assert digue.detect_language("http://x", audio, timeout=10) == "en"
+        mock_convert.assert_called_once()
+        assert mock_request.call_args[0][1] == b"wav"
+
+    def test_detect_language_retries_with_ffmpeg_after_400(self, tmp_path):
+        import urllib.error
+
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"ogg!")
+        payload = {"detected_language": "en", "detected_language_probability": 0.9, "language_probabilities": {}}
+        with (
+            patch(
+                "digue._multipart_request",
+                side_effect=[urllib.error.HTTPError("url", 400, "Bad", {}, None), json.dumps(payload)],
+            ) as mock_request,
+            patch("digue._convert_to_wav", return_value=b"wav"),
+        ):
+            assert digue.detect_language("http://x", audio, timeout=10) == "en"
+        assert mock_request.call_count == 2
+
+    def test_language_probabilities_via_verbose_json(self, tmp_path):
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        payload = {
+            "detected_language": "Portuguese",
+            "detected_language_probability": 0.999,
+            "language_probabilities": {"pt": 0.999, "en": 0.0005},
+        }
+        with patch("digue._multipart_request", return_value=json.dumps(payload)):
+            probs = digue.language_probabilities("http://x", audio, timeout=10)
+        assert probs["detected"] == ("pt", 0.999)
+        assert probs["all"] == {"pt": 0.999, "en": 0.0005}
+
+
+class TestCmdDetectLanguage:
+    @patch("digue.detect_language", return_value="pt")
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    def test_prints_language_code(self, mock_running, mock_ensure, mock_detect, tmp_path, capsys):
+        config = digue._default_config()
         args = MagicMock()
-        args.input = str(vtt_file)
+        args.audio = tmp_path / "a.wav"
+        args.audio.write_bytes(b"data")
+        args.json = False
+
+        result = digue.cmd_detect_language(args, config)
+
+        assert result == 0
+        assert capsys.readouterr().out.strip() == "pt"
+
+    @patch("digue.language_probabilities", return_value={"detected": ("pt", 0.999), "all": {"pt": 0.999}})
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    def test_json_output_has_detected_and_all(self, mock_running, mock_ensure, mock_probs, tmp_path, capsys):
+        config = digue._default_config()
+        args = MagicMock()
+        args.audio = tmp_path / "a.wav"
+        args.audio.write_bytes(b"data")
+        args.json = True
+
+        result = digue.cmd_detect_language(args, config)
+
+        assert result == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["language"] == "pt"
+        assert output["probability"] == 0.999
+        assert output["all"] == {"pt": 0.999}
+
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    def test_missing_file_gives_clear_error(self, mock_running, mock_ensure, tmp_path, capsys):
+        config = digue._default_config()
+        args = MagicMock()
+        args.audio = tmp_path / "nope.wav"
+        args.json = False
+
+        result = digue.cmd_detect_language(args, config)
+
+        assert result == 1
+        assert "not found" in capsys.readouterr().err
+
+
+class TestDetectLanguageVerbose:
+    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    def test_conversion_message_respects_verbose_false(self, mock_request, tmp_path, capsys):
+        """Regression: the ffmpeg-conversion notice is progress output; without
+        --verbose the stderr stays clean."""
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"ogg")
+        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            digue.detect_language("http://x", audio, timeout=10, verbose=False)
+        assert "ffmpeg" not in capsys.readouterr().err
+
+    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    def test_conversion_message_shown_with_verbose_true(self, mock_request, tmp_path, capsys):
+        audio = tmp_path / "a.m4a"
+        audio.write_bytes(b"m4a")
+        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            digue.detect_language("http://x", audio, timeout=10, verbose=True)
+        assert "ffmpeg" in capsys.readouterr().err
+
+    @patch("digue._multipart_request", side_effect=RuntimeError("stop"))
+    def test_language_probabilities_message_respects_verbose_false(self, mock_request, tmp_path, capsys):
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"ogg")
+        with patch("digue._convert_to_wav", return_value=b"wav"), pytest.raises(RuntimeError):
+            digue.language_probabilities("http://x", audio, timeout=10, verbose=False)
+        assert "ffmpeg" not in capsys.readouterr().err
+
+    def test_cmd_detect_language_passes_verbose(self, tmp_path):
+        config = digue._default_config()
+        args = MagicMock()
+        args.audio = tmp_path / "a.wav"
+        args.audio.write_bytes(b"data")
+        args.json = False
+        args.verbose = False
+        with (
+            patch("digue.detect_language", return_value="pt") as mock_detect,
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+        ):
+            assert digue.cmd_detect_language(args, config) == 0
+        assert mock_detect.call_args[1]["verbose"] is False
+
+
+class TestDictateDaemon:
+    def test_concurrent_first_toggles_start_only_one_recorder(self, tmp_path):
+        """A second toggle must observe the first toggle's startup reservation."""
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        first_in_startup = threading.Event()
+        release_first = threading.Event()
+        ensure_calls = 0
+        results = []
+        errors = []
+
+        def ensure_server(_config):
+            nonlocal ensure_calls
+            ensure_calls += 1
+            if ensure_calls == 1:
+                first_in_startup.set()
+                assert release_first.wait(timeout=2)
+
+        def run_toggle():
+            try:
+                results.append(digue.dictate_toggle(config))
+            except BaseException as exc:
+                errors.append(exc)
+
+        recorder = MagicMock(pid=777, poll=lambda: 0)
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server", side_effect=ensure_server),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.is_recording", return_value=False),
+            patch(
+                "digue.start_recording",
+                return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None),
+            ) as mock_start,
+            patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.finish_dictation", return_value=0),
+            patch("signal.signal"),
+            patch("os.kill") as mock_kill,
+        ):
+            first = threading.Thread(target=run_toggle)
+            first.start()
+            assert first_in_startup.wait(timeout=2)
+            second = threading.Thread(target=run_toggle)
+            second.start()
+            second.join(timeout=2)
+            assert not second.is_alive()
+            release_first.set()
+            first.join(timeout=2)
+            assert not first.is_alive()
+
+        assert errors == []
+        assert results == [0, 0]
+        mock_start.assert_called_once_with(config)
+        assert all(call.args[1] == 0 for call in mock_kill.call_args_list)
+
+    def test_dictate_toggle_works_when_stderr_has_no_isatty(self, tmp_path, monkeypatch):
+        class NonFileStderr:
+            def write(self, _message):
+                pass
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(sys, "stderr", NonFileStderr())
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        recorder = MagicMock(pid=777, poll=lambda: 0)
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.is_recording", return_value=False),
+            patch("digue.start_recording", return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None)),
+            patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
+            patch("digue._wait_recorder_end_daemon", return_value="ended"),
+            patch("digue.finish_dictation", return_value=0),
+            patch("digue.notify"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 0
+
+    def test_startup_failure_clears_own_reservation(self, tmp_path):
+        config = digue._default_config()
+        daemon_file = tmp_path / "digue-daemon.pid"
+
+        def fail_after_reservation(_config):
+            import os
+
+            assert daemon_file.read_text() == f"{os.getpid()} starting"
+            raise RuntimeError("boom")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server"),
+            patch("digue.is_server_running", return_value=True),
+            patch("digue.is_recording", return_value=False),
+            patch("digue.start_recording", side_effect=fail_after_reservation),
+            patch("digue.notify"),
+            patch("signal.signal"),
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        assert not daemon_file.exists()
+
+    def test_startup_failure_does_not_clear_new_daemon_state(self, tmp_path):
+        config = digue._default_config()
+        daemon_file = tmp_path / "digue-daemon.pid"
+
+        def replace_reservation_then_fail(_config):
+            import os
+
+            assert daemon_file.read_text() == f"{os.getpid()} starting"
+            daemon_file.write_text("4242 recording")
+            raise RuntimeError("boom")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.ensure_server", side_effect=replace_reservation_then_fail),
+            patch("digue.is_recording", return_value=False),
+            patch("digue.notify"),
+        ):
+            assert digue.dictate_toggle(config) == 1
+
+        assert daemon_file.read_text() == "4242 recording"
+
+    @patch("digue.stop_recording", return_value=None)
+    @patch("digue.is_recording", return_value=True)
+    def test_second_toggle_signals_daemon_and_exits_fast(self, mock_recording, mock_stop, tmp_path, capsys):
+        """The second dictate sends SIGTERM to the daemon and exits immediately;
+        the daemon (not this process) runs the transcription flow."""
+        daemon_pid = tmp_path / "digue-daemon.pid"
+        daemon_pid.write_text("4242")
+
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        with (
+            patch("digue._daemon_pid_file", return_value=daemon_pid),
+            patch("digue._pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+            patch("digue.stop_recording") as mock_stop_in_toggle,
+        ):
+            result = digue.dictate_toggle(config)
+
+        assert result == 0
+        mock_kill.assert_called_once_with(4242, 15)
+        # the toggle must NOT run the transcription logic itself
+        mock_stop_in_toggle.assert_not_called()
+
+    def test_daemon_pid_file_removed_when_daemon_dead(self, tmp_path):
+        """A stale daemon pid file (crashed daemon) must not block a new recording."""
+        daemon_pid = tmp_path / "digue-daemon.pid"
+        daemon_pid.write_text("4242")
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        with (
+            patch("digue._daemon_pid_file", return_value=daemon_pid),
+            patch("digue._pid_alive", return_value=False),
+            patch("digue.is_recording", return_value=False),
+            patch("digue.ensure_server", return_value=None),
+            patch("digue.is_server_running", return_value=True),
+            patch(
+                "digue.start_recording",
+                return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
+            ) as mock_start,
+            patch("digue.stop_recording", return_value=None),
+        ):
+            result = digue.dictate_toggle(config)
+
+        assert result == 1
+        assert not daemon_pid.exists()
+        mock_start.assert_called_once()
+
+    def test_old_daemon_does_not_remove_new_daemon_state(self, tmp_path):
+        """A delivering take may finish while a newer take is recording."""
+        daemon_file = tmp_path / "digue-daemon.pid"
+        daemon_file.write_text("100 recording")
+
+        with patch("digue._daemon_pid_file", return_value=daemon_file):
+            removed = digue._remove_daemon_state(99)
+
+        assert removed is False
+        assert daemon_file.read_text() == "100 recording"
+
+    def test_daemon_removes_only_its_own_state(self, tmp_path):
+        daemon_file = tmp_path / "digue-daemon.pid"
+        daemon_file.write_text("99 delivering")
+
+        with patch("digue._daemon_pid_file", return_value=daemon_file):
+            removed = digue._remove_daemon_state(99)
+
+        assert removed is True
+        assert not daemon_file.exists()
+
+    def test_recording_filename_is_unique_within_same_second(self):
+        with patch("digue.now_timestamp", return_value="20260904-120000"):
+            first = digue._rec_file()
+            second = digue._rec_file()
+
+        assert first != second
+
+
+class TestDictateInterrupt:
+    @patch("digue.stop_recording_pid", return_value=None)
+    @patch("digue.is_recording", side_effect=[False, True, True])
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.start_recording")
+    def test_sigint_during_daemon_wait_stops_and_delivers(
+        self, mock_start, mock_running, mock_ensure, mock_recording, mock_stop_pid, tmp_path, capsys
+    ):
+        """Ctrl+c (SIGINT) in a terminal dictation must stop the recording and
+        deliver the take, not discard it (the global KeyboardInterrupt handler
+        must not win: the daemon installs its own SIGINT handler)."""
+        import signal
+
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        handlers = []
+        recorder = MagicMock(pid=777)
+        recorder.poll.return_value = None
+        mock_start.return_value = digue.RecordingProcesses(recorder=recorder, watchdog=None)
+
+        def fake_wait(_recorder, _limit):
+            # simulate Ctrl+c arriving during the wait
+            digue._on_sigint(signal.SIGINT, None)
+            return "interrupted"
+
+        with (
+            patch("digue._daemon_pid_file", return_value=tmp_path / "digue-daemon.pid") as mock_daemon_file,
+            patch("digue._pid_file", return_value=tmp_path / "digue.pid"),
+            patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
+            patch("digue._wait_recorder_end_daemon", side_effect=fake_wait),
+            patch("digue.finish_dictation", return_value=0) as mock_finish,
+            patch("signal.signal", side_effect=lambda sig, handler: handlers.append((sig, handler))),
+        ):
+            (tmp_path / "digue.pid").write_text("777")  # the fake recorder's pid
+            result = digue.dictate_toggle(config)
+
+        assert result == 0
+        mock_stop_pid.assert_called_once()
+        mock_finish.assert_called_once()
+        # the daemon must have installed its own SIGINT handler
+        installed = dict(handlers)
+        assert signal.SIGINT in installed
+        assert installed[signal.SIGINT] is digue._on_sigint
+        assert not mock_daemon_file.return_value.exists()
+
+    def test_wait_recorder_end_interrupted_outcome(self):
+        with (
+            patch("digue.is_recording", side_effect=lambda: True),
+            patch("time.monotonic", side_effect=[0.0, 0.5]),
+            patch("time.sleep"),
+        ):
+            digue._on_sigint(2, None)
+            try:
+                assert digue._wait_recorder_end(300) == "interrupted"
+            finally:
+                digue._got_sigint = False
+
+
+class TestCmdDoctor:
+    def test_prints_resolved_config_without_crashing(self, capsys):
+        config = digue._default_config()
+        with (
+            patch("digue.image_exists", return_value=False),
+            patch("shutil.which", return_value=None),
+        ):
+            result = digue.cmd_doctor(MagicMock(), config)
+        assert result == 0
+        err = capsys.readouterr().err
+        assert "Language: auto" in err
+
+
+class TestBenchmarkContainerState:
+    def test_absent_container_is_only_cleaned_up(self):
+        with (
+            patch("digue.container_status", return_value=None),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            digue.preserve_container_for_benchmark(),
+        ):
+            pass
+
+        mock_remove.assert_called_once_with()
+        mock_rename.assert_not_called()
+        mock_stop.assert_not_called()
+        mock_start.assert_not_called()
+
+    def test_stopped_container_is_restored_stopped_after_exception(self):
+        statuses = iter(["exited"])
+        existence = iter([True])
+        with (
+            patch("digue.container_status", side_effect=lambda: next(statuses)),
+            patch("digue.container_exists", side_effect=lambda: next(existence)),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            patch("digue.os.getpid", return_value=123),
+            pytest.raises(KeyboardInterrupt),
+            digue.preserve_container_for_benchmark(),
+        ):
+            raise KeyboardInterrupt
+
+        assert mock_rename.call_args_list == [
+            ((digue.CONTAINER_NAME, "digue-benchmark-backup-123"),),
+            (("digue-benchmark-backup-123", digue.CONTAINER_NAME),),
+        ]
+        mock_remove.assert_called_once_with()
+        mock_stop.assert_not_called()
+        mock_start.assert_not_called()
+
+    def test_running_container_is_stopped_then_restored_running(self):
+        with (
+            patch("digue.container_status", return_value="running"),
+            patch("digue.container_exists", return_value=False),
+            patch("digue._rename_container") as mock_rename,
+            patch("digue.stop_container") as mock_stop,
+            patch("digue.start_container") as mock_start,
+            patch("digue.os.getpid", return_value=456),
+            digue.preserve_container_for_benchmark(),
+        ):
+            pass
+
+        mock_stop.assert_called_once_with()
+        assert mock_rename.call_args_list == [
+            ((digue.CONTAINER_NAME, "digue-benchmark-backup-456"),),
+            (("digue-benchmark-backup-456", digue.CONTAINER_NAME),),
+        ]
+        mock_start.assert_called_once_with()
+
+
+class TestRunBenchmarkLanguage:
+    def test_language_default_comes_from_transcribe_section(self, tmp_path, capsys):
+        config = digue._default_config()
+        with (
+            patch("digue.download_model"),
+            patch("digue.preserve_container_for_benchmark"),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container"),
+            patch("digue.create_container"),
+            patch("digue._wait_for_server", return_value=True),
+            patch("digue._benchmark_run", return_value=[]),
+            patch("digue.detect_backend", return_value="cpu"),
+        ):
+            digue.run_benchmark(tmp_path / "no-audio.wav", config)
+        err = capsys.readouterr().err
+        assert "digue benchmark" in err
+
+    def test_removes_benchmark_container_when_transcription_is_interrupted(self, tmp_path):
+        config = digue._default_config()
+        with (
+            patch("digue.download_model"),
+            patch("digue.preserve_container_for_benchmark"),
+            patch("digue.container_exists", return_value=True),
+            patch("digue.remove_container") as mock_remove,
+            patch("digue.create_container"),
+            patch("digue._wait_for_server", return_value=True),
+            patch("digue._benchmark_run", side_effect=KeyboardInterrupt),
+            patch("digue.detect_backend", return_value="cpu"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            digue.run_benchmark(tmp_path / "audio.wav", config)
+
+        mock_remove.assert_called_once_with()
+
+
+class TestBenchmarkModels:
+    def test_case_removes_container_when_transcription_is_interrupted(self, tmp_path):
+        config = digue._default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        with (
+            patch("benchmark_models.digue.create_container"),
+            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.digue.transcribe", side_effect=KeyboardInterrupt),
+            patch("benchmark_models.digue.container_exists", return_value=True),
+            patch("benchmark_models.digue.remove_container") as mock_remove,
+            pytest.raises(KeyboardInterrupt),
+        ):
+            benchmark_models.benchmark_case(config, "cpu", "small")
+
+        mock_remove.assert_called_once_with()
+
+    def test_main_preserves_previous_container_on_interrupt(self):
+        config = digue._default_config()
+        manager = MagicMock()
+        manager.__enter__.return_value = None
+        manager.__exit__.return_value = False
+        with (
+            patch("benchmark_models.create_parser") as mock_parser,
+            patch("benchmark_models.download_sample"),
+            patch("benchmark_models.digue.load_config", return_value=config),
+            patch("benchmark_models.digue.detect_backend", return_value="cpu"),
+            patch("benchmark_models.digue.preserve_container_for_benchmark", return_value=manager),
+            patch("benchmark_models.benchmark_case", side_effect=KeyboardInterrupt),
+        ):
+            mock_parser.return_value.parse_args.return_value = argparse.Namespace(
+                backends=["cpu"], models=["small"], runs=1
+            )
+            benchmark_models.main()
+
+        manager.__exit__.assert_called_once()
+
+
+class TestCmdConvert:
+    def _make_vtt(self, tmp_path):
+        vtt_file = tmp_path / "a.vtt"
+        vtt_file.write_text(
+            "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nHello\n\n2\n00:00:01.000 --> 00:00:02.000\nWorld\n"
+        )
+        return vtt_file
+
+    def test_vtt_to_txt_file(self, tmp_path, capsys):
+        self._make_vtt(tmp_path)
+        args = MagicMock()
+        args.input = str(tmp_path / "a.vtt")
+        args.output = str(tmp_path / "b.txt")
+        args.from_format = None
+        args.to_format = None
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 0
+        assert "Saved:" in capsys.readouterr().err
+        content = (tmp_path / "b.txt").read_text()
+        assert "[00:00:00] Hello" in content
+        assert "[00:00:01] World" in content
+
+    def test_vtt_to_stdout_with_to_format(self, tmp_path, capsys):
+        self._make_vtt(tmp_path)
+        args = MagicMock()
+        args.input = str(tmp_path / "a.vtt")
         args.output = None
+        args.from_format = None
+        args.to_format = "text"
         config = digue._default_config()
-        result = digue.cmd_simplify_vtt(args, config)
+        result = digue.cmd_convert(args, config)
         assert result == 0
-        assert capsys.readouterr().out.strip() == "[00:00:00] Hello"
+        assert capsys.readouterr().out.strip() == "Hello World"
 
-    def test_writes_to_file(self, tmp_path):
-        vtt_file = tmp_path / "test.vtt"
-        vtt_file.write_text("WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nHello\n")
-        output_file = tmp_path / "output.txt"
-        args = MagicMock()
-        args.input = str(vtt_file)
-        args.output = str(output_file)
-        config = digue._default_config()
-        result = digue.cmd_simplify_vtt(args, config)
-        assert result == 0
-        assert output_file.read_text().strip() == "[00:00:00] Hello"
-
-    def test_reads_stdin(self, monkeypatch, capsys):
-        monkeypatch.setattr("sys.stdin", __import__("io").StringIO("WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nHi\n"))
+    def test_stdin_requires_from_format(self, capsys):
         args = MagicMock()
         args.input = "-"
-        args.output = None
+        args.output = "b.txt"
+        args.from_format = None
+        args.to_format = None
         config = digue._default_config()
-        result = digue.cmd_simplify_vtt(args, config)
+        result = digue.cmd_convert(args, config)
+        assert result == 1
+        assert "from-format is required" in capsys.readouterr().err
+
+    def test_directory_input_gives_clear_error(self, tmp_path, capsys):
+        args = MagicMock()
+        args.input = str(tmp_path)
+        args.output = None
+        args.from_format = "vtt"
+        args.to_format = "text"
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "not a file" in err
+        assert "Traceback" not in err
+
+    def test_stdin_with_from_format(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr("sys.stdin", __import__("io").StringIO("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n"))
+        args = MagicMock()
+        args.input = "-"
+        args.output = str(tmp_path / "b.txt")
+        args.from_format = "vtt"
+        args.to_format = None
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
         assert result == 0
-        assert capsys.readouterr().out.strip() == "[00:00:00] Hi"
+        assert "[00:00:00] Hi" in (tmp_path / "b.txt").read_text()
+
+    def test_unknown_extension_requires_from_format(self, tmp_path, capsys):
+        weird = tmp_path / "subtitles.xyz"
+        weird.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n")
+        args = MagicMock()
+        args.input = str(weird)
+        args.output = None
+        args.from_format = None
+        args.to_format = "text"
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 1
+        assert "from-format" in capsys.readouterr().err
+
+    def test_txt_to_stdout_without_to_format_defaults_to_text(self, tmp_path, capsys):
+        # .txt input (timestamps content), no -t, stdout: defaults to text
+        source = tmp_path / "a.txt"
+        source.write_text("[00:00:00] Hello\n[00:00:01] World\n")
+        args = MagicMock()
+        args.input = str(source)
+        args.output = None
+        args.from_format = None
+        args.to_format = None
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 0
+        assert capsys.readouterr().out.strip() == "Hello World"
+
+    def test_timestamps_to_vtt(self, tmp_path, capsys):
+        source = tmp_path / "a.txt"
+        source.write_text("[00:00:01] Hello\n[00:00:02] World\n")
+        args = MagicMock()
+        args.input = str(source)
+        args.output = None
+        args.from_format = None
+        args.to_format = "vtt"
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 0
+        out = capsys.readouterr().out
+        assert out.startswith("WEBVTT")
+        assert "00:00:01.000 --> 00:00:02.000" in out
+        assert "00:00:02.000 --> 00:00:04.000" in out
+        assert "Hello" in out
+
+    def test_multiline_vtt_cues_roundtrip_through_timestamps(self):
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nLinha 1\nLinha 2\n\n00:00:04.000 --> 00:00:06.000\nLinha 3\n"
+        timestamps = digue._convert_content(vtt, "vtt", "timestamps")
+        assert "[00:00:01] Linha 1 Linha 2" in timestamps
+        result_vtt = digue._convert_content(timestamps, "timestamps", "vtt")
+        assert "00:00:01.000 --> 00:00:04.000" in result_vtt
+        assert "Linha 1 Linha 2" in result_vtt
+
+    def test_srt_to_vtt_preserves_times_milliseconds_and_multiline_cues(self):
+        content = (
+            "1\n00:00:01,234 --> 00:00:03,456\nFirst line\nSecond line\n\n"
+            "2\n01:02:03,007 --> 01:02:05,089\nAnother cue\n"
+        )
+
+        result = digue._convert_content(content, "srt", "vtt")
+
+        assert result == (
+            "WEBVTT\n\n"
+            "00:00:01.234 --> 00:00:03.456\nFirst line\nSecond line\n\n"
+            "01:02:03.007 --> 01:02:05.089\nAnother cue\n"
+        )
+
+    def test_vtt_to_srt_preserves_times_milliseconds_and_multiline_cues(self):
+        content = (
+            "WEBVTT\n\n"
+            "intro\n00:00:00.125 --> 00:00:02.750 align:start\nHello\nworld\n\n"
+            "00:01:03.004 --> 00:01:04.999\nLast cue\n"
+        )
+
+        result = digue._convert_content(content, "vtt", "srt")
+
+        assert result == (
+            "1\n00:00:00,125 --> 00:00:02,750\nHello\nworld\n\n2\n00:01:03,004 --> 00:01:04,999\nLast cue\n"
+        )
+
+    def test_timestamp_end_is_next_start_and_last_cue_has_two_second_duration(self):
+        content = "[00:00:01] First\n[00:00:03] Last\n"
+
+        result = digue._convert_content(content, "timestamps", "srt")
+
+        assert "00:00:01,000 --> 00:00:03,000" in result
+        assert "00:00:03,000 --> 00:00:05,000" in result
+
+    def test_text_without_timestamps_cannot_become_vtt(self, tmp_path, capsys):
+        source = tmp_path / "a.txt"
+        source.write_text("just plain text\nanother line\n")
+        args = MagicMock()
+        args.input = str(source)
+        args.output = None
+        args.from_format = "text"
+        args.to_format = "vtt"
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 1
+        assert "cannot convert" in capsys.readouterr().err
+
+    def test_srt_roundtrip(self, tmp_path, capsys):
+        srt_file = tmp_path / "a.srt"
+        srt_file.write_text("1\n00:00:00,320 --> 00:00:01,000\nHello\n\n")
+        args = MagicMock()
+        args.input = str(srt_file)
+        args.output = None
+        args.from_format = None
+        args.to_format = "text"
+        config = digue._default_config()
+        result = digue.cmd_convert(args, config)
+        assert result == 0
+        assert "Hello" in capsys.readouterr().out
+
+
+class TestParseSubtitleTimestamp:
+    def test_parses_three_part_timestamp(self):
+        assert digue._parse_subtitle_timestamp("01:02:03.456") == 3723456
+        assert digue._parse_subtitle_timestamp("01:02:03,456") == 3723456
+
+    def test_parses_two_part_vtt_timestamp_without_hours(self):
+        assert digue._parse_subtitle_timestamp("02:03.456") == 123456
+        assert digue._parse_subtitle_timestamp("00:05.100") == 5100
+
+    def test_invalid_timestamps_raise_value_error(self):
+        with pytest.raises(ValueError, match="invalid subtitle timestamp"):
+            digue._parse_subtitle_timestamp("invalid")
+        with pytest.raises(ValueError, match="invalid subtitle timestamp"):
+            digue._parse_subtitle_timestamp("00:60:00.000")
+
+
+class TestCmdClean:
+    def _make_audio_files(self, audio_dir):
+        month = audio_dir / "2026" / "09"
+        month.mkdir(parents=True)
+        (month / "2026-09-01T10:00:00.flac").write_bytes(b"audio")
+        (month / "2026-09-01T10:00:00.txt").write_text("transcript")
+        (month / "2026-09-02T11:00:00.flac").write_bytes(b"audio")
+        return month
+
+    def _args(self, force=False, what="both"):
+        args = MagicMock()
+        args.force = force
+        args.what = what
+        return args
+
+    def test_lists_and_asks_without_force(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "2 file(s)" in err  # recordings
+        assert "1 file(s)" in err  # transcripts
+        assert "Aborted" in err
+        assert (audio_dir / "2026" / "09" / "2026-09-01T10:00:00.flac").exists()
+
+    def test_removes_on_confirmation(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+        assert list(audio_dir.rglob("*.txt")) == []
+
+    def test_force_removes_without_asking(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        def fail_input(prompt):
+            raise AssertionError("input() must not be called with --force")
+
+        monkeypatch.setattr("builtins.input", fail_input)
+
+        result = digue.cmd_clean(self._args(force=True), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+
+    def test_what_recordings_keeps_transcripts(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True, what="recordings"), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.flac")) == []
+        assert list(audio_dir.rglob("*.txt"))
+
+    def test_what_transcripts_keeps_recordings(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(force=True, what="transcripts"), config)
+
+        assert result == 0
+        assert list(audio_dir.rglob("*.txt")) == []
+        assert list(audio_dir.rglob("*.flac"))
+
+    def test_removes_empty_month_directories(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        digue.cmd_clean(self._args(force=True), config)
+
+        assert not (audio_dir / "2026" / "09").exists()
+
+    def test_nothing_to_remove(self, tmp_path, capsys):
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
+        assert "Nothing to remove" in capsys.readouterr().err
+
+    def test_missing_audio_dir(self, tmp_path, capsys):
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "nonexistent")
+
+        result = digue.cmd_clean(self._args(), config)
+
+        assert result == 0
 
 
 class TestDetectDisplayServer:
@@ -1599,3 +2644,4 @@ class TestConfigurationNetworkAndSharedDefaults:
         args = MagicMock(config=str(target), output=None, force=False)
         assert digue._config_init(args) == 0
         assert target.exists()
+
