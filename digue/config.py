@@ -41,6 +41,7 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "image": "",
             "bind_ip": "127.0.0.1",
             "remote_host": "",
+            "container_name": "digue-whisper.cpp",
         },
         "transcribe": {
             "language": DEFAULT_LANGUAGE,
@@ -125,8 +126,10 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
     port = require_type("server", "port", int)
     if not 1 <= port <= 65535:
         raise ValueError(f"Invalid server.port: {port}; expected an integer from 1 to 65535")
-    for key in ("data_dir", "image", "bind_ip", "remote_host"):
+    for key in ("data_dir", "image", "bind_ip", "remote_host", "container_name"):
         require_type("server", key, str)
+    if not str(config["server"]["container_name"]).strip():
+        raise ValueError("Invalid server.container_name: expected a non-empty Docker container name")
 
     for key in ("language", "prompt"):
         require_type("transcribe", key, str)
@@ -298,6 +301,7 @@ CONFIG_TEMPLATE = """\
                                 #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
                                 #   main-vulkan crashes. `digue server start` recreates a
                                 #   container created from another image
+# container-name = "digue-whisper.cpp"  # Docker container name (`digue server start -n` overrides)
 
 # -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
 [transcribe]

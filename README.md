@@ -181,6 +181,7 @@ digue download                       # download model for detected backend
 digue download small                 # download a specific model
 digue server start                   # start (or create) server container
 digue server start --image ghcr.io/ggml-org/whisper.cpp:main   # with another image (recreates the container)
+digue server start -n digue-whisper.cpp  # Docker container name (default: digue-whisper.cpp)
 digue server stop                    # stop server container
 digue server destroy                 # stop and remove container
 digue server status                  # show server status
@@ -262,6 +263,7 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
                                 #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
                                 #   main-vulkan crashes. `digue server start` recreates a
                                 #   container created from another image
+# container-name = "digue-whisper.cpp"  # Docker container name (`digue server start -n` overrides)
 
 # -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
 [transcribe]

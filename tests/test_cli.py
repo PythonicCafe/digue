@@ -22,6 +22,12 @@ class TestCreateParser:
             args = parser.parse_args(["server", action])
             assert args.command == "server" and args.server_action == action
 
+    def test_server_start_container_name(self):
+        parser = cli_mod.create_parser()
+        assert parser.parse_args(["server", "start"]).container_name is None
+        assert parser.parse_args(["server", "start", "-n", "mine"]).container_name == "mine"
+        assert parser.parse_args(["server", "start", "--container-name", "mine"]).container_name == "mine"
+
     def test_benchmark_options(self):
         parser = cli_mod.create_parser()
         args = parser.parse_args(["benchmark"])

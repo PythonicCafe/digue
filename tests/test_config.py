@@ -25,6 +25,10 @@ class TestDefaultConfig:
         cfg = config._default_config()
         assert cfg["server"]["port"] == 8178
 
+    def test_default_container_name(self):
+        cfg = config._default_config()
+        assert cfg["server"]["container_name"] == "digue-whisper.cpp"
+
     def test_default_models_include_nvidia(self):
         cfg = config._default_config()
         assert "nvidia" in cfg["models"]

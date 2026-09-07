@@ -19,7 +19,7 @@ def existing_container_has_the_configured_image(monkeypatch):
     """Tests that mock `container_status` never ran `docker inspect` for the
     image; keep them that way (no docker in tests). Tests about the image
     check override this with their own patch."""
-    monkeypatch.setattr(container_mod, "container_image", lambda: None)
+    monkeypatch.setattr(container_mod, "container_image", lambda name=None: None)
 
 
 # -- Detection ----------------------------------------------------------------
@@ -165,6 +165,7 @@ class TestCreateContainer:
         assert "--gpus" in cmd
         assert "all" in cmd
         assert any("main-cuda" in arg for arg in cmd)
+        assert cmd[cmd.index("--name") + 1] == container_mod.CONTAINER_NAME == "digue-whisper.cpp"
 
     @patch("digue.container.download_model")
     @patch("digue.container.pull_image")
@@ -217,6 +218,17 @@ class TestCreateContainer:
         container_mod.create_container(config, "cpu")
         cmd = mock_docker.call_args[0][0]
         assert "192.168.1.10:8178:8080" in cmd
+
+    @patch("digue.container.download_model")
+    @patch("digue.container.pull_image")
+    @patch("digue.container._docker_run")
+    def test_uses_configured_container_name(self, mock_docker, mock_pull, mock_download):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = _default_config()
+        config["server"]["container_name"] = "whisper-lab"
+        container_mod.create_container(config, "cpu")
+        cmd = mock_docker.call_args[0][0]
+        assert cmd[cmd.index("--name") + 1] == "whisper-lab"
 
     @patch("digue.container.download_model")
     @patch("digue.container.pull_image")
@@ -558,7 +570,7 @@ class TestContainerFailures:
 
         assert mock_notify.call_args_list == [
             call("Server starting..."),
-            call("Server failed to start (see: docker logs digue)", timeout_ms=10000),
+            call(f"Server failed to start (see: docker logs {container_mod.CONTAINER_NAME})", timeout_ms=10000),
         ]
 
     @pytest.mark.parametrize(
@@ -588,7 +600,7 @@ class TestContainerFailures:
         assert container_mod.ensure_server(config, silent=True) == expected_backend
 
         if status == "exited":
-            mock_start.assert_called_once_with()
+            mock_start.assert_called_once_with(container_mod.CONTAINER_NAME)
             mock_create.assert_not_called()
         else:
             mock_start.assert_not_called()
@@ -747,6 +759,21 @@ class TestServerStartImage:
         ]
         mock_docker.return_value = MagicMock(returncode=1, stdout="")
         assert container_mod.container_image() is None
+
+    @patch("digue.container._wait_for_server", return_value=True)
+    @patch("digue.container.create_container")
+    @patch("digue.container.container_status", return_value=None)
+    @patch("digue.container.is_server_running", return_value=False)
+    def test_container_name_option_is_stored_on_the_config(self, mock_running, mock_status, mock_create, mock_wait):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        args = MagicMock(image=None, container_name="whisper-lab")
+
+        assert container_mod.cmd_server_start(args, config) == 0
+
+        assert config["server"]["container_name"] == "whisper-lab"
+        mock_status.assert_called_once_with("whisper-lab")
+        mock_create.assert_called_once_with(config, "cpu")
 
 
 class TestRemoteBackend:

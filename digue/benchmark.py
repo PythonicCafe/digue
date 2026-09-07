@@ -99,6 +99,7 @@ def benchmark_case(
         container_exists,
         create_container,
         remove_container,
+        resolve_container_name,
         resolve_image,
         server_url,
     )
@@ -106,6 +107,7 @@ def benchmark_case(
     label = f"{backend} / {model}"
     print(f"=== {label} ===", file=sys.stderr)
     case_config = _case_config(config, backend, model)
+    name = resolve_container_name(case_config)
     print(f"  Image: {resolve_image(backend, case_config)}", file=sys.stderr)
     language = config["transcribe"]["language"]
     try:
@@ -117,7 +119,7 @@ def benchmark_case(
 
         print("  Waiting for server...", file=sys.stderr, flush=True)
         if not _wait_for_server(case_config, verbose=True):
-            print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
+            print(f"  Server failed to start (see: docker logs {name}), skipping", file=sys.stderr)
             return None
 
         try:
@@ -142,8 +144,8 @@ def benchmark_case(
             "text": results[-1][1],
         }
     finally:
-        if container_exists():
-            remove_container()
+        if container_exists(name):
+            remove_container(name)
 
 
 def default_backends(config: dict[str, dict[str, Any]]) -> list[str]:
@@ -188,7 +190,7 @@ def run_benchmark(
     plus cpu, and BENCHMARK_MODELS. The user's own container is preserved
     around the run; Ctrl+c stops the cases, prints the partial summary and
     propagates (the caller decides how to exit)."""
-    from digue.container import preserve_container_for_benchmark
+    from digue.container import preserve_container_for_benchmark, resolve_container_name
 
     backends = backends or default_backends(config)
     models = list(models or BENCHMARK_MODELS)
@@ -203,7 +205,7 @@ def run_benchmark(
 
     results: list[dict[str, Any]] = []
     try:
-        with preserve_container_for_benchmark():
+        with preserve_container_for_benchmark(resolve_container_name(config)):
             for backend in backends:
                 for model in models:
                     result = benchmark_case(config, backend, model, audio_path, runs)

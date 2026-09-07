@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 from digue.config import model_for_backend
 
-CONTAINER_NAME = "digue"
+CONTAINER_NAME = "digue-whisper.cpp"
 
 BACKENDS = ("nvidia", "amd", "intel", "cpu", "remote")
 
@@ -105,23 +105,29 @@ def _docker_run(args: list[str], timeout: int | float = 30) -> subprocess.Comple
         raise DockerNotFoundError(DOCKER_NOT_FOUND) from exc
 
 
-def container_exists() -> bool:
+def resolve_container_name(config: dict[str, dict[str, Any]]) -> str:
+    """Docker name for the whisper-server container (`server.container-name`)."""
+    name = str(config["server"].get("container_name") or "")
+    return name if name else CONTAINER_NAME
+
+
+def container_exists(name: str | None = None) -> bool:
     """Returns True if the digue container exists (running or stopped)."""
-    result = _docker_run(["inspect", "--format", "{{.State.Status}}", CONTAINER_NAME])
+    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name or CONTAINER_NAME])
     return result.returncode == 0
 
 
-def container_status() -> str | None:
+def container_status(name: str | None = None) -> str | None:
     """Returns container status string ('running', 'exited', etc.) or None."""
-    result = _docker_run(["inspect", "--format", "{{.State.Status}}", CONTAINER_NAME])
+    result = _docker_run(["inspect", "--format", "{{.State.Status}}", name or CONTAINER_NAME])
     if result.returncode == 0:
         return result.stdout.strip()
     return None
 
 
-def container_image() -> str | None:
+def container_image(name: str | None = None) -> str | None:
     """Returns the image the digue container was created from, or None."""
-    result = _docker_run(["inspect", "--format", "{{.Config.Image}}", CONTAINER_NAME])
+    result = _docker_run(["inspect", "--format", "{{.Config.Image}}", name or CONTAINER_NAME])
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
     return None
@@ -135,7 +141,7 @@ def _image_mismatch(config: dict[str, dict[str, Any]]) -> tuple[str, str] | None
     config (or `server start --image`) would otherwise silently do nothing
     until the container is destroyed by hand.
     """
-    current = container_image()
+    current = container_image(resolve_container_name(config))
     if current is None:
         return None
     configured = resolve_image(resolve_backend(config), config)
@@ -225,7 +231,7 @@ def create_container(config: dict[str, dict[str, Any]], backend: str | None = No
         "run",
         "-d",
         "--name",
-        CONTAINER_NAME,
+        resolve_container_name(config),
         "--restart",
         "unless-stopped",
         "-p",
@@ -269,22 +275,22 @@ def _raise_for_docker_failure(result: subprocess.CompletedProcess[str], action: 
         raise RuntimeError(f"Failed to {action}: {error}")
 
 
-def remove_container() -> None:
+def remove_container(name: str | None = None) -> None:
     """Stops and removes the digue container."""
-    result = _docker_run(["rm", "-f", CONTAINER_NAME])
+    result = _docker_run(["rm", "-f", name or CONTAINER_NAME])
     _raise_for_docker_failure(result, "remove container")
 
 
-def start_container() -> bool:
+def start_container(name: str | None = None) -> bool:
     """Starts an existing stopped container."""
-    result = _docker_run(["start", CONTAINER_NAME])
+    result = _docker_run(["start", name or CONTAINER_NAME])
     _raise_for_docker_failure(result, "start container")
     return True
 
 
-def stop_container() -> None:
+def stop_container(name: str | None = None) -> None:
     """Stops the running container."""
-    result = _docker_run(["stop", CONTAINER_NAME], timeout=15)
+    result = _docker_run(["stop", name or CONTAINER_NAME], timeout=15)
     _raise_for_docker_failure(result, "stop container")
 
 
@@ -294,32 +300,33 @@ def _rename_container(old_name: str, new_name: str) -> None:
 
 
 @contextlib.contextmanager
-def preserve_container_for_benchmark() -> Iterator[None]:
+def preserve_container_for_benchmark(name: str | None = None) -> Iterator[None]:
     """Makes room for benchmark containers, then restores the prior container and running state."""
-    previous_status = container_status()
-    backup_name = f"{CONTAINER_NAME}-benchmark-backup-{os.getpid()}"
+    container = name or CONTAINER_NAME
+    previous_status = container_status(container)
+    backup_name = f"{container}-benchmark-backup-{os.getpid()}"
 
     if previous_status is not None:
         if previous_status == "running":
-            stop_container()
+            stop_container(container)
         try:
-            _rename_container(CONTAINER_NAME, backup_name)
+            _rename_container(container, backup_name)
         except BaseException:
             if previous_status == "running":
-                start_container()
+                start_container(container)
             raise
 
     try:
         yield
     finally:
         try:
-            if container_exists():
-                remove_container()
+            if container_exists(container):
+                remove_container(container)
         finally:
             if previous_status is not None:
-                _rename_container(backup_name, CONTAINER_NAME)
+                _rename_container(backup_name, container)
                 if previous_status == "running":
-                    start_container()
+                    start_container(container)
 
 
 # -- Server -------------------------------------------------------------------
@@ -416,7 +423,8 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
             )
         return None
 
-    status = container_status()
+    name = resolve_container_name(config)
+    status = container_status(name)
     backend = None
 
     if status is not None:
@@ -433,7 +441,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
     if status == "exited":
         if not silent:
             send_notification("Starting server...")
-        start_container()
+        start_container(name)
     elif status == "running":
         if not silent:
             send_notification("Server starting...")
@@ -453,7 +461,7 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
         return backend
 
     if not silent:
-        send_notification("Server failed to start (see: docker logs digue)", timeout_ms=10000)
+        send_notification(f"Server failed to start (see: docker logs {name})", timeout_ms=10000)
     return None
 
 
@@ -629,21 +637,25 @@ def cmd_server_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]
     image_override = getattr(args, "image", None)
     if image_override:
         config["server"]["image"] = image_override
+    container_override = getattr(args, "container_name", None)
+    if isinstance(container_override, str) and container_override:
+        config["server"]["container_name"] = container_override
 
-    status = container_status()
+    name = resolve_container_name(config)
+    status = container_status(name)
     try:
         mismatch = _image_mismatch(config) if status is not None else None
         if mismatch is not None:
             current, configured = mismatch
             print(f"Container runs {current}; recreating with {configured}...", file=sys.stderr, flush=True)
-            remove_container()
+            remove_container(name)
             status = None
         elif is_server_running(config):
             print("server is already running", file=sys.stderr)
             return 0
         if status == "exited":
             print("Starting existing container...", file=sys.stderr, flush=True)
-            start_container()
+            start_container(name)
         elif status is None:
             backend = resolve_backend(config)
             print(f"Creating container ({backend})...", file=sys.stderr, flush=True)
@@ -660,7 +672,7 @@ def cmd_server_start(args: argparse.Namespace, config: dict[str, dict[str, Any]]
     if _wait_for_server(config, verbose=True):
         return 0
 
-    print(f"Server failed to start. Check: docker logs {CONTAINER_NAME}", file=sys.stderr)
+    print(f"Server failed to start. Check: docker logs {name}", file=sys.stderr)
     return 1
 
 
@@ -669,7 +681,7 @@ def cmd_server_stop(args: argparse.Namespace, config: dict[str, dict[str, Any]])
         print("Backend is 'remote': there is no local container to stop", file=sys.stderr)
         return 1
     try:
-        stop_container()
+        stop_container(resolve_container_name(config))
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -682,7 +694,7 @@ def cmd_server_destroy(args: argparse.Namespace, config: dict[str, dict[str, Any
         print("Backend is 'remote': there is no local container to remove", file=sys.stderr)
         return 1
     try:
-        remove_container()
+        remove_container(resolve_container_name(config))
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -699,7 +711,7 @@ def cmd_server_status(args: argparse.Namespace, config: dict[str, dict[str, Any]
             f"digue: remote backend, {'responding' if http_ok else 'not responding'} on {host}:{port}", file=sys.stderr
         )
         return 0 if http_ok else 1
-    status = container_status()
+    status = container_status(resolve_container_name(config))
     if status is None:
         print("Container does not exist", file=sys.stderr)
         return 1

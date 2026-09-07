@@ -93,6 +93,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Docker image for whisper-server (overrides server.image); a container created from another image is "
         "recreated. E.g. ghcr.io/ggml-org/whisper.cpp:main",
     )
+    sub_server_start.add_argument(
+        "-n",
+        "--container-name",
+        metavar="name",
+        default=None,
+        help="Docker container name (overrides server.container-name; default: digue-whisper.cpp)",
+    )
     sub_server_sub.add_parser("stop", help="Stop digue container")
     sub_server_sub.add_parser("destroy", help="Stop and remove digue container")
     sub_server_sub.add_parser("status", help="Show server status")

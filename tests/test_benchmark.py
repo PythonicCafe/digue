@@ -112,7 +112,7 @@ class TestBenchmarkContainerState:
         ):
             pass
 
-        mock_remove.assert_called_once_with()
+        mock_remove.assert_called_once_with(container_mod.CONTAINER_NAME)
         mock_rename.assert_not_called()
         mock_stop.assert_not_called()
         mock_start.assert_not_called()
@@ -121,8 +121,8 @@ class TestBenchmarkContainerState:
         statuses = iter(["exited"])
         existence = iter([True])
         with (
-            patch("digue.container.container_status", side_effect=lambda: next(statuses)),
-            patch("digue.container.container_exists", side_effect=lambda: next(existence)),
+            patch("digue.container.container_status", side_effect=lambda *_args, **_kwargs: next(statuses)),
+            patch("digue.container.container_exists", side_effect=lambda *_args, **_kwargs: next(existence)),
             patch("digue.container.remove_container") as mock_remove,
             patch("digue.container._rename_container") as mock_rename,
             patch("digue.container.stop_container") as mock_stop,
@@ -134,10 +134,10 @@ class TestBenchmarkContainerState:
             raise KeyboardInterrupt
 
         assert mock_rename.call_args_list == [
-            ((container_mod.CONTAINER_NAME, "digue-benchmark-backup-123"),),
-            (("digue-benchmark-backup-123", container_mod.CONTAINER_NAME),),
+            ((container_mod.CONTAINER_NAME, f"{container_mod.CONTAINER_NAME}-benchmark-backup-123"),),
+            ((f"{container_mod.CONTAINER_NAME}-benchmark-backup-123", container_mod.CONTAINER_NAME),),
         ]
-        mock_remove.assert_called_once_with()
+        mock_remove.assert_called_once_with(container_mod.CONTAINER_NAME)
         mock_stop.assert_not_called()
         mock_start.assert_not_called()
 
@@ -153,12 +153,12 @@ class TestBenchmarkContainerState:
         ):
             pass
 
-        mock_stop.assert_called_once_with()
+        mock_stop.assert_called_once_with(container_mod.CONTAINER_NAME)
         assert mock_rename.call_args_list == [
-            ((container_mod.CONTAINER_NAME, "digue-benchmark-backup-456"),),
-            (("digue-benchmark-backup-456", container_mod.CONTAINER_NAME),),
+            ((container_mod.CONTAINER_NAME, f"{container_mod.CONTAINER_NAME}-benchmark-backup-456"),),
+            ((f"{container_mod.CONTAINER_NAME}-benchmark-backup-456", container_mod.CONTAINER_NAME),),
         ]
-        mock_start.assert_called_once_with()
+        mock_start.assert_called_once_with(container_mod.CONTAINER_NAME)
 
 
 class TestRunBenchmarkLanguage:
@@ -194,7 +194,7 @@ class TestRunBenchmarkLanguage:
             benchmark_mod.run_benchmark(tmp_path / "audio.wav", config)
 
         # the case removes its own container before the interrupt propagates
-        mock_remove.assert_called_once_with()
+        mock_remove.assert_called_once_with(container_mod.CONTAINER_NAME)
 
 
 class TestBenchmarkRespectsConfig:
@@ -287,7 +287,7 @@ class TestBenchmarkCase:
         ):
             benchmark_mod.benchmark_case(config, "cpu", "small", tmp_path / "audio.wav")
 
-        mock_remove.assert_called_once_with()
+        mock_remove.assert_called_once_with(container_mod.CONTAINER_NAME)
 
     def test_case_clears_custom_image_for_other_backends(self, tmp_path):
         config = _default_config()
@@ -325,7 +325,7 @@ class TestBenchmarkCase:
         _result, mock_create, mock_wait, mock_remove = self.run_case(config, "cpu", "large-v3-turbo", tmp_path)
 
         assert mock_wait.call_args.args[0] is mock_create.call_args.args[0]
-        mock_remove.assert_called_once_with()
+        mock_remove.assert_called_once_with(container_mod.CONTAINER_NAME)
 
     def test_case_result_carries_timings_and_text(self, tmp_path):
         config = _default_config()
