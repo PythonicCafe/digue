@@ -234,3 +234,25 @@ class TestCmdBatchTranscribe:
         assert output_file.exists()
         assert output_file.read_text().strip() == "[00:00:00] Hello"
         assert mock_transcribe.call_args[0][3] == "vtt"
+
+    @patch("digue.transcribe", return_value="WEBVTT\n")
+    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.ensure_server")
+    def test_uses_config_format_prompt_and_wrapping(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        (input_dir / "audio.wav").write_bytes(b"audio")
+        args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
+        config = digue._default_config()
+        config["transcribe"].update(output_format="srt", prompt="names", max_line_length=50, max_lines=3)
+        assert digue.cmd_batch_transcribe(args, config) == 0
+        assert (output_dir / "audio.srt").exists()
+        assert mock_transcribe.call_args.args[3] == "srt"
+        assert mock_transcribe.call_args.kwargs == {
+            "prompt": "names",
+            "max_line_length": 50,
+            "max_lines": 3,
+            "wrap_cues": True,
+        }

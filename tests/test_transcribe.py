@@ -633,6 +633,18 @@ class TestCmdTranscribeInput:
         assert f"Error: {failure}" in error
         assert "Traceback" not in error
 
+    @patch("digue.transcribe", return_value="text")
+    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.ensure_server")
+    def test_uses_config_prompt_when_cli_absent(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"audio")
+        args = MagicMock(audio=audio, language=None, response_format=None, verbose=False, prompt=None, output=None)
+        config = digue._default_config()
+        config["transcribe"]["prompt"] = "Pythonic Café"
+        assert digue.cmd_transcribe(args, config) == 0
+        assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic Café"
+
 
 class TestOutputFilesEndWithOneNewline:
     VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n"

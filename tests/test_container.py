@@ -714,3 +714,11 @@ class TestCmdDoctor:
         err = capsys.readouterr().err
         assert "] pw-record:" in err
         assert "] arecord:" in err
+
+    def test_prints_selected_config_path(self, tmp_path, capsys):
+        target = tmp_path / "selected.toml"
+        target.write_text("")
+        args = MagicMock(config=str(target))
+        with patch("digue.image_exists", return_value=False), patch("shutil.which", return_value=None):
+            digue.cmd_doctor(args, digue.load_config(target))
+        assert str(target) in capsys.readouterr().err

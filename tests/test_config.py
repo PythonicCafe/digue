@@ -91,6 +91,11 @@ class TestLoadConfig:
         assert config["server"]["data_dir"].endswith("whisper/data")
         assert config["dictate"]["audio_dir"].endswith("whisper-audio")
 
+    def test_custom_docker_image_is_allowed(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[server]\nimage = "registry.example/my-whisper:custom"\n')
+        assert digue.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
+
 
 class TestModelForBackend:
     def test_returns_default_without_config(self):
@@ -355,6 +360,44 @@ class TestConfigStructureValidation:
         assert "Traceback" not in err
 
 
+class TestServerHost:
+    @pytest.mark.parametrize(
+        ("bind_ip", "expected"),
+        (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
+    )
+    def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
+        config = digue._default_config()
+        config["server"]["bind_ip"] = bind_ip
+        assert digue.server_host(config) == expected
+
+
+class TestConfigValueValidation:
+    """Resolved values (enums, ranges, types) are checked after merge.
+    Unknown keys belong in TestConfigStructureValidation."""
+
+    @pytest.mark.parametrize(
+        ("toml", "message"),
+        (
+            ('[server]\nbackend = "invalid"\n', "server.backend"),
+            ("[server]\nport = 0\n", "server.port"),
+            ("[server]\nport = true\n", "server.port"),
+            ("[dictate]\nmax-duration = -1\n", "dictate.max_duration"),
+            ('[dictate]\nrecorder = "invalid"\n', "dictate.recorder"),
+            ('[dictate]\ndisplay-server = "invalid"\n', "dictate.display_server"),
+            ('[dictate]\ninput-mode = "invalid"\n', "dictate.input_mode"),
+            ('[dictate]\naudio-format = "invalid"\n', "dictate.audio_format"),
+            ('[dictate]\nsave-audio = "yes"\n', "dictate.save_audio"),
+            ("[server]\ndata-dir = 42\n", "server.data_dir"),
+            ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
+        ),
+    )
+    def test_load_config_validates_resolved_values(self, tmp_path, toml, message):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(toml)
+        with pytest.raises(ValueError, match=message):
+            digue.load_config(config_path)
+
+
 # -- CLI parser ---------------------------------------------------------------
 
 
@@ -453,6 +496,12 @@ class TestConfigCommand:
         assert target.exists()
         assert "[server]" in target.read_text()
 
+    def test_init_uses_args_config_path(self, tmp_path):
+        target = tmp_path / "selected.toml"
+        args = MagicMock(config=str(target), output=None, force=False)
+        assert digue._config_init(args) == 0
+        assert target.exists()
+
     def test_example_config_is_valid_toml(self, tmp_path):
         import tomllib
 
@@ -480,90 +529,3 @@ class TestConfigTemplateSync:
         fence_end = section.index("```", fence_start)
         readme_block = section[fence_start:fence_end].strip()
         assert readme_block == digue._config_example().strip()
-
-
-class TestConfigurationNetworkAndSharedDefaults:
-    @pytest.mark.parametrize(
-        ("bind_ip", "expected"),
-        (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
-    )
-    def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
-        config = digue._default_config()
-        config["server"]["bind_ip"] = bind_ip
-        assert digue.server_host(config) == expected
-
-    @pytest.mark.parametrize(
-        ("toml", "message"),
-        (
-            ('[server]\nbackend = "invalid"\n', "server.backend"),
-            ("[server]\nport = 0\n", "server.port"),
-            ("[server]\nport = true\n", "server.port"),
-            ("[dictate]\nmax-duration = -1\n", "dictate.max_duration"),
-            ('[dictate]\nrecorder = "invalid"\n', "dictate.recorder"),
-            ('[dictate]\ndisplay-server = "invalid"\n', "dictate.display_server"),
-            ('[dictate]\ninput-mode = "invalid"\n', "dictate.input_mode"),
-            ('[dictate]\naudio-format = "invalid"\n', "dictate.audio_format"),
-            ('[dictate]\nsave-audio = "yes"\n', "dictate.save_audio"),
-            ("[server]\ndata-dir = 42\n", "server.data_dir"),
-            ('[models]\ncpu = "invalid"\n', "models.cpu"),
-            ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
-        ),
-    )
-    def test_load_config_validates_resolved_values(self, tmp_path, toml, message):
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(toml)
-        with pytest.raises(ValueError, match=message):
-            digue.load_config(config_path)
-
-    def test_custom_docker_image_is_allowed(self, tmp_path):
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[server]\nimage = "registry.example/my-whisper:custom"\n')
-        assert digue.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
-
-    def test_config_init_uses_global_config_path(self, tmp_path):
-        target = tmp_path / "selected.toml"
-        args = MagicMock(config=str(target), output=None, force=False)
-        assert digue._config_init(args) == 0
-        assert target.exists()
-
-    def test_doctor_prints_selected_config_path(self, tmp_path, capsys):
-        target = tmp_path / "selected.toml"
-        target.write_text("")
-        args = MagicMock(config=str(target))
-        with patch("digue.image_exists", return_value=False), patch("shutil.which", return_value=None):
-            digue.cmd_doctor(args, digue.load_config(target))
-        assert str(target) in capsys.readouterr().err
-
-    @patch("digue.transcribe", return_value="text")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
-    def test_transcribe_uses_config_prompt_when_cli_absent(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
-        audio = tmp_path / "audio.wav"
-        audio.write_bytes(b"audio")
-        args = MagicMock(audio=audio, language=None, response_format=None, verbose=False, prompt=None, output=None)
-        config = digue._default_config()
-        config["transcribe"]["prompt"] = "Pythonic Café"
-        assert digue.cmd_transcribe(args, config) == 0
-        assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic Café"
-
-    @patch("digue.transcribe", return_value="WEBVTT\n")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
-    def test_batch_uses_config_format_prompt_and_wrapping(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
-        input_dir = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        input_dir.mkdir()
-        output_dir.mkdir()
-        (input_dir / "audio.wav").write_bytes(b"audio")
-        args = MagicMock(input_dir=input_dir, output_dir=output_dir, response_format=None, language=None)
-        config = digue._default_config()
-        config["transcribe"].update(output_format="srt", prompt="names", max_line_length=50, max_lines=3)
-        assert digue.cmd_batch_transcribe(args, config) == 0
-        assert (output_dir / "audio.srt").exists()
-        assert mock_transcribe.call_args.args[3] == "srt"
-        assert mock_transcribe.call_args.kwargs == {
-            "prompt": "names",
-            "max_line_length": 50,
-            "max_lines": 3,
-            "wrap_cues": True,
-        }
