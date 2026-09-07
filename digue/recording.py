@@ -402,7 +402,7 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     from digue.audio import now_timestamp, rescue_recording
     from digue.notify import send_notification
 
-    if _pid_alive(take.daemon_pid) and _process_starttime(take.daemon_pid) == str(take.daemon_starttime):
+    if _take_identity_alive(take.daemon_pid, take.daemon_starttime):
         return None
     if _take_age_seconds(take) < ORPHAN_MIN_AGE_SECONDS:
         return None
@@ -424,12 +424,17 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     return rescued
 
 
-def _take_identity_alive(pid: int | None, starttime: int | None) -> bool:
+def _take_identity_alive(pid: int | None, starttime: int | str | None) -> bool:
     """True only when pid is alive AND is still the process that published the
-    identity: a pid alone is not an identity (pids get recycled)."""
+    identity: a pid alone is not an identity (pids get recycled).
+
+    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps
+    its starttime, but cannot stop a recorder nor deliver: it counts as dead,
+    the same rule as `_daemon_alive` and `_group_alive`.
+    """
     if pid is None or starttime is None:
         return False
-    return _pid_alive(pid) and _process_starttime(pid) == str(starttime)
+    return _pid_alive(pid) and _process_starttime(pid) == str(starttime) and not _process_is_zombie(pid)
 
 
 def _take_is_orphan(take: TakeState) -> bool:

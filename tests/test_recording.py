@@ -746,6 +746,76 @@ class TestDaemonAlive:
             assert dictate_mod._daemon_alive((4242, "recording", "555")) is True
 
 
+class TestTakeIdentityAlive:
+    """The same liveness predicate as _daemon_alive: a zombie owner (exited,
+    not yet reaped) still answers signal 0 and keeps its starttime but can
+    neither stop a recorder nor deliver. Counting it as alive leaves its take
+    unclaimed while the daemon file already reads as dead, so the next toggle
+    starts a second take on top of a recorder nobody will stop."""
+
+    def alive_patches(self, zombie):
+        return (
+            patch("digue.recording._pid_alive", return_value=True),
+            patch("digue.recording._process_starttime", return_value="555"),
+            patch("digue.recording._process_is_zombie", return_value=zombie),
+        )
+
+    def test_zombie_owner_is_not_alive(self):
+        with contextlib.ExitStack() as stack:
+            for patcher in self.alive_patches(zombie=True):
+                stack.enter_context(patcher)
+            assert recording_mod._take_identity_alive(4242, 555) is False
+        with contextlib.ExitStack() as stack:
+            for patcher in self.alive_patches(zombie=False):
+                stack.enter_context(patcher)
+            assert recording_mod._take_identity_alive(4242, 555) is True
+
+    def test_take_of_a_zombie_daemon_is_claimed(self, tmp_path):
+        import time
+
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
+            take = recording_mod.TakeState(
+                version=recording_mod.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=time.time_ns(),
+                state="recording",
+                rec_file=tmp_path / "digue-recording.wav",
+                daemon_pid=4242,
+                daemon_starttime=555,
+                recorder_pid=4243,
+                recorder_starttime=556,
+            )
+            recording_mod._write_take_state(take)
+            with contextlib.ExitStack() as stack:
+                for patcher in self.alive_patches(zombie=True):
+                    stack.enter_context(patcher)
+                stack.enter_context(patch("digue.recording._process_starttime", side_effect=lambda pid: "555"))
+                claimed = recording_mod._claim_orphan_take()
+
+        assert claimed is not None and claimed.state == "recovering"
+
+    def test_expire_orphan_starting_treats_a_zombie_daemon_as_dead(self, tmp_path):
+        import time
+
+        with patch("digue.recording._runtime_dir", return_value=tmp_path):
+            take = recording_mod.TakeState(
+                version=recording_mod.TAKE_STATE_VERSION,
+                take_id="0123456789abcdef",
+                created_at_ns=time.time_ns() - int((recording_mod.ORPHAN_MIN_AGE_SECONDS + 1) * 1e9),
+                state="starting",
+                rec_file=tmp_path / "digue-recording.wav",
+                daemon_pid=4242,
+                daemon_starttime=555,
+            )
+            recording_mod._write_take_state(take)
+            with contextlib.ExitStack() as stack:
+                for patcher in self.alive_patches(zombie=True):
+                    stack.enter_context(patcher)
+                recording_mod._expire_orphan_starting(_default_config(), take)
+
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+
 class TestRuntimeIsolation:
     def test_state_paths_use_isolated_runtime_dir(self):
         runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])

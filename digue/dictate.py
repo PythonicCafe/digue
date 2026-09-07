@@ -76,10 +76,10 @@ def _daemon_alive(entry: tuple[int, str, str]) -> bool:
     its starttime, but cannot stop anything: it counts as dead, like in
     _group_alive.
     """
-    from digue.recording import _pid_alive, _process_is_zombie, _process_starttime
+    from digue.recording import _take_identity_alive
 
     pid, _state, starttime = entry
-    return _pid_alive(pid) and _process_starttime(pid) == starttime and not _process_is_zombie(pid)
+    return _take_identity_alive(pid, starttime)
 
 
 def _remove_daemon_state(daemon_pid: int) -> bool:
