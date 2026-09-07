@@ -1691,15 +1691,20 @@ class TestSurplusOrphanRescue:
         return take
 
     def test_toggle_delivers_the_oldest_and_rescues_the_rest(self, tmp_path):
+        # A real timestamp (2026-09-05 12:00 UTC) instead of the Unix epoch: the epoch's local wall time is 1969-12-31
+        # in any negative UTC offset, so a hardcoded "19700101-000000" month would only match in positive offsets.
+        import datetime
+
+        started_ns = int(datetime.datetime(2026, 9, 5, 12, 0, 0).timestamp() * 1e9)
         oldest_wav = tmp_path / "digue-oldest.wav"
         oldest_wav.write_bytes(b"audio oldest")
         surplus_a = tmp_path / "digue-surplus-a.wav"
         surplus_a.write_bytes(b"audio a")
         surplus_b = tmp_path / "digue-surplus-b.wav"
         surplus_b.write_bytes(b"audio b")
-        oldest = self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
-        surplus_take_a = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", 200, rec_file=surplus_a)
-        surplus_take_b = self.make_take(tmp_path, "bbbbbbbbbbbbbbbb", 300, rec_file=surplus_b)
+        oldest = self.make_take(tmp_path, "0123456789abcdef", started_ns, rec_file=oldest_wav)
+        surplus_take_a = self.make_take(tmp_path, "aaaaaaaaaaaaaaaa", started_ns + 1, rec_file=surplus_a)
+        surplus_take_b = self.make_take(tmp_path, "bbbbbbbbbbbbbbbb", started_ns + 2, rec_file=surplus_b)
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
@@ -1732,8 +1737,11 @@ class TestSurplusOrphanRescue:
         assert finish_take_ids == [oldest.take_id]
         assert surplus_take_a.take_id not in finish_take_ids
         assert surplus_take_b.take_id not in finish_take_ids
-        # rescued files are named after the take's start (created_at_ns in 1970 here)
-        month = tmp_path / "audio" / audio_mod.month_dir_for("19700101-000000")
+        # rescued files are named after the take's start (started_ns in 2026 here); the
+        # timestamp is local wall time, so derive the month from the same conversion the
+        # code uses instead of hardcoding one that changes with the UTC offset
+        take_timestamp = recording_mod._take_timestamp(surplus_take_a)
+        month = tmp_path / "audio" / audio_mod.month_dir_for(take_timestamp)
         for take, original_bytes in (
             (surplus_take_a, b"audio a"),
             (surplus_take_b, b"audio b"),
@@ -1791,17 +1799,21 @@ class TestSurplusOrphanRescue:
         assert rescued.with_suffix(".json").exists()
 
     def test_surplus_take_with_live_recorder_is_stopped_before_rescue(self, tmp_path):
+        # Real timestamp, not the epoch: see test_toggle_delivers_the_oldest_and_rescues_the_rest.
+        import datetime
+
+        started_ns = int(datetime.datetime(2026, 9, 5, 12, 0, 0).timestamp() * 1e9)
         oldest_wav = tmp_path / "digue-oldest.wav"
         oldest_wav.write_bytes(b"audio oldest")
         surplus_wav = tmp_path / "digue-surplus.wav"
         surplus_wav.write_bytes(b"audio surplus")
-        self.make_take(tmp_path, "0123456789abcdef", 100, rec_file=oldest_wav)
+        self.make_take(tmp_path, "0123456789abcdef", started_ns, rec_file=oldest_wav)
         surplus_recorder = subprocess.Popen(["sleep", "60"], start_new_session=True)
         try:
             self.make_take(
                 tmp_path,
                 "aaaaaaaaaaaaaaaa",
-                200,
+                started_ns + 1,
                 rec_file=surplus_wav,
                 recorder_pid=surplus_recorder.pid,
                 recorder_starttime=int(recording_mod._process_starttime(surplus_recorder.pid)),
@@ -1829,8 +1841,9 @@ class TestSurplusOrphanRescue:
                 assert dictate_mod.dictate_toggle(config) == 0
 
             assert surplus_recorder.poll() is not None
-            # created_at_ns=200 (1970): the rescue is named after the take's start
-            month = tmp_path / "audio" / audio_mod.month_dir_for("19700101-000000")
+            # started_ns (2026-09-05): the rescue is named after the take's start
+            take_timestamp = datetime.datetime.fromtimestamp(started_ns / 1e9).strftime("%Y%m%d-%H%M%S")
+            month = tmp_path / "audio" / audio_mod.month_dir_for(take_timestamp)
             rescued = list(month.glob("*-aaaaaaaaaaaaaaaa.wav"))
             assert len(rescued) == 1 and rescued[0].read_bytes() == b"audio surplus"
             assert list(month.glob("*-aaaaaaaaaaaaaaaa.json"))
