@@ -430,6 +430,7 @@ class TestConfigValueValidation:
             ('[transcribe]\noutput-format = "invalid"\n', "transcribe.output_format"),
             ("[transcribe]\ntimeout = 0\n", "transcribe.timeout"),
             ('[server]\ncontainer-name = ""\n', "server.container_name"),
+            ('[dictate]\npaste-key = "alt+v"\n', "dictate.paste_key"),
             ('[server]\ncontainer-name = "whisper lab"\n', "server.container_name"),
             ('[server]\ncontainer-name = "-lab"\n', "server.container_name"),
             ('[server]\ncontainer-name = "lab/1"\n', "server.container_name"),

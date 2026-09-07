@@ -311,13 +311,14 @@ If the recorder exits at start (unknown `--target`, missing PCM, missing binary)
 
 The transcribed text is joined into a single line before being sent to the focused window. Line breaks in the server output are segment boundaries; with `token_timestamps=false` (sent by digue on every request) the server no longer wraps segments at 60 characters, which was splitting words in half (`trans` / `crevendo`).
 
-How the text lands on screen is controlled by `input-mode` -- and the choice matters most in terminals:
+How the text lands on screen is controlled by `input-mode` and, for `paste`, by `paste-key`:
 
-- **Terminal (X11)**: the paste shortcut is `Ctrl+Shift+V`, not `Ctrl+V` -- so `input-mode = "paste"` **does not work in terminals** (the simulated Ctrl+V does nothing). Use `input-mode = "type"` if you dictate into a terminal; note typing is slower (~12 ms/char) and may drop characters in slow apps.
-- **Regular GUI apps** (editors, browsers): both modes work; `paste` is the recommended default (instant, atomic).
-- **Wayland**: `wtype -` types text read from stdin and `wtype -M ctrl v` simulates the shortcut; same terminal caveat applies to terminals on Wayland.
+- `input-mode = "paste"` copies the text to the clipboard and simulates `paste-key` in the focused window: instant and atomic. `input-mode = "type"` simulates keystrokes (`xdotool type` / `wtype -`): works anywhere text can be typed, but is slower (~12 ms/char) and may drop characters in slow apps.
+- `paste-key = "ctrl+v"` (default) is what GUI apps expect; **terminals ignore it** (most treat Ctrl+V as "insert next key literally"), so a dictation into a terminal pastes nothing.
+- `paste-key = "ctrl+shift+v"` is the terminal shortcut, and browsers accept it (paste without formatting) -- but GTK/Qt apps such as gedit ignore it, LibreOffice opens Paste Special and VS Code toggles the Markdown preview.
+- `paste-key = "shift+insert"` is the X11-wide paste: terminals (xterm, urxvt, alacritty, gnome-terminal, kitty), GTK, Qt, browsers, LibreOffice and VS Code all paste on it. digue also fills the PRIMARY selection for this key, since xterm/urxvt/alacritty paste PRIMARY rather than the clipboard on Shift+Insert. This is the choice when you dictate into both terminals and GUI apps.
 
-Rule of thumb: `paste` everywhere, except when the target window is a terminal -- then `type`.
+Rule of thumb: `paste` with `shift+insert` if terminals are part of your day; `paste` with the default `ctrl+v` otherwise; `type` when an app accepts none of the paste keys.
 
 ```bash
 sudo apt install xclip xdotool       # X11

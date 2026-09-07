@@ -51,6 +51,7 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "audio_dir": "",
             "display_server": "auto",
             "input_mode": "paste",
+            "paste_key": "ctrl+v",
             "recorder": "auto",
             "device": "",
             "max_duration": DEFAULT_MAX_RECORD_SECONDS,
@@ -150,6 +151,7 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
     require_type("dictate", "audio_dir", str)
     require_choice("dictate", "display_server", ("auto", "x11", "wayland"))
     require_choice("dictate", "input_mode", ("paste", "type"))
+    require_choice("dictate", "paste_key", ("ctrl+v", "ctrl+shift+v", "shift+insert"))
     require_choice("dictate", "recorder", ("auto", "pw-record", "arecord"))
     require_choice("dictate", "audio_format", ("wav", "flac", "opus"))
     require_type("dictate", "device", str)
@@ -342,8 +344,11 @@ CONFIG_TEMPLATE = """\
 [dictate]
 # audio-dir = ""                        # Where recordings are saved (default: <data-dir>/audio/YYYY/MM)
 # display-server = "auto"               # "auto" (detect), "x11", or "wayland"
-# input-mode = "paste"                  # "paste" (clipboard + Ctrl+V) or "type" (simulate keystrokes; use "type" in
-                                        #   terminals)
+# input-mode = "paste"                  # "paste" (clipboard + paste-key) or "type" (simulate keystrokes)
+# paste-key = "ctrl+v"                  # Key simulated by "paste": "ctrl+v" (GUI apps; terminals ignore it),
+                                        #   "ctrl+shift+v" (terminals, browsers; GTK/Qt apps ignore it) or
+                                        #   "shift+insert" (works in terminals, GTK, Qt, browsers, LibreOffice: the
+                                        #   choice when you dictate into both terminals and GUI apps)
 # save-audio = true                     # Save the recording as a backup
 # audio-format = "flac"                 # Format of the saved recording: "flac" (lossless, ~35% of WAV; default),
                                         #   "opus" (~7%, lossy 24 kbit/s) or "wav".

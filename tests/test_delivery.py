@@ -34,6 +34,41 @@ class TestSendText:
         assert cmds[0][0] == "wl-copy"
         assert cmds[1][0] == "wtype"
 
+    @pytest.mark.parametrize(
+        ("display_server", "paste_key", "expected_paste", "primary_filled"),
+        [
+            ("x11", "ctrl+v", ["xdotool", "key", "--clearmodifiers", "ctrl+v"], False),
+            ("x11", "ctrl+shift+v", ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], False),
+            ("x11", "shift+insert", ["xdotool", "key", "--clearmodifiers", "shift+Insert"], True),
+            ("wayland", "ctrl+v", ["wtype", "-M", "ctrl", "v", "-m", "ctrl"], False),
+            (
+                "wayland",
+                "ctrl+shift+v",
+                ["wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"],
+                False,
+            ),
+            ("wayland", "shift+insert", ["wtype", "-M", "shift", "-k", "Insert", "-m", "shift"], True),
+        ],
+    )
+    @patch("subprocess.run")
+    def test_paste_key_selects_the_chord_and_fills_primary_for_shift_insert(
+        self, mock_run, display_server, paste_key, expected_paste, primary_filled
+    ):
+        """xterm/urxvt/alacritty paste PRIMARY on Shift+Insert, so that key also copies there; wtype would type a
+        bare "Insert" as text, hence -k."""
+        delivery_mod.send_text("hello", display_server=display_server, paste_key=paste_key)
+        cmds = [recorded_call[0][0] for recorded_call in mock_run.call_args_list]
+        copies, paste = cmds[:-1], cmds[-1]
+        assert paste == expected_paste
+        primary_cmds = [cmd for cmd in copies if "primary" in cmd or "--primary" in cmd]
+        assert bool(primary_cmds) is primary_filled
+        assert all(recorded_call[1]["input"] == b"hello" for recorded_call in mock_run.call_args_list[:-1])
+
+    def test_unknown_paste_key_is_rejected_before_any_command(self):
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="Unknown paste key"):
+            delivery_mod.send_text("hello", display_server="x11", paste_key="alt+v")
+        mock_run.assert_not_called()
+
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_missing_tool_gives_install_hint(self, mock_run):
         with pytest.raises(RuntimeError, match="sudo apt install"):
@@ -463,6 +498,20 @@ class TestDictateArchivesAfterDelivery:
         first_message = mock_notify.call_args_list[0].args[0]
         assert "Limit reached" in first_message
         assert "transcribing" in first_message
+
+    @patch("digue.delivery.send_text")
+    @patch("digue.transcribe.transcribe", return_value="hello")
+    @patch("digue.audio.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    def test_paste_key_from_config_reaches_send_text(self, mock_save, mock_transcribe, mock_send, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        config["dictate"]["paste_key"] = "shift+insert"
+
+        dictate_mod.finish_dictation(config, rec_file)
+
+        assert mock_send.call_args.kwargs["paste_key"] == "shift+insert"
 
     @patch("digue.delivery.send_text")
     @patch("digue.transcribe.transcribe", return_value="hello")

@@ -210,6 +210,7 @@ def finish_dictation(
             text,
             display_server=config["dictate"]["display_server"],
             input_mode=config["dictate"]["input_mode"],
+            paste_key=config["dictate"]["paste_key"],
         )
     except Exception as exc:
         send_notification(f"Paste failed: {exc}", timeout_ms=10000)
