@@ -767,6 +767,9 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
         print("All files already transcribed", file=sys.stderr)
         return 0
 
+    # created here, once there is something to write: a directory made at
+    # argument-parse time survived every failure that followed
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     ensure_server(config, silent=True)
     if not is_server_running(config):
         print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
@@ -828,6 +831,7 @@ def cmd_batch_simplify_vtt(args: argparse.Namespace, config: dict[str, dict[str,
         print("All files already simplified", file=sys.stderr)
         return 0
 
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     succeeded = 0
     failed = 0
     for idx, (vtt_file, output_file) in enumerate(pending, 1):

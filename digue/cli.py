@@ -18,14 +18,6 @@ def _existing_dir(value: str) -> Path:
     return path
 
 
-def _ensure_dir(value: str) -> Path:
-    """argparse type: creates the directory if it doesn't exist."""
-
-    path = Path(value)
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _positive_int(value: str) -> int:
     """argparse type: an integer greater than zero."""
     try:
@@ -176,7 +168,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Transcribe all audio files in a directory",
     )
     sub_batch_transcribe.add_argument("input_dir", type=_existing_dir, help="Directory with audio files")
-    sub_batch_transcribe.add_argument("output_dir", type=_ensure_dir, help="Directory for transcription output")
+    sub_batch_transcribe.add_argument(
+        "output_dir", type=Path, help="Directory for transcription output (created if missing)"
+    )
     sub_batch_transcribe.add_argument(
         "-f",
         "--format",
@@ -197,7 +191,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Simplify all VTT files in a directory",
     )
     sub_batch_simplify.add_argument("input_dir", type=_existing_dir, help="Directory with VTT files")
-    sub_batch_simplify.add_argument("output_dir", type=_ensure_dir, help="Directory for simplified output")
+    sub_batch_simplify.add_argument(
+        "output_dir", type=Path, help="Directory for simplified output (created if missing)"
+    )
 
     sub_benchmark = subparsers.add_parser("benchmark", help="Compare backend and model performance")
     benchmark_audio = sub_benchmark.add_mutually_exclusive_group()

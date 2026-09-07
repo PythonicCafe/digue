@@ -24,6 +24,32 @@ class TestCmdBatchTranscribeInput:
 
     @patch("digue.container.ensure_server")
     @patch("digue.container.is_server_running")
+    def test_empty_input_does_not_create_the_output_dir(self, mock_running, mock_ensure, tmp_path):
+        """The directory is made when there is something to write, not at
+        argument parsing: a typo in input_dir used to leave an empty output."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
+        args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
+
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 1
+        assert not output_dir.exists()
+
+    @patch("digue.transcribe.transcribe", return_value="text")
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    def test_missing_output_dir_is_created_when_writing(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "audio.wav").write_bytes(b"audio")
+        output_dir = tmp_path / "nested" / "output"
+        args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
+
+        assert transcribe_mod.cmd_batch_transcribe(args, _default_config()) == 0
+        assert (output_dir / "audio.txt").read_text() == "text\n"
+
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running")
     def test_completed_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
