@@ -239,7 +239,13 @@ def record_benchmark_audio(
 
 
 def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """`digue benchmark`: audio from a file, the JFK sample or the microphone;
+    backends, models ("all" = every model) and runs from the options; the
+    summary on stderr and, with --json, the results on stdout (also the
+    partial ones on Ctrl+c, exit 130)."""
+    import json
 
+    from digue import AVAILABLE_MODELS
     from digue.container import _is_remote
     from digue.recording import _runtime_dir
 
@@ -252,6 +258,8 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
         if not audio_path.exists():
             print(f"Error: file not found: {audio_path}", file=sys.stderr)
             return 1
+    elif args.sample:
+        audio_path = download_sample()
     else:
         # the runtime dir is private to the user; a fixed name in /tmp could be
         # a symlink planted by another local user
@@ -259,5 +267,16 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
         record_benchmark_audio(audio_path, config=config)
         print(file=sys.stderr)
 
-    run_benchmark(audio_path, config)
-    return 0
+    models = args.models
+    if models and "all" in models:
+        models = list(AVAILABLE_MODELS)
+    results: list[dict[str, Any]] = []
+    exit_code = 0
+    try:
+        results = run_benchmark(audio_path, config, backends=args.backends, models=models, runs=args.runs)
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        exit_code = 130
+    if args.json:
+        print(json.dumps(results, default=str, ensure_ascii=False, indent=2))
+    return exit_code

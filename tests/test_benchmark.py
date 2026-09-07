@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import benchmark_models
+import digue
 from digue import benchmark as benchmark_mod
 from digue import container as container_mod
 from digue.config import _default_config
@@ -18,7 +19,7 @@ class TestBenchmarkTempFiles:
         user; the runtime dir is 0700 and owned by the user."""
         config = _default_config()
         config["server"]["backend"] = "cpu"
-        args = argparse.Namespace(audio=None)
+        args = argparse.Namespace(audio=None, sample=False, backends=None, models=None, runs=3, json=False)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -32,6 +33,71 @@ class TestBenchmarkTempFiles:
     def test_sample_lives_in_the_private_runtime_dir(self, tmp_path):
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
             assert benchmark_mod.sample_path().parent == tmp_path
+
+
+class TestCmdBenchmarkOptions:
+    def make_args(self, **overrides):
+        values = {"audio": None, "sample": False, "backends": None, "models": None, "runs": 3, "json": False}
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_sample_downloads_the_jfk_audio_instead_of_recording(self, tmp_path):
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        with (
+            patch("digue.benchmark.download_sample", return_value=tmp_path / "jfk.wav") as mock_download,
+            patch("digue.benchmark.record_benchmark_audio") as mock_record,
+            patch("digue.benchmark.run_benchmark", return_value=[]) as mock_run,
+        ):
+            assert benchmark_mod.cmd_benchmark(self.make_args(sample=True), config) == 0
+
+        mock_download.assert_called_once_with()
+        mock_record.assert_not_called()
+        assert mock_run.call_args.args[0] == tmp_path / "jfk.wav"
+
+    def test_options_are_forwarded_and_all_expands_to_every_model(self, tmp_path):
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"x")
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        args = self.make_args(audio=audio, backends=["amd", "cpu"], models=["all"], runs=2)
+        with patch("digue.benchmark.run_benchmark", return_value=[]) as mock_run:
+            assert benchmark_mod.cmd_benchmark(args, config) == 0
+
+        mock_run.assert_called_once_with(
+            audio, config, backends=["amd", "cpu"], models=list(digue.AVAILABLE_MODELS), runs=2
+        )
+
+    def test_json_prints_the_results_on_stdout(self, tmp_path, capsys):
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"x")
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        results = [{"backend": "cpu", "model": "small", "avg_ms": 5, "runs_ms": [5], "text": "t"}]
+        with patch("digue.benchmark.run_benchmark", return_value=results):
+            assert benchmark_mod.cmd_benchmark(self.make_args(audio=audio, json=True), config) == 0
+
+        assert json.loads(capsys.readouterr().out) == results
+
+    def test_without_json_stdout_stays_empty(self, tmp_path, capsys):
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"x")
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        with patch("digue.benchmark.run_benchmark", return_value=[{"backend": "cpu"}]):
+            assert benchmark_mod.cmd_benchmark(self.make_args(audio=audio), config) == 0
+
+        assert capsys.readouterr().out == ""
+
+    def test_interrupt_still_prints_json_and_exits_130(self, tmp_path, capsys):
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"x")
+        config = _default_config()
+        config["server"]["backend"] = "cpu"
+        with patch("digue.benchmark.run_benchmark", side_effect=KeyboardInterrupt):
+            assert benchmark_mod.cmd_benchmark(self.make_args(audio=audio, json=True), config) == 130
+
+        assert json.loads(capsys.readouterr().out) == []
 
 
 class TestBenchmarkContainerState:

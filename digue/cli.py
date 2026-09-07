@@ -26,8 +26,21 @@ def _ensure_dir(value: str) -> Path:
     return path
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: an integer greater than zero."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {parsed}")
+    return parsed
+
+
 def create_parser() -> argparse.ArgumentParser:
     from digue import AVAILABLE_MODELS, __version__
+    from digue.benchmark import BENCHMARK_MODELS, BENCHMARK_RUNS
+    from digue.container import BACKENDS
     from digue.transcribe import RESPONSE_FORMATS
 
     parser = argparse.ArgumentParser(
@@ -186,14 +199,48 @@ def create_parser() -> argparse.ArgumentParser:
     sub_batch_simplify.add_argument("input_dir", type=_existing_dir, help="Directory with VTT files")
     sub_batch_simplify.add_argument("output_dir", type=_ensure_dir, help="Directory for simplified output")
 
-    sub_benchmark = subparsers.add_parser("benchmark", help="Compare backend performance")
-    sub_benchmark.add_argument(
+    sub_benchmark = subparsers.add_parser("benchmark", help="Compare backend and model performance")
+    benchmark_audio = sub_benchmark.add_mutually_exclusive_group()
+    benchmark_audio.add_argument(
         "audio",
         nargs="?",
         type=Path,
         default=None,
-        help="Audio file (records from microphone if not given)",
+        help="Audio file (records 10s from the microphone if not given)",
     )
+    benchmark_audio.add_argument(
+        "--sample",
+        action="store_true",
+        help="Use the whisper.cpp JFK sample (downloaded once) instead of recording",
+    )
+    local_backends = [backend for backend in BACKENDS if backend != "remote"]
+    sub_benchmark.add_argument(
+        "-b",
+        "--backends",
+        nargs="+",
+        choices=local_backends,
+        metavar="BACKEND",
+        default=None,
+        help=f"Backends to test (default: the resolved backend plus cpu). Options: {', '.join(local_backends)}",
+    )
+    sub_benchmark.add_argument(
+        "-m",
+        "--models",
+        nargs="+",
+        choices=(*AVAILABLE_MODELS, "all"),
+        metavar="MODEL",
+        default=None,
+        help=f"Models to test (default: {', '.join(BENCHMARK_MODELS)}). Options: {', '.join(AVAILABLE_MODELS)}, "
+        'or "all" for every model',
+    )
+    sub_benchmark.add_argument(
+        "-n",
+        "--runs",
+        type=_positive_int,
+        default=BENCHMARK_RUNS,
+        help=f"Timed runs per case, after one warm-up (default: {BENCHMARK_RUNS})",
+    )
+    sub_benchmark.add_argument("--json", action="store_true", help="Print the results as JSON on stdout")
 
     sub_config = subparsers.add_parser("config", help="Show or initialize the configuration")
     sub_config_sub = sub_config.add_subparsers(dest="config_action", metavar="action")

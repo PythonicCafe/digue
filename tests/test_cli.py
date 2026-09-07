@@ -22,6 +22,33 @@ class TestCreateParser:
             args = parser.parse_args(["server", action])
             assert args.command == "server" and args.server_action == action
 
+    def test_benchmark_options(self):
+        parser = cli_mod.create_parser()
+        args = parser.parse_args(["benchmark"])
+        assert (args.audio, args.sample, args.backends, args.models, args.runs, args.json) == (
+            None,
+            False,
+            None,
+            None,
+            3,
+            False,
+        )
+
+        args = parser.parse_args(["benchmark", "--sample", "-b", "amd", "cpu", "-m", "medium", "-n", "2", "--json"])
+        assert args.sample is True and args.backends == ["amd", "cpu"] and args.models == ["medium"]
+        assert args.runs == 2 and args.json is True
+
+        assert parser.parse_args(["benchmark", "-m", "all"]).models == ["all"]
+
+    def test_benchmark_rejects_bad_values(self, capsys):
+        parser = cli_mod.create_parser()
+        for argv in (["-m", "giant"], ["-b", "gpu"], ["-n", "0"], ["-n", "x"], ["--sample", "audio.wav"]):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["benchmark", *argv])
+        assert "remote" not in parser.parse_args(["benchmark", "-b", "cpu"]).backends
+        with pytest.raises(SystemExit):
+            parser.parse_args(["benchmark", "-b", "remote"])
+
     def test_version_flag(self, capsys):
         parser = cli_mod.create_parser()
         with pytest.raises(SystemExit) as excinfo:
