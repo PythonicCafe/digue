@@ -2004,7 +2004,8 @@ def _spawn_limit_watchdog(pgid: int, max_duration: int) -> subprocess.Popen[byte
     """Spawns an identity-checking safety killer and returns its handle.
 
     The detached child survives a SIGKILLed daemon. Before signaling, it checks
-    Linux /proc starttime so a stale watchdog cannot kill a recycled PGID. It
+    the same identity as _recorder_identity_valid (Linux /proc starttime and
+    pgrp == pid) so a stale watchdog cannot kill a recycled PGID. It
     sleeps WATCHDOG_GRACE_SECONDS past max_duration so the daemon, which polls,
     always reaches the limit first.
     """
@@ -2023,9 +2024,11 @@ pid = int(sys.argv[1])
 expected_starttime = sys.argv[2]
 time.sleep(int(sys.argv[3]))
 try:
-    stat = Path(f"/proc/{pid}/stat").read_text()
-    current_starttime = stat[stat.rindex(")") + 2:].split()[19]
-    if current_starttime == expected_starttime:
+    fields = Path(f"/proc/{pid}/stat").read_text()
+    fields = fields[fields.rindex(")") + 2:].split()
+    # same identity as _recorder_identity_valid: starttime (recycled pid) and
+    # still the leader of its own process group (killpg target)
+    if fields[19] == expected_starttime and int(fields[2]) == pid:
         os.killpg(pid, signal.SIGTERM)
 except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueError, IndexError):
     pass

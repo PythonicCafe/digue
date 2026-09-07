@@ -2088,6 +2088,33 @@ class TestSpawnLimitWatchdog:
         sleep_seconds = int(mock_popen.call_args[0][0][-1])
         assert sleep_seconds >= 20 + 2
 
+    def test_watchdog_script_does_not_kill_a_pid_that_no_longer_leads_a_group(self):
+        """The script promises the same identity check as _recorder_identity_valid:
+        starttime AND pgrp == pid (killpg on a pid that is not a group leader
+        is refused by the kernel today, but the script must not rely on that).
+        Runs the real script against real processes: a session leader is
+        killed, a plain child (pgrp = the test's group, not its own pid) is
+        left alone."""
+        import subprocess
+
+        leader = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        member = subprocess.Popen(["sleep", "30"])
+        try:
+            with patch("subprocess.Popen") as mock_popen:
+                digue._spawn_limit_watchdog(leader.pid, 0)
+                script = mock_popen.call_args[0][0][2]
+            for process in (leader, member):
+                starttime = digue._process_starttime(process.pid)
+                subprocess.run(
+                    [sys.executable, "-c", script, str(process.pid), str(starttime), "0"], timeout=10, check=True
+                )
+            assert leader.wait(timeout=5) == -15
+            assert member.poll() is None
+        finally:
+            for process in (leader, member):
+                process.kill()
+                process.wait(timeout=5)
+
     def test_process_starttime_parses_comm_with_spaces_and_parentheses(self, tmp_path):
         stat = tmp_path / "stat"
         stat.write_text("4242 (odd name) value) S " + " ".join(str(value) for value in range(4, 30)))
