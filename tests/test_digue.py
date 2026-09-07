@@ -10,7 +10,7 @@ import sys
 import textwrap
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -1232,6 +1232,96 @@ class TestContainerFailures:
         with pytest.raises(RuntimeError, match="start failed"):
             digue.ensure_server(digue._default_config(), silent=True)
 
+        mock_wait.assert_not_called()
+
+    @pytest.mark.parametrize("silent", (False, True))
+    @patch("digue.notify_close")
+    @patch("digue.notify")
+    @patch("digue.create_container")
+    @patch("digue.start_container")
+    @patch("digue._wait_for_server", return_value=True)
+    @patch("digue.container_status", return_value="running")
+    @patch("digue.is_server_running", return_value=False)
+    def test_ensure_server_waits_for_running_container(
+        self,
+        mock_running,
+        mock_status,
+        mock_wait,
+        mock_start,
+        mock_create,
+        mock_notify,
+        mock_notify_close,
+        silent,
+    ):
+        config = digue._default_config()
+
+        assert digue.ensure_server(config, silent=silent) is None
+
+        mock_wait.assert_called_once_with(config, verbose=not silent)
+        mock_start.assert_not_called()
+        mock_create.assert_not_called()
+        if silent:
+            mock_notify.assert_not_called()
+            mock_notify_close.assert_not_called()
+        else:
+            mock_notify.assert_called_once_with("Server starting...")
+            mock_notify_close.assert_called_once_with()
+
+    @patch("digue.notify")
+    @patch("digue._wait_for_server", return_value=False)
+    @patch("digue.container_status", return_value="running")
+    @patch("digue.is_server_running", return_value=False)
+    def test_ensure_server_reports_running_container_timeout(self, mock_running, mock_status, mock_wait, mock_notify):
+        config = digue._default_config()
+
+        assert digue.ensure_server(config) is None
+
+        assert mock_notify.call_args_list == [
+            call("Server starting..."),
+            call("Server failed to start (see: docker logs digue)", timeout_ms=10000),
+        ]
+
+    @pytest.mark.parametrize(
+        ("status", "expected_backend"),
+        [("exited", None), (None, "cpu")],
+    )
+    @patch("digue.resolve_backend", return_value="cpu")
+    @patch("digue.create_container")
+    @patch("digue.start_container")
+    @patch("digue._wait_for_server", return_value=True)
+    @patch("digue.container_status")
+    @patch("digue.is_server_running", return_value=False)
+    def test_ensure_server_starts_or_creates_container(
+        self,
+        mock_running,
+        mock_status,
+        mock_wait,
+        mock_start,
+        mock_create,
+        mock_resolve,
+        status,
+        expected_backend,
+    ):
+        mock_status.return_value = status
+        config = digue._default_config()
+
+        assert digue.ensure_server(config, silent=True) == expected_backend
+
+        if status == "exited":
+            mock_start.assert_called_once_with()
+            mock_create.assert_not_called()
+        else:
+            mock_start.assert_not_called()
+            mock_create.assert_called_once_with(config, "cpu")
+
+    @patch("digue.notify")
+    @patch("digue._wait_for_server")
+    @patch("digue.container_status", return_value="paused")
+    @patch("digue.is_server_running", return_value=False)
+    def test_ensure_server_rejects_invalid_container_state(self, mock_running, mock_status, mock_wait, mock_notify):
+        assert digue.ensure_server(digue._default_config()) is None
+
+        mock_notify.assert_called_once_with("Container in unexpected state: paused", timeout_ms=5000)
         mock_wait.assert_not_called()
 
     @patch("digue.stop_container", side_effect=RuntimeError("stop failed"))

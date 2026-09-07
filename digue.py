@@ -765,6 +765,9 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
         if not silent:
             notify("Starting server...")
         start_container()
+    elif status == "running":
+        if not silent:
+            notify("Server starting...")
     elif status is None:
         backend = resolve_backend(config)
         if not silent:
