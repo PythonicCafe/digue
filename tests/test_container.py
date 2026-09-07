@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import digue
+from digue import notify as notify_mod
 from digue.config import _default_config, load_config
 
 # -- Detection ----------------------------------------------------------------
@@ -114,7 +115,7 @@ class TestDockerMissing:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=digue.DockerNotFoundError(digue.DOCKER_NOT_FOUND)),
-            patch("digue.send_notification") as mock_notify,
+            patch("digue.notify.send_notification") as mock_notify,
         ):
             assert digue.dictate_toggle(config) == 1
 
@@ -292,7 +293,7 @@ class TestDownloadProgressHook:
         assert "test.bin" in output
 
     def test_terminal_line_has_carriage_return_and_bar(self, capsys):
-        with patch.object(digue, "_stderr_is_tty", return_value=True):
+        with patch("digue.notify._stderr_is_tty", return_value=True):
             hook = digue._download_progress_hook("test.bin")
             hook(25, 1024 * 1024, 100 * 1024 * 1024)  # 25%
         output = capsys.readouterr().err
@@ -300,7 +301,7 @@ class TestDownloadProgressHook:
         assert "[" in output and "]" in output
 
     def test_non_terminal_prints_sparse_lines_without_bar(self, capsys):
-        with patch.object(digue, "_stderr_is_tty", return_value=False):
+        with patch("digue.notify._stderr_is_tty", return_value=False):
             hook = digue._download_progress_hook("test.bin")
             for block in range(0, 100 * 1024 * 1024, 8 * 1024 * 1024):
                 hook(block, 1, 100 * 1024 * 1024)
@@ -313,7 +314,7 @@ class TestDownloadProgressHook:
 
     def test_fixed_width_across_digit_rollover(self, capsys):
         # 9.9 MB -> 10.0 MB must keep the line exactly the same length
-        with patch.object(digue, "_stderr_is_tty", return_value=True):
+        with patch("digue.notify._stderr_is_tty", return_value=True):
             hook = digue._download_progress_hook("test.bin")
             hook(0, 1, 20 * 1024 * 1024)  # 0.0 MB of 20.0 MB
             first = capsys.readouterr().err
@@ -326,7 +327,7 @@ class TestDownloadProgressHook:
     def test_notification_message_has_no_bar_and_fixed_width(self):
         messages = []
         with (
-            patch("digue.send_notification", side_effect=lambda message, timeout_ms=0: messages.append(message)),
+            patch("digue.notify.send_notification", side_effect=lambda message, timeout_ms=0: messages.append(message)),
             patch("time.monotonic", side_effect=[1.0, 2.0, 3.0, 4.0]),
         ):
             hook = digue._download_progress_hook("test.bin", with_notification=True)
@@ -341,7 +342,7 @@ class TestDownloadProgressHook:
     def test_unknown_content_length_can_notify(self):
         messages = []
         with (
-            patch("digue.send_notification", side_effect=lambda message, timeout_ms=0: messages.append(message)),
+            patch("digue.notify.send_notification", side_effect=lambda message, timeout_ms=0: messages.append(message)),
             patch("time.monotonic", return_value=1.0),
         ):
             hook = digue._download_progress_hook("test.bin", with_notification=True)
@@ -349,15 +350,15 @@ class TestDownloadProgressHook:
         assert messages == ["Downloading test.bin...       1.0 MB"]
 
     def test_notify_prints_carriage_return_on_tty(self, capsys):
-        with patch.object(digue, "_stderr_is_tty", return_value=True):
-            digue.send_notification("status message")
+        with patch("digue.notify._stderr_is_tty", return_value=True):
+            notify_mod.send_notification("status message")
         err = capsys.readouterr().err
         assert err.startswith("\r")
         assert "[digue] status message" in err
 
     def test_notify_prints_plain_line_when_not_tty(self, capsys):
-        with patch.object(digue, "_stderr_is_tty", return_value=False):
-            digue.send_notification("status message")
+        with patch("digue.notify._stderr_is_tty", return_value=False):
+            notify_mod.send_notification("status message")
         err = capsys.readouterr().err
         assert err.startswith("[digue] status message\n")
 
@@ -461,8 +462,8 @@ class TestContainerFailures:
         mock_wait.assert_not_called()
 
     @pytest.mark.parametrize("silent", (False, True))
-    @patch("digue.notify_close")
-    @patch("digue.send_notification")
+    @patch("digue.notify.notify_close")
+    @patch("digue.notify.send_notification")
     @patch("digue.create_container")
     @patch("digue.start_container")
     @patch("digue._wait_for_server", return_value=True)
@@ -493,7 +494,7 @@ class TestContainerFailures:
             mock_notify.assert_called_once_with("Server starting...")
             mock_notify_close.assert_called_once_with()
 
-    @patch("digue.send_notification")
+    @patch("digue.notify.send_notification")
     @patch("digue._wait_for_server", return_value=False)
     @patch("digue.container_status", return_value="running")
     @patch("digue.is_server_running", return_value=False)
@@ -540,7 +541,7 @@ class TestContainerFailures:
             mock_start.assert_not_called()
             mock_create.assert_called_once_with(config, "cpu")
 
-    @patch("digue.send_notification")
+    @patch("digue.notify.send_notification")
     @patch("digue._wait_for_server")
     @patch("digue.container_status", return_value="paused")
     @patch("digue.is_server_running", return_value=False)

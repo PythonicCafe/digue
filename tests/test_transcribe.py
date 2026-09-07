@@ -171,7 +171,7 @@ class TestTranscribe:
         )
         mock_urlopen.return_value = mock_response
 
-        with patch.object(digue, "_stderr_is_tty", return_value=True):
+        with patch("digue.notify._stderr_is_tty", return_value=True):
             result = digue.transcribe("http://x", audio_file, "pt", response_format="vtt")
         converted = digue._convert_content(result, "vtt", "timestamps")
         assert "[00:00:00] Primeira frase." in converted
@@ -189,7 +189,7 @@ class TestTranscribe:
         mock_urlopen.return_value = mock_response
 
         # Simulate the cmd_transcribe path: vtt with wrap disabled, then convert
-        with patch.object(digue, "_stderr_is_tty", return_value=True):
+        with patch("digue.notify._stderr_is_tty", return_value=True):
             vtt = digue.transcribe("http://x", audio_file, "pt", response_format="vtt", wrap_cues=False)
         result = digue._convert_content(vtt, "vtt", "timestamps")
         lines = [line for line in result.splitlines() if line.strip()]

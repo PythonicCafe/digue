@@ -88,7 +88,7 @@ class TestDictateDaemon:
             patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
             assert digue.dictate_toggle(config) == 0
@@ -123,7 +123,7 @@ class TestDictateDaemon:
             patch("digue.start_recording", return_value=processes),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", side_effect=finish),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
             exit_code = digue.dictate_toggle(config)
@@ -180,7 +180,7 @@ class TestDictateDaemon:
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
             patch("digue.start_recording", side_effect=fail_after_reservation),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
             assert digue.dictate_toggle(config) == 1
@@ -200,7 +200,7 @@ class TestDictateDaemon:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=replace_reservation_then_fail),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
         ):
             assert digue.dictate_toggle(config) == 1
 
@@ -243,7 +243,7 @@ class TestDictateDaemon:
                 "digue.start_recording",
                 return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
             ) as mock_start,
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
         ):
             result = digue.dictate_toggle(config)
 
@@ -385,7 +385,7 @@ class TestDictateDaemon:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
             digue.dictate_toggle(config)
@@ -421,7 +421,7 @@ class TestDictateDaemon:
         config = _default_config()
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.send_notification") as mock_notify,
+            patch("digue.notify.send_notification") as mock_notify,
             patch("os.kill") as mock_kill,
         ):
             result = digue.dictate_toggle(config)
@@ -444,7 +444,7 @@ class TestDictateDaemon:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue.ensure_server", side_effect=capture_state),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
         ):
             digue.dictate_toggle(config)
 
@@ -464,7 +464,7 @@ class TestDictateDaemon:
             patch("digue.ensure_server"),
             patch("digue.is_server_running", return_value=True),
             patch("digue.start_recording", side_effect=RuntimeError("pw-record failed: no such node")),
-            patch("digue.send_notification") as mock_notify,
+            patch("digue.notify.send_notification") as mock_notify,
         ):
             assert digue.dictate_toggle(config) == 1
 

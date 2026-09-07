@@ -234,7 +234,7 @@ class TestDeliveryResult:
     def test_missing_recording_is_empty_with_exit_one(self, tmp_path):
         config = self.make_config(tmp_path)
 
-        with patch("digue.send_notification") as mock_notify:
+        with patch("digue.notify.send_notification") as mock_notify:
             result = digue.finish_dictation(config, None)
 
         assert result.outcome == "empty"
@@ -389,8 +389,8 @@ class TestDeliveryResult:
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=result),
-            patch("digue.send_notification"),
-            patch("digue.notify_close"),
+            patch("digue.notify.send_notification"),
+            patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
             assert digue.dictate_toggle(config) == exit_code
@@ -433,7 +433,7 @@ class TestFinishDictationBackend:
 
 
 class TestDictateArchivesAfterDelivery:
-    @patch("digue.send_notification")
+    @patch("digue.notify.send_notification")
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     def test_limit_warning_remains_in_transcription_progress(self, mock_transcribe, mock_send, mock_notify, tmp_path):

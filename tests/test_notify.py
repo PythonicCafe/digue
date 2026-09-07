@@ -4,6 +4,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import digue
+from digue import notify as notify_mod
 from digue.config import _default_config
 
 # -- Notifications -----------------------------------------------------------
@@ -12,39 +13,39 @@ from digue.config import _default_config
 class TestNotify:
     @patch("subprocess.run")
     def test_sends_with_replace_id(self, mock_run):
-        digue.send_notification("test", timeout_ms=5000)
+        notify_mod.send_notification("test", timeout_ms=5000)
         cmd = mock_run.call_args[0][0]
         assert "--replace-id" in cmd
         replace_id = int(cmd[cmd.index("--replace-id") + 1])
-        assert digue.NOTIFY_REPLACE_ID <= replace_id < digue.NOTIFY_REPLACE_ID + digue.NOTIFY_ID_SLOTS
+        assert notify_mod.NOTIFY_REPLACE_ID <= replace_id < notify_mod.NOTIFY_REPLACE_ID + notify_mod.NOTIFY_ID_SLOTS
 
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_prints_warning_when_notify_send_missing(self, mock_run, capsys):
-        digue._notify_send_warned = False
-        digue.send_notification("test")
+        notify_mod._notify_send_warned = False
+        notify_mod.send_notification("test")
         err = capsys.readouterr().err
         assert "notify-send not found" in err
 
     @patch("subprocess.run", side_effect=FileNotFoundError)
     def test_warns_only_once(self, mock_run, capsys):
-        digue._notify_send_warned = False
-        digue.send_notification("first")
-        digue.send_notification("second")
+        notify_mod._notify_send_warned = False
+        notify_mod.send_notification("first")
+        notify_mod.send_notification("second")
         err = capsys.readouterr().err
         assert err.count("notify-send not found") == 1
 
     @patch("subprocess.run")
     def test_always_prints_to_stderr(self, mock_run, capsys):
-        digue.send_notification("hello world")
+        notify_mod.send_notification("hello world")
         err = capsys.readouterr().err
         assert "hello world" in err
 
     @patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "notify-send"))
     def test_failing_notify_send_warns_once(self, mock_run, capsys):
         """A failed notification must be visible, not silently swallowed."""
-        digue._notify_send_warned = False
-        digue.send_notification("first")
-        digue.send_notification("second")
+        notify_mod._notify_send_warned = False
+        notify_mod.send_notification("first")
+        notify_mod.send_notification("second")
         err = capsys.readouterr().err
         assert err.count("notify-send failed") == 1
 
@@ -60,18 +61,18 @@ class TestNotify:
 class TestNotifyClose:
     @patch("subprocess.run")
     def test_calls_gdbus(self, mock_run):
-        digue.notify_close()
+        notify_mod.notify_close()
         cmd = mock_run.call_args[0][0]
         assert "gdbus" in cmd
         assert any("CloseNotification" in arg for arg in cmd)
 
 
 class TestNotifyLifecycle:
-    @patch("digue.send_notification")
+    @patch("digue.notify.send_notification")
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    @patch("digue.notify_close")
+    @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_pasted(
         self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
     ):
@@ -89,11 +90,11 @@ class TestNotifyLifecycle:
         assert last_notify.args == ("Pasted (5 chars)",)
         assert last_notify.kwargs == {"timeout_ms": 3000}
 
-    @patch("digue.send_notification")
+    @patch("digue.notify.send_notification")
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
     @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
-    @patch("digue.notify_close")
+    @patch("digue.notify.notify_close")
     def test_successful_dictation_notifies_typed(
         self, mock_close, mock_save, mock_transcribe, mock_send, mock_notify, tmp_path
     ):
@@ -179,7 +180,7 @@ class TestNotifyLifecycle:
         with (
             patch("digue.send_text") as mock_send,
             patch("digue.transcribe", return_value="hello"),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
         ):
             result = digue.finish_dictation(config, rec_file)
 

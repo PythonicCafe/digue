@@ -18,9 +18,6 @@ if TYPE_CHECKING:
 __version__ = "0.1.0"
 
 CONTAINER_NAME = "digue"
-NOTIFY_REPLACE_ID = 48271
-NOTIFY_ID_SLOTS = 32  # concurrent takes: id = base + (pid % slots), so popups of
-# overlapping dictations do not replace or close each other.
 DEFAULT_PORT = 8178
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODELS = {"nvidia": "large-v3-turbo", "amd": "large-v3-turbo", "intel": "large-v3-turbo", "cpu": "small"}
@@ -452,91 +449,6 @@ def preserve_container_for_benchmark() -> Iterator[None]:
                     start_container()
 
 
-# -- Notifications ------------------------------------------------------------
-
-_notify_send_warned = False
-_last_notify_len = 0
-
-
-def send_notification(message: str, timeout_ms: int = 0) -> None:
-    """Prints message to stderr AND sends a desktop notification.
-
-    The notification stays visible until replaced by the next one (timeout_ms=0).
-    Pass a timeout for messages that should auto-dismiss (success, errors).
-    If notify-send is not installed, prints a one-time warning and continues.
-
-    On a terminal the stderr line is redrawn (\\r, padded to erase a previous
-    shorter message), so it coexists with single-line progress bars; on a
-    captured stderr it is a plain line with \\n.
-    """
-    import subprocess
-
-    global _notify_send_warned, _last_notify_len
-
-    if _stderr_is_tty():
-        padding = " " * max(0, _last_notify_len - len(message))
-        print(f"\r[digue] {message}{padding}", end="", file=sys.stderr, flush=True)
-        _last_notify_len = len(message)
-    else:
-        print(f"[digue] {message}", file=sys.stderr, flush=True)
-        _last_notify_len = 0
-
-    try:
-        subprocess.run(
-            [
-                "notify-send",
-                "-a",
-                "digue",
-                "--replace-id",
-                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
-                "-t",
-                str(timeout_ms),
-                "digue",
-                message,
-            ],
-            capture_output=True,
-            timeout=5,
-            check=True,
-        )
-    except FileNotFoundError:
-        if not _notify_send_warned:
-            print(
-                "Warning: notify-send not found. Install libnotify-bin for desktop notifications.",
-                file=sys.stderr,
-            )
-            _notify_send_warned = True
-    except subprocess.SubprocessError as exc:
-        if not _notify_send_warned:
-            print(
-                f"Warning: notify-send failed ({type(exc).__name__}); desktop notifications unavailable.",
-                file=sys.stderr,
-            )
-            _notify_send_warned = True
-
-
-def notify_close() -> None:
-    """Closes the current digue notification via D-Bus."""
-    import subprocess
-
-    with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-        subprocess.run(
-            [
-                "gdbus",
-                "call",
-                "--session",
-                "--dest",
-                "org.freedesktop.Notifications",
-                "--object-path",
-                "/org/freedesktop/Notifications",
-                "--method",
-                "org.freedesktop.Notifications.CloseNotification",
-                str(NOTIFY_REPLACE_ID + os.getpid() % NOTIFY_ID_SLOTS),
-            ],
-            capture_output=True,
-            timeout=5,
-        )
-
-
 # -- Server -------------------------------------------------------------------
 
 
@@ -605,6 +517,9 @@ def ensure_server(config: dict[str, dict[str, Any]], silent: bool = False) -> st
     With backend 'remote' no local container is ever touched; the server is
     expected to be reachable through an SSH tunnel.
     """
+
+    from digue.notify import notify_close, send_notification
+
     if is_server_running(config):
         return None
 
@@ -1103,16 +1018,6 @@ def simplify_vtt(content: str, keep_timestamps: bool = True) -> str:
 # -- Download -----------------------------------------------------------------
 
 
-def _stderr_is_tty() -> bool:
-    """Returns True if stderr is a terminal (dynamic progress makes sense).
-
-    With captured/piped stderr, \\r has no visual effect and every update
-    becomes a full line in the log -- hence the sparse-line mode in progress
-    and notification prints.
-    """
-    return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
-
-
 def _download_progress_hook(label: str, with_notification: bool = False) -> Any:
     """Returns a reporthook callback for urlretrieve that prints a progress bar.
 
@@ -1123,7 +1028,10 @@ def _download_progress_hook(label: str, with_notification: bool = False) -> Any:
     When with_notification=True, also updates the desktop notification (~2x/s);
     the notification text never carries the bar nor \\r.
     """
+
     import time
+
+    from digue.notify import _stderr_is_tty, send_notification
 
     last_notify_time = [0.0]
     last_reported_pct = [-1]
@@ -1614,6 +1522,8 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
     (never transcribed/pasted automatically: the recorder may still be
     writing). Returns the rescued path or None.
     """
+
+    from digue.notify import send_notification
 
     if _pid_alive(take.daemon_pid) and _process_starttime(take.daemon_pid) == str(take.daemon_starttime):
         return None
@@ -2563,6 +2473,9 @@ def _archive_recording(
     """Archives a delivered recording: copy + compression when save-audio is on
     (the slow part), then removes the live WAV. Returns (archived, rescued_path):
     on failure the raw WAV is rescued (moved) instead and the user is told."""
+
+    from digue.notify import send_notification
+
     audio_dir = Path(config["dictate"]["audio_dir"])
     try:
         if config["dictate"]["save_audio"]:
@@ -2602,6 +2515,9 @@ def _archive_recovered_take(config: dict[str, dict[str, Any]], rec_file: Path, t
 
     The audio takes the transcript's timestamp and take id, so it lands next
     to the .txt. Every outcome is terminal (the text was delivered)."""
+
+    from digue.notify import send_notification
+
     timestamp, _, take_id = transcript.stem.rpartition("-")
     send_notification("Recovering the previous recording (text already delivered)")
     # The daemon died mid-archive, so a partial .wav copy, an empty compressed
@@ -2629,6 +2545,8 @@ def finish_dictation(
     signaled the daemon, which stopped the recorder) or duration limit (the
     watchdog safety killer stopped it).
     """
+
+    from digue.notify import _stderr_is_tty, send_notification
 
     if rec_file is None:
         send_notification("Empty or missing audio file", timeout_ms=5000)
@@ -2748,6 +2666,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     returns without starting a new take.
     """
 
+    from digue.notify import _stderr_is_tty, notify_close, send_notification
+
     daemon_pid = os.getpid()
     with _dictate_lock():
         entry = _daemon_state()
@@ -2864,6 +2784,9 @@ def _recover_orphan_takes(config: dict[str, dict[str, Any]], claimed: TakeState)
     oldest take reached a terminal outcome: a retryable failure leaves the
     claimed state in place and the next toggle claims it again.
     """
+
+    from digue.notify import send_notification
+
     try:
         result = ensure_server(config)
         if result is None and not is_server_running(config):
@@ -4140,6 +4063,7 @@ def cmd_doctor(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> i
 
 def main() -> None:
     from digue.config import _config_init, _config_path, cmd_config, load_config
+    from digue.notify import notify_close
 
     parser = create_parser()
     args = parser.parse_args()

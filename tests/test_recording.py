@@ -405,8 +405,8 @@ class TestStartRecordingPublishesTakeState:
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", side_effect=fake_finish),
-            patch("digue.send_notification"),
-            patch("digue.notify_close"),
+            patch("digue.notify.send_notification"),
+            patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
             assert digue.dictate_toggle(config) == 0
@@ -709,7 +709,7 @@ class TestRuntimeIsolation:
         with (
             patch("digue._process_starttime", return_value="555"),
             patch("digue.ensure_server", side_effect=RuntimeError("stop after state lookup")),
-            patch("digue.send_notification"),
+            patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
             assert digue.dictate_toggle(config) == 1
