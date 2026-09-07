@@ -210,7 +210,8 @@ def rescue_recording(
 ) -> Path | None:
     """Keeps a recording that could not be fully delivered. Never raises.
 
-    Copies the WAV to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.wav via an
+    Copies the recording to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>
+    (the live suffix is kept: a native FLAC take stays .flac) via an
     exclusive temp sibling + flush + fsync + exclusive link (runtime dir and
     audio-dir usually live on different filesystems, the destination must
     never be readable in a partial state, and an existing destination is
@@ -225,7 +226,7 @@ def rescue_recording(
     try:
         month_dir = Path(audio_dir) / month_dir_for(timestamp)
         month_dir.mkdir(parents=True, exist_ok=True)
-        archived = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
+        archived = month_dir / f"{_saved_stem(timestamp, take_id)}{rec_file.suffix.lower() or '.wav'}"
         temp_archived = archived.with_name(f".{archived.name}.{os.getpid()}.tmp")
         with open(temp_archived, "xb") as temp_file, rec_file.open("rb") as source_file:
             shutil.copyfileobj(source_file, temp_file)

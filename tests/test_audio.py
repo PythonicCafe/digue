@@ -70,6 +70,20 @@ class TestRescueRecording:
         assert archived.read_bytes() == b"audio"
         assert not rec_file.exists()
 
+    def test_keeps_the_suffix_of_a_native_flac_take(self, tmp_path):
+        """A live take recorded natively as FLAC must not be rescued under a
+        .wav name: the suffix is what save_audio and the server use to pick
+        the decoder, and a .wav holding FLAC data would be re-compressed."""
+        rec_file = tmp_path / "digue-rec.flac"
+        rec_file.write_bytes(b"fLaC")
+        audio_dir = tmp_path / "audio"
+
+        rescued = audio_mod.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        assert rescued == audio_dir / "2026" / "09" / "20260904-120000-0123456789abcdef.flac"
+        assert rescued.read_bytes() == b"fLaC"
+        assert not rec_file.exists()
+
     def test_copy_failure_preserves_origin_and_returns_none(self, tmp_path, capsys):
         rec_file = tmp_path / "digue-rec.wav"  # never created: the copy must fail
         audio_dir = tmp_path / "audio"
