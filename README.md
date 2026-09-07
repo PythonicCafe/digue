@@ -68,41 +68,40 @@ One machine, not a ranking of AMD iGPUs. Re-run with `python3 benchmark_models.p
 
 ## Installation
 
-Install from PyPI. With `pipx` (recommended: isolated, command available system-wide):
+`digue` is on PyPI. The recommended way to install a command-line application is `pipx`, which puts it in an isolated virtual environment and exposes the `digue` command on your `PATH` without touching the Python managed by your distribution:
 
 ```bash
 pipx install digue
 ```
 
-On Debian/Ubuntu, install `pipx` from the distribution first if needed:
+On Debian/Ubuntu, `pipx` itself comes from the distribution (`sudo apt install pipx`). `pipx` places its launchers in `~/.local/bin`; if that directory is already on your `PATH` (it is on most desktop setups), nothing else is needed. If `digue` is not found after installing, either:
+
+1. run `pipx ensurepath` once -- note that it edits your shell configuration files (`~/.bashrc`, `~/.zshrc`, ...) to add `~/.local/bin` to `PATH`; or
+2. add `~/.local/bin` to `PATH` yourself, in whatever way your shell is configured.
+
+Point your window manager keybinding at `~/.local/bin/digue` directly; no `bash -c` or activation script is needed. The launcher is not a standalone executable: it still uses the Python interpreter and environment managed by `pipx`.
+
+Plain `pip install digue` also works inside a virtual environment you manage yourself. Avoid `sudo pip install` and `pip install --user` on modern Debian/Ubuntu: PEP 668 marks the distribution Python as externally managed, so pip refuses them, and bypassing that protection (`--break-system-packages`) can break system tools.
+
+### Without pipx or pip
+
+`digue` has no runtime dependencies beyond Python 3.11+, so the package directory can simply be copied somewhere and run with `python3 -m digue`. Clone the repository into a temporary directory, copy the `digue/` package to `~/.local/opt/`, and create a small launcher in `~/.local/bin/`:
 
 ```bash
-sudo apt install pipx
-pipx ensurepath
+git clone --depth 1 https://github.com/turicas/digue.git /tmp/digue
+mkdir -p ~/.local/opt ~/.local/bin
+cp -r /tmp/digue/digue ~/.local/opt/digue
+cat > ~/.local/bin/digue <<'EOF'
+#!/bin/sh
+PYTHONPATH="$HOME/.local/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m digue "$@"
+EOF
+chmod +x ~/.local/bin/digue
+rm -rf /tmp/digue
 ```
 
-`pipx` installs `digue` in an isolated virtual environment and exposes a launcher, normally at `$HOME/.local/bin/digue`. Point your window manager keybinding at that launcher directly; no `bash -c` or activation script is needed. The launcher is not a standalone executable: it still uses the Python interpreter and environment managed by `pipx`.
+The launcher must use `python3 -m digue` (with the parent directory on `PYTHONPATH`): running `python3 ~/.local/opt/digue/cli.py` directly does not work, because the package uses absolute `digue.*` imports and Python puts the script's own directory, not its parent, on `sys.path`. To update, repeat the clone and the `cp` (remove the old `~/.local/opt/digue` first). The same `PATH` note as above applies to `~/.local/bin`.
 
-Do not use `sudo pip install digue`, and do not rely on `pip install --user` on modern Debian/Ubuntu. PEP 668 marks the distribution Python as externally managed, so pip may reject either command; bypassing that protection can break system tools. Use `pipx` instead.
-
-Or manually clone and run as a module:
-
-```bash
-mkdir -p ~/software/
-git clone https://github.com/turicas/digue.git ~/software/digue
-cd ~/software/digue/
-
-# Inspect dependencies and any Docker images already pulled
-python3 -m digue doctor
-
-# Detect backend, download model, pull Docker image, test server
-python3 -m digue download
-python3 -m digue server start
-python3 -m digue server stop
-
-# Optional: expose the `digue` command (editable install into an isolated env)
-pipx install -e .
-```
+To work on the code instead, clone it anywhere and run `python3 -m digue ...` from the checkout; `pipx install -e .` exposes that checkout as the `digue` command.
 
 ### First run
 
