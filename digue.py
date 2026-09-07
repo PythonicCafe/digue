@@ -2112,6 +2112,41 @@ def _copy_file_exclusive(source: Path, destination: Path) -> None:
         shutil.copyfileobj(source_file, destination_file)
 
 
+def rescue_recording(
+    rec_file: str | Path, audio_dir: str | Path, timestamp: str, take_id: str | None = None
+) -> Path | None:
+    """Keeps a recording that could not be fully delivered. Never raises.
+
+    Copies the WAV to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.wav via an
+    exclusive temp sibling + flush + fsync + replace (runtime dir and audio-dir
+    usually live on different filesystems, and the destination must never be
+    readable in a partial state), then removes the origin -- only after the
+    destination is valid. Any failure removes the temp, preserves the origin
+    and reports on stderr.
+    """
+    import shutil
+
+    rec_file = Path(rec_file)
+    temp_archived: Path | None = None
+    try:
+        month_dir = Path(audio_dir) / month_dir_for(timestamp)
+        month_dir.mkdir(parents=True, exist_ok=True)
+        archived = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
+        temp_archived = archived.with_name(f".{archived.name}.{os.getpid()}.tmp")
+        with open(temp_archived, "xb") as temp_file, rec_file.open("rb") as source_file:
+            shutil.copyfileobj(source_file, temp_file)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_archived, archived)
+        rec_file.unlink()
+        return archived
+    except Exception as rescue_exc:
+        if temp_archived is not None:
+            temp_archived.unlink(missing_ok=True)
+        print(f"Failed to keep recording: {rescue_exc}; audio still at {rec_file}", file=sys.stderr)
+        return None
+
+
 def normalize_pasted_text(text: str) -> str:
     """Joins wrapped lines into a single clean line.
 
@@ -2255,27 +2290,6 @@ def finish_dictation(
     audio_dir = Path(config["dictate"]["audio_dir"])
     timestamp = now_timestamp()
 
-    def rescue_recording() -> Path | None:
-        """Keeps the live recording when the take could not be fully delivered.
-
-        Moves the raw WAV to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.wav
-        (shutil.move handles cross-filesystem) regardless of save-audio: that
-        setting only skips the backup of a delivered take, and an undelivered
-        one exists nowhere else. On a failed move, prints and leaves the file
-        in the runtime dir. Never raises.
-        """
-        try:
-            import shutil
-
-            month_dir = audio_dir / month_dir_for(timestamp)
-            month_dir.mkdir(parents=True, exist_ok=True)
-            archived = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
-            shutil.move(rec_file, archived)
-            return archived
-        except Exception as rescue_exc:
-            print(f"Failed to keep recording: {rescue_exc}; audio still at {rec_file}", file=sys.stderr)
-            return None
-
     def archive_audio() -> bool:
         """Runs the post-delivery archiving (copy + compression, the slow part)."""
         try:
@@ -2292,7 +2306,7 @@ def finish_dictation(
             rec_file.unlink(missing_ok=True)
             return True
         except Exception as save_exc:
-            rescued = rescue_recording()
+            rescued = rescue_recording(rec_file, audio_dir, timestamp, take_id)
             message = f"Failed to save audio: {save_exc}"
             if rescued:
                 message += f"; uncompressed copy kept at {rescued}"
@@ -2314,7 +2328,7 @@ def finish_dictation(
         prompt = config["transcribe"].get("prompt") or None
         text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt))
     except Exception as exc:
-        archived = rescue_recording()
+        archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         notify(f"Transcription failed: {exc}", timeout_ms=10000)
         if archived:
             print(f"Recording kept at: {archived}", file=sys.stderr)
@@ -2326,7 +2340,7 @@ def finish_dictation(
         except Exception as exc:
             notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
-            rescue_recording()
+            rescue_recording(rec_file, audio_dir, timestamp, take_id)
             return 1
         archive_audio()
         notify("No speech detected", timeout_ms=5000)
@@ -2355,7 +2369,7 @@ def finish_dictation(
     except Exception as exc:
         notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
         print(text, file=sys.stderr)
-        rescue_recording()
+        rescue_recording(rec_file, audio_dir, timestamp, take_id)
         return 1
     # Transcribing... is a \r-redrawn line (no newline); break before this one.
     if _stderr_is_tty():

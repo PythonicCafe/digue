@@ -3265,6 +3265,43 @@ class TestSaveAudio:
         assert timestamp in saved.name
 
 
+class TestRescueRecording:
+    def test_moves_wav_with_take_id_and_only_then_removes_origin(self, tmp_path):
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"audio")
+        audio_dir = tmp_path / "audio"
+
+        rescued = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        archived = audio_dir / "2026" / "09" / "20260904-120000-0123456789abcdef.wav"
+        assert rescued == archived
+        assert archived.read_bytes() == b"audio"
+        assert not rec_file.exists()
+
+    def test_copy_failure_preserves_origin_and_returns_none(self, tmp_path, capsys):
+        rec_file = tmp_path / "digue-rec.wav"  # never created: the copy must fail
+        audio_dir = tmp_path / "audio"
+
+        result = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        assert result is None
+        assert "Failed to keep recording" in capsys.readouterr().err
+
+    def test_replace_failure_preserves_origin_and_removes_temp(self, tmp_path, capsys):
+        rec_file = tmp_path / "digue-rec.wav"
+        rec_file.write_bytes(b"audio")
+        audio_dir = tmp_path / "audio"
+
+        with patch("os.replace", side_effect=OSError("cross-device")):
+            result = digue.rescue_recording(rec_file, audio_dir, "20260904-120000", "0123456789abcdef")
+
+        month_dir = audio_dir / "2026" / "09"
+        assert result is None
+        assert rec_file.exists()
+        assert not any(path.name.startswith(".") for path in month_dir.iterdir())
+        assert "Failed to keep recording" in capsys.readouterr().err
+
+
 class TestTakeIdInSavedNames:
     """Two takes ending in the same second used to overwrite each other silently
     (<YYYYMMDD-HHMMSS>.<ext>): the take id makes saved names unique, and every
