@@ -2698,6 +2698,14 @@ def _archive_recovered_take(config: dict[str, dict[str, Any]], rec_file: Path, t
     to the .txt. Every outcome is terminal (the text was delivered)."""
     timestamp, _, take_id = transcript.stem.rpartition("-")
     notify("Recovering the previous recording (text already delivered)")
+    # The daemon died mid-archive, so a partial .wav copy, an empty compressed
+    # reservation or a .tmp of this same take may already sit next to the .txt.
+    # Same stem means same take id: they are provably incomplete products of
+    # this take, and the live WAV is the source of truth. Without this, the
+    # exclusive archive collides and the good audio stays in the runtime dir.
+    for leftover in transcript.parent.glob(f"*{transcript.stem}*"):
+        if leftover.suffix not in (".txt", ".json"):
+            leftover.unlink(missing_ok=True)
     archived, rescued_path = _archive_recording(config, rec_file, timestamp, take_id)
     if archived:
         return DeliveryResult(outcome="delivered", exit_code=0)

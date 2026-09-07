@@ -1758,6 +1758,71 @@ class TestRecoverClaimedTake:
         assert not rec_file.exists()
         assert len(list(month_dir.glob(f"*-{take.take_id}.wav"))) == 1
         assert len(list(month_dir.glob(f"*-{take.take_id}.txt"))) == 1
+
+    def test_partial_archive_leftovers_are_replaced_by_the_live_wav(self, tmp_path):
+        """ "Died during the archive" usually means save_audio had already
+        created the .wav copy (partial or complete) and maybe the empty
+        compressed reservation. The exclusive archive must not collide with
+        them: they belong to this very take and the live WAV is complete."""
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"complete audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+        config = self.make_config(tmp_path)
+        config["dictate"]["audio_format"] = "wav"
+        month_dir = Path(config["dictate"]["audio_dir"]) / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        stem = f"20260905-101500-{take.take_id}"
+        (month_dir / f"{stem}.txt").write_text("already pasted\n")
+        (month_dir / f"{stem}.wav").write_bytes(b"part")
+        (month_dir / f"{stem}.flac").write_bytes(b"")
+        (month_dir / f".{stem}.wav.4242.tmp").write_bytes(b"pa")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.send_text") as mock_send,
+            patch("digue.transcribe") as mock_transcribe,
+            patch("digue.notify"),
+        ):
+            exit_code = digue._recover_claimed_take(config, take)
+
+        assert exit_code == 0
+        mock_send.assert_not_called()
+        mock_transcribe.assert_not_called()
+        assert not rec_file.exists()
+        assert (month_dir / f"{stem}.wav").read_bytes() == b"complete audio"
+        assert (month_dir / f"{stem}.txt").read_text() == "already pasted\n"
+        assert sorted(path.name for path in month_dir.iterdir()) == [f"{stem}.txt", f"{stem}.wav"]
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_partial_archive_leftovers_do_not_touch_other_takes(self, tmp_path):
+        """Only the products of this take's stem are dropped: a neighbouring
+        take that shares the timestamp keeps its files."""
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"complete audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+        config = self.make_config(tmp_path)
+        config["dictate"]["audio_format"] = "wav"
+        month_dir = Path(config["dictate"]["audio_dir"]) / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        stem = f"20260905-101500-{take.take_id}"
+        other_stem = "20260905-101500-fedcba9876543210"
+        (month_dir / f"{stem}.txt").write_text("already pasted\n")
+        (month_dir / f"{stem}.wav").write_bytes(b"part")
+        (month_dir / f"{other_stem}.wav").write_bytes(b"other audio")
+        (month_dir / f"{other_stem}.txt").write_text("other text\n")
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.send_text"),
+            patch("digue.transcribe"),
+            patch("digue.notify"),
+        ):
+            exit_code = digue._recover_claimed_take(config, take)
+
+        assert exit_code == 0
+        assert (month_dir / f"{stem}.wav").read_bytes() == b"complete audio"
+        assert (month_dir / f"{other_stem}.wav").read_bytes() == b"other audio"
+        assert (month_dir / f"{other_stem}.txt").read_text() == "other text\n"
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
     def test_recycled_recorder_pid_is_not_signaled(self, tmp_path):
