@@ -430,7 +430,7 @@ Bump `__version__` in `digue.py` before building (the package version comes from
 
 ## Audio storage
 
-Every dictation is saved as a `<YYYYMMDD-HHMMSS>.txt` transcript plus the recording (compressed per `audio-format`, default `flac`) unless `save-audio = false`, under `<data-dir>/audio/YYYY/MM/` (one folder per month). The timestamp has no colons, so filenames are shell-friendly to complete. These are kept as backup and not cleaned up automatically; `digue clean` lists what there is and removes it after confirmation (`-f` skips the confirmation, and empty month directories are removed too). Only files in the dictation layout are touched (`YYYY/MM/<timestamp>.wav|flac|opus|txt`), so anything else living under `audio-dir` is left alone.
+Every dictation is saved as a `<YYYYMMDD-HHMMSS>-<take_id>.txt` transcript plus the recording (compressed per `audio-format`, default `flac`) unless `save-audio = false`, under `<data-dir>/audio/YYYY/MM/` (one folder per month). The take id (16 hex chars) keeps overlapping takes that end in the same second from overwriting each other's files; older files without the id (plain `<YYYYMMDD-HHMMSS>.<ext>`) are still recognized. The timestamp has no colons, so filenames are shell-friendly to complete. These are kept as backup and not cleaned up automatically; `digue clean` lists what there is and removes it after confirmation (`-f` skips the confirmation, and empty month directories are removed too). Only files in the dictation layout are touched (`YYYY/MM/<timestamp>[-<take_id>].wav|flac|opus|txt`), so anything else living under `audio-dir` is left alone.
 
 ## License
 

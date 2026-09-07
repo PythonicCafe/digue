@@ -3265,6 +3265,92 @@ class TestSaveAudio:
         assert timestamp in saved.name
 
 
+class TestTakeIdInSavedNames:
+    """Two takes ending in the same second used to overwrite each other silently
+    (<YYYYMMDD-HHMMSS>.<ext>): the take id makes saved names unique, and every
+    write is exclusive, so a collision can never drop a file."""
+
+    def test_take_id_goes_into_audio_and_transcript_names(self, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"wav data")
+        audio_dir = tmp_path / "audio"
+
+        saved, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0123456789abcdef")
+        text_path = digue._write_transcript(audio_dir, "20260904-120000", "hello", take_id="0123456789abcdef")
+
+        assert saved.name == "20260904-120000-0123456789abcdef.wav"
+        assert text_path.name == "20260904-120000-0123456789abcdef.txt"
+
+    def test_two_takes_in_the_same_second_generate_four_distinct_files(self, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"wav data")
+        audio_dir = tmp_path / "audio"
+
+        saved_a, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="0" * 16)
+        text_a = digue._write_transcript(audio_dir, "20260904-120000", "a", take_id="0" * 16)
+        saved_b, _ = digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000", take_id="f" * 16)
+        text_b = digue._write_transcript(audio_dir, "20260904-120000", "b", take_id="f" * 16)
+
+        assert len({saved_a, saved_b, text_a, text_b}) == 4
+        assert all(path.exists() for path in (saved_a, saved_b, text_a, text_b))
+
+    def test_saving_never_overwrites_an_existing_file(self, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"new data")
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        existing = month_dir / "20260904-120000.wav"
+        existing.write_bytes(b"original")
+
+        with pytest.raises(FileExistsError):
+            digue.save_audio(rec_file, audio_dir, timestamp="20260904-120000")
+
+        assert existing.read_bytes() == b"original"
+
+    def test_transcript_write_is_exclusive(self, tmp_path):
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        existing = month_dir / "20260904-120000.txt"
+        existing.write_text("original\n")
+
+        with pytest.raises(FileExistsError):
+            digue._write_transcript(audio_dir, "20260904-120000", "hello")
+
+        assert existing.read_text() == "original\n"
+
+
+class TestDictationFiles:
+    def test_accepts_old_and_new_layout_and_ignores_other_files(self, tmp_path):
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        old_wav = month_dir / "20260904-120000.wav"
+        new_flac = month_dir / "20260904-120001-0123456789abcdef.flac"
+        new_txt = month_dir / "20260904-120001-0123456789abcdef.txt"
+        music = month_dir / "01 - Song.wav"
+        notes = month_dir / "random.txt"
+        for path in (old_wav, new_flac, new_txt, music, notes):
+            path.write_bytes(b"x")
+
+        recordings = digue._dictation_files(audio_dir, digue.DICTATION_RECORDING_SUFFIXES)
+        transcripts = digue._dictation_files(audio_dir, frozenset((".txt",)))
+
+        assert recordings == [old_wav, new_flac]
+        assert transcripts == [new_txt]
+
+    def test_symlinks_are_ignored(self, tmp_path):
+        audio_dir = tmp_path / "audio"
+        month_dir = audio_dir / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        target = tmp_path / "elsewhere.wav"
+        target.write_bytes(b"x")
+        (month_dir / "20260904-120000.wav").symlink_to(target)
+
+        assert digue._dictation_files(audio_dir, digue.DICTATION_RECORDING_SUFFIXES) == []
+
+
 class TestCompressAudio:
     def test_wav_is_noop(self, tmp_path):
         rec = tmp_path / "rec.wav"
@@ -3301,6 +3387,66 @@ class TestCompressAudio:
         rec.write_bytes(b"data")
         with pytest.raises(KeyError):
             digue._compress_audio(rec, "mp3")
+
+    @patch("digue.container_status", return_value=None)
+    @patch("shutil.which", return_value="/usr/bin/ffmpeg")
+    @patch("subprocess.run")
+    def test_local_ffmpeg_writes_temp_in_final_directory_and_replaces(
+        self, mock_run, mock_which, mock_status, tmp_path
+    ):
+        import subprocess
+
+        rec = tmp_path / "20260904-120000-0123456789abcdef.wav"
+        rec.write_bytes(b"wav-data")
+        temp_paths = []
+
+        def fake_run(cmd, **kwargs):
+            assert "-y" not in cmd
+            temp_path = Path(cmd[-1])
+            temp_paths.append(temp_path)
+            temp_path.write_bytes(b"flac-data")
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+        mock_run.side_effect = fake_run
+
+        result = digue._compress_audio(rec, "flac")
+
+        assert result == tmp_path / "20260904-120000-0123456789abcdef.flac"
+        assert result.read_bytes() == b"flac-data"
+        assert not rec.exists()
+        assert temp_paths[0].parent == tmp_path
+        assert temp_paths[0].name.startswith(".") and temp_paths[0].name.endswith(".tmp")
+        assert [path.name for path in tmp_path.iterdir() if path.is_file()] == [result.name]
+
+    @patch("digue.container_status", return_value=None)
+    @patch("shutil.which", return_value="/usr/bin/ffmpeg")
+    @patch("subprocess.run")
+    def test_local_ffmpeg_failure_removes_temp_and_reservation_keeps_wav(
+        self, mock_run, mock_which, mock_status, tmp_path
+    ):
+        import subprocess
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"error")
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "flac")
+
+        assert result == rec
+        assert rec.exists()
+        assert [path.name for path in tmp_path.iterdir() if path.is_file()] == [rec.name]
+
+    def test_compression_never_overwrites_an_existing_destination(self, tmp_path):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+        existing = tmp_path / "rec.flac"
+        existing.write_bytes(b"original")
+
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), pytest.raises(FileExistsError):
+            digue._compress_audio(rec, "flac")
+
+        assert existing.read_bytes() == b"original"
+        assert rec.exists()
 
     @patch("digue.container_status", return_value="running")
     @patch("shutil.which", return_value=None)

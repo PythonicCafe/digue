@@ -1417,6 +1417,12 @@ def month_dir_for(timestamp: str) -> Path:
     return Path(timestamp[:4]) / timestamp[4:6]
 
 
+def _saved_stem(timestamp: str, take_id: str | None) -> str:
+    """Stem for saved files: the take id suffix makes two takes that end in the
+    same second unique; the exclusive write is the second line of defense."""
+    return f"{timestamp}-{take_id}" if take_id else timestamp
+
+
 def _rec_file() -> Path:
     """Returns a unique recording path without creating the audio file."""
     import secrets
@@ -1989,22 +1995,41 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
 
     rec_file = Path(rec_file)
     converted = rec_file.with_suffix(f".{audio_format}")
+    temp_converted = converted.with_name(f".{converted.name}.{os.getpid()}.tmp")
+    # Reserve the final name up front (exclusive creation): two takes can never
+    # overwrite each other's compressed file; a collision raises and the caller
+    # rescues the WAV.
+    converted.touch(exist_ok=False)
 
     if shutil.which("ffmpeg"):
+        # The temp is ours alone (ffmpeg opens the path itself, so exclusivity
+        # is the temp name); no -y: the final file is never ffmpeg's to overwrite.
+        temp_converted.unlink(missing_ok=True)
         result = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(rec_file), *codec_args[audio_format], str(converted)],
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-i",
+                str(rec_file),
+                *codec_args[audio_format],
+                *format_args[audio_format],
+                str(temp_converted),
+            ],
             capture_output=True,
             timeout=600,
         )
-        if result.returncode != 0 or not converted.exists():
-            print(
-                f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
-                file=sys.stderr,
-            )
-            converted.unlink(missing_ok=True)
-            return rec_file
-        rec_file.unlink(missing_ok=True)
-        return converted
+        if result.returncode == 0 and temp_converted.exists():
+            os.replace(temp_converted, converted)
+            rec_file.unlink(missing_ok=True)
+            return converted
+        temp_converted.unlink(missing_ok=True)
+        converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
+        print(
+            f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
+            file=sys.stderr,
+        )
+        return rec_file
 
     if backend != "remote" and container_status() == "running":
         cmd = [
@@ -2028,16 +2053,21 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
             timeout=600,
         )
         if result.returncode == 0 and result.stdout:
-            converted.write_bytes(result.stdout)
+            temp_converted.unlink(missing_ok=True)
+            with open(temp_converted, "xb") as temp_file:
+                temp_file.write(result.stdout)
+            os.replace(temp_converted, converted)
             rec_file.unlink(missing_ok=True)
             return converted
+        temp_converted.unlink(missing_ok=True)
+        converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
         print(
             f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
             file=sys.stderr,
         )
-        converted.unlink(missing_ok=True)
         return rec_file
 
+    converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
     print(
         f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
         file=sys.stderr,
@@ -2051,26 +2081,35 @@ def save_audio(
     audio_format: str = "wav",
     timestamp: str | None = None,
     backend: str | None = None,
+    take_id: str | None = None,
 ) -> tuple[Path, str]:
-    """Copies audio to <audio_dir>/YYYY/MM/<timestamp>.<ext>. Returns (saved_path, timestamp).
+    """Copies audio to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>. Returns (saved_path, timestamp).
 
     The timestamp comes from the caller (dictate_toggle generates it when the
     take stops, so the audio and its transcript share the same name even when
-    archiving runs later). Without one, the current time is used.
-    audio_format "flac" or "opus" compresses the copy; the live recording file
-    is kept as WAV and removed after saving.
+    archiving runs later). Without one, the current time is used. The copy is
+    exclusive: a name collision raises instead of overwriting another take's
+    file. audio_format "flac" or "opus" compresses the copy; the live recording
+    file is kept as WAV and removed after saving.
     """
-    import shutil
-
     audio_dir = Path(audio_dir)
     timestamp = timestamp or now_timestamp()
     month_dir = audio_dir / month_dir_for(timestamp)
     month_dir.mkdir(parents=True, exist_ok=True)
-    saved = month_dir / f"{timestamp}.wav"
-    shutil.copy2(rec_file, saved)
+    saved = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
+    _copy_file_exclusive(Path(rec_file), saved)
     if audio_format != "wav":
         saved = _compress_audio(saved, audio_format, backend=backend)
     return saved, timestamp
+
+
+def _copy_file_exclusive(source: Path, destination: Path) -> None:
+    """Copies source to destination with exclusive creation ("xb"): a collision
+    raises FileExistsError instead of silently overwriting another take's file."""
+    import shutil
+
+    with open(destination, "xb") as destination_file, source.open("rb") as source_file:
+        shutil.copyfileobj(source_file, destination_file)
 
 
 def normalize_pasted_text(text: str) -> str:
@@ -2083,15 +2122,17 @@ def normalize_pasted_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _write_transcript(audio_dir: Path, timestamp: str, text: str) -> Path:
-    """Writes the transcript next to the recording: <audio_dir>/YYYY/MM/<timestamp>.txt.
+def _write_transcript(audio_dir: Path, timestamp: str, text: str, take_id: str | None = None) -> Path:
+    """Writes the transcript next to the recording: <audio_dir>/YYYY/MM/<timestamp>-<take_id>.txt.
 
     The month folder comes from the timestamp itself (not from now()), so the
-    .txt always lands beside the audio saved with the same timestamp.
+    .txt always lands beside the audio saved with the same timestamp. The write
+    is exclusive: a collision raises instead of overwriting another take's text.
     """
-    text_path = audio_dir / month_dir_for(timestamp) / f"{timestamp}.txt"
+    text_path = audio_dir / month_dir_for(timestamp) / f"{_saved_stem(timestamp, take_id)}.txt"
     text_path.parent.mkdir(parents=True, exist_ok=True)
-    text_path.write_text(text + "\n")
+    with open(text_path, "xb") as text_file:
+        text_file.write((text + "\n").encode())
     return text_path
 
 
@@ -2197,7 +2238,9 @@ def _on_sigint(_signum: int, _frame: object) -> None:
     _got_sigint = True
 
 
-def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, limit_reached: bool = False) -> int:
+def finish_dictation(
+    config: dict[str, dict[str, Any]], rec_file: Path | None, limit_reached: bool = False, take_id: str | None = None
+) -> int:
     """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
 
     Called by the daemon once the recorder is dead: manual stop (second toggle
@@ -2215,18 +2258,18 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, l
     def rescue_recording() -> Path | None:
         """Keeps the live recording when the take could not be fully delivered.
 
-        Moves the raw WAV to <audio_dir>/YYYY/MM/<timestamp>.wav (shutil.move
-        handles cross-filesystem) regardless of save-audio: that setting only
-        skips the backup of a delivered take, and an undelivered one exists
-        nowhere else. On a failed move, prints and leaves the file in the
-        runtime dir. Never raises.
+        Moves the raw WAV to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.wav
+        (shutil.move handles cross-filesystem) regardless of save-audio: that
+        setting only skips the backup of a delivered take, and an undelivered
+        one exists nowhere else. On a failed move, prints and leaves the file
+        in the runtime dir. Never raises.
         """
         try:
             import shutil
 
             month_dir = audio_dir / month_dir_for(timestamp)
             month_dir.mkdir(parents=True, exist_ok=True)
-            archived = month_dir / f"{timestamp}.wav"
+            archived = month_dir / f"{_saved_stem(timestamp, take_id)}.wav"
             shutil.move(rec_file, archived)
             return archived
         except Exception as rescue_exc:
@@ -2244,6 +2287,7 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, l
                     config["dictate"].get("audio_format", "wav"),
                     timestamp=timestamp,
                     backend=backend,
+                    take_id=take_id,
                 )
             rec_file.unlink(missing_ok=True)
             return True
@@ -2278,7 +2322,7 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, l
 
     if not text:
         try:
-            _write_transcript(audio_dir, timestamp, text)
+            _write_transcript(audio_dir, timestamp, text, take_id=take_id)
         except Exception as exc:
             notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
@@ -2297,7 +2341,7 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, l
     except Exception as exc:
         notify(f"Paste failed: {exc}", timeout_ms=10000)
         try:
-            text_path = _write_transcript(audio_dir, timestamp, text)
+            text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
             print(f"Transcription saved to: {text_path}", file=sys.stderr)
         except Exception as save_exc:
             notify(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
@@ -2307,7 +2351,7 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None, l
     notify_close()
 
     try:
-        text_path = _write_transcript(audio_dir, timestamp, text)
+        text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
     except Exception as exc:
         notify(f"Failed to save transcript: {exc}", timeout_ms=10000)
         print(text, file=sys.stderr)
@@ -3473,22 +3517,30 @@ DICTATION_RECORDING_SUFFIXES = frozenset((".wav", ".flac", ".opus"))
 
 
 def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
-    """Lists <audio_dir>/YYYY/MM/<timestamp>.<suffix> files created by dictation.
+    """Lists <audio_dir>/YYYY/MM/<timestamp>[-<take_id>].<suffix> dictation files.
 
     Only that exact layout qualifies: audio-dir is user-configurable, and a
     recursive *.wav/*.flac/*.txt glob pointed at a music folder would remove
-    the library. The stem is the now_timestamp() format, YYYYMMDD-HHMMSS.
+    the library. Both layouts are accepted: the pre-take-id stem
+    (YYYYMMDD-HHMMSS, from now_timestamp()) and the current
+    YYYYMMDD-HHMMSS-<16 hex chars>. Symlinks are skipped: clean unlinks what it
+    lists, and deleting a symlink's target would destroy an outside file.
     """
     import re
 
-    stem_pattern = re.compile(r"^\d{8}-\d{6}$")
+    stem_pattern = re.compile(r"^\d{8}-\d{6}(-[0-9a-f]{16})?$")
     found = []
     for year_dir in audio_dir.glob("[0-9][0-9][0-9][0-9]"):
         for month_dir in year_dir.glob("[0-9][0-9]"):
             if not month_dir.is_dir():
                 continue
             for path in month_dir.iterdir():
-                if path.is_file() and path.suffix.lower() in suffixes and stem_pattern.match(path.stem):
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and path.suffix.lower() in suffixes
+                    and stem_pattern.match(path.stem)
+                ):
                     found.append(path)
     return sorted(found)
 
