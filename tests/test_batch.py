@@ -1,4 +1,4 @@
-"""Tests for digue.py."""
+"""Tests for batch-transcribe input handling and conversion."""
 
 import sys
 from pathlib import Path
