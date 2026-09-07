@@ -1,20 +1,20 @@
 # AGENTS.md
 
-> Single-file Python CLI tool for local speech-to-text using whisper.cpp in Docker. Stdlib only, no pip dependencies.
+> Python CLI tool for local speech-to-text using whisper.cpp in Docker. Stdlib only, no pip dependencies. Package: `digue/`.
 
 ## Commands
 
 - Test: `pytest tests/ -v --tb=short` (or `make test`)
 - Type check: `mypy` (strict, configured in pyproject; or `make mypy`)
 - Lint: `ruff check . --fix && ruff format --line-length 120` (or `make lint`)
-- Run: `python digue.py dictate` (toggle dictation), `python digue.py detect` etc.
+- Run: `python -m digue dictate` (toggle dictation), `python -m digue detect` etc.
 - Smoke test after building a wheel: `make smoke-wheel`. It installs the wheel into a temporary virtual environment, with no runtime dependencies, and runs the installed `digue --version` and `digue config show` entrypoint.
 - All of the above have `make` targets (`make help`); `make check` runs lint-check + mypy + test.
 
 ## Conventions
 
 - **Stdlib only.** No external runtime dependencies. `tomllib` (3.11+), `urllib.request`, `subprocess`, `pathlib`.
-- **Single file.** All logic lives in `digue.py`. Do not split into modules.
+- **Package.** All logic currently lives in `digue/__init__.py`. Version is `digue.__version__`. Run via `python -m digue` or the `digue` console script.
 - **English everywhere.** README, docstrings, comments, CLI help text, notifications, commit messages -- all English.
 - **`pathlib.Path` always.** Never `os.path`.
 - **Modern type hints.** `str | None`, `list[Path]` -- not `Optional`, `List`.

@@ -1,6 +1,6 @@
 # digue
 
-Local speech-to-text dictation and transcription using [whisper.cpp](https://github.com/ggml-org/whisper.cpp). A single Python file with zero pip dependencies.
+Local speech-to-text dictation and transcription using [whisper.cpp](https://github.com/ggml-org/whisper.cpp). A stdlib-only Python package with zero pip dependencies.
 
 Press a keybinding to start recording, press again to stop. The transcribed text is pasted into the focused window. Also works as a CLI for transcribing audio/video files and simplifying VTT subtitles.
 
@@ -85,7 +85,7 @@ pipx ensurepath
 
 Do not use `sudo pip install digue`, and do not rely on `pip install --user` on modern Debian/Ubuntu. PEP 668 marks the distribution Python as externally managed, so pip may reject either command; bypassing that protection can break system tools. Use `pipx` instead.
 
-Or manually clone and symlink:
+Or manually clone and run as a module:
 
 ```bash
 mkdir -p ~/software/
@@ -93,16 +93,15 @@ git clone https://github.com/turicas/digue.git ~/software/digue
 cd ~/software/digue/
 
 # Inspect dependencies and any Docker images already pulled
-python3 digue.py doctor
+python3 -m digue doctor
 
 # Detect backend, download model, pull Docker image, test server
-python3 digue.py download
-python3 digue.py start
-python3 digue.py stop
+python3 -m digue download
+python3 -m digue server start
+python3 -m digue server stop
 
-# Install to PATH (symlink)
-mkdir -p ~/.local/bin/
-ln -s "$PWD/digue.py" ~/.local/bin/digue
+# Optional: expose the `digue` command (editable install into an isolated env)
+pipx install -e .
 ```
 
 ### First run
@@ -459,7 +458,7 @@ digue.record_to("take.flac", seconds=8, config=config)
 ```bash
 pip install pytest pytest-cov ruff mypy
 make test            # or: pytest tests/ -v --cov=digue --cov-report=term-missing
-make mypy            # mypy --strict over digue.py and benchmark_models.py
+make mypy            # mypy --strict over digue/ and benchmark_models.py
 make lint            # ruff check --fix + format
 make check           # lint-check + mypy + test in one go
 ```
@@ -471,7 +470,7 @@ make build-check     # build sdist+wheel and validate with twine
 make publish         # upload (requires credentials)
 ```
 
-Bump `__version__` in `digue.py` before building (the package version comes from it).
+Bump `__version__` in `digue/__init__.py` before building (the package version comes from it).
 
 ## Audio storage
 

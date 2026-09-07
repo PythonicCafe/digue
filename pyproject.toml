@@ -39,7 +39,7 @@ Issues = "https://github.com/turicas/digue/issues"
 digue = "digue:main"
 
 [tool.setuptools]
-py-modules = ["digue"]
+packages = ["digue"]
 
 [tool.setuptools.dynamic]
 version = { attr = "digue.__version__" }
@@ -69,7 +69,7 @@ split-on-trailing-comma = true
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["digue.py", "benchmark_models.py"]
+files = ["digue", "benchmark_models.py"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
