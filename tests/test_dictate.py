@@ -40,8 +40,8 @@ class TestDictateDaemon:
         recorder = MagicMock(pid=777, poll=lambda: 0)
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server", side_effect=ensure_server),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server", side_effect=ensure_server),
+            patch("digue.container.is_server_running", return_value=True),
             patch(
                 "digue.start_recording",
                 return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None),
@@ -82,8 +82,8 @@ class TestDictateDaemon:
         recorder = MagicMock(pid=777, poll=lambda: 0)
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.start_recording", return_value=digue.RecordingProcesses(recorder=recorder, watchdog=None)),
             patch("digue._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
@@ -118,8 +118,8 @@ class TestDictateDaemon:
         processes = digue.RecordingProcesses(recorder=recorder, watchdog=None, rec_file=rec_file, take_id=take.take_id)
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.start_recording", return_value=processes),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", side_effect=finish),
@@ -177,8 +177,8 @@ class TestDictateDaemon:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.start_recording", side_effect=fail_after_reservation),
             patch("digue.notify.send_notification"),
             patch("signal.signal"),
@@ -199,7 +199,7 @@ class TestDictateDaemon:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server", side_effect=replace_reservation_then_fail),
+            patch("digue.container.ensure_server", side_effect=replace_reservation_then_fail),
             patch("digue.notify.send_notification"),
         ):
             assert digue.dictate_toggle(config) == 1
@@ -237,8 +237,8 @@ class TestDictateDaemon:
         with (
             patch("digue._daemon_pid_file", return_value=daemon_pid),
             patch("digue._pid_alive", return_value=False),
-            patch("digue.ensure_server", return_value=None),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server", return_value=None),
+            patch("digue.container.is_server_running", return_value=True),
             patch(
                 "digue.start_recording",
                 return_value=digue.RecordingProcesses(recorder=MagicMock(pid=777, poll=lambda: 0), watchdog=None),
@@ -384,7 +384,7 @@ class TestDictateDaemon:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
+            patch("digue.container.ensure_server", side_effect=RuntimeError("abort startup")),
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
@@ -443,7 +443,7 @@ class TestDictateDaemon:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server", side_effect=capture_state),
+            patch("digue.container.ensure_server", side_effect=capture_state),
             patch("digue.notify.send_notification"),
         ):
             digue.dictate_toggle(config)
@@ -461,8 +461,8 @@ class TestDictateDaemon:
         config = _default_config()
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.start_recording", side_effect=RuntimeError("pw-record failed: no such node")),
             patch("digue.notify.send_notification") as mock_notify,
         ):
@@ -476,8 +476,8 @@ class TestDictateDaemon:
 
 class TestDictateInterrupt:
     @patch("digue.stop_recording_pid", return_value=None)
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     @patch("digue.start_recording")
     def test_sigint_during_daemon_wait_stops_and_delivers(
         self, mock_start, mock_running, mock_ensure, mock_stop_pid, tmp_path, capsys

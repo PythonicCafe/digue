@@ -101,8 +101,8 @@ class TestOrphanStartingTake:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.start_recording") as mock_start,
             patch("digue.finish_dictation") as mock_finish,
             patch("digue.notify.send_notification"),
@@ -276,8 +276,8 @@ class TestOrphanTakeClaim:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.stop_recording_pid", return_value=rec_file) as mock_stop,
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("digue.start_recording") as mock_start,
@@ -313,8 +313,8 @@ class TestOrphanTakeClaim:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.stop_recording_pid", return_value=rec_file),
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("digue.start_recording") as mock_start,
@@ -355,8 +355,8 @@ class TestOrphanTakeClaim:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", return_value=False),
-            patch("digue.ensure_server", return_value=None),
-            patch("digue.is_server_running", return_value=False),
+            patch("digue.container.ensure_server", return_value=None),
+            patch("digue.container.is_server_running", return_value=False),
             patch("digue.stop_recording_pid") as mock_stop,
             patch("digue.finish_dictation") as mock_finish,
             patch("digue.start_recording") as mock_start,
@@ -389,7 +389,7 @@ class TestOrphanTakeClaim:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server", side_effect=RuntimeError("abort startup")),
+            patch("digue.container.ensure_server", side_effect=RuntimeError("abort startup")),
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
@@ -733,8 +733,8 @@ class TestSurplusOrphanRescue:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.stop_recording_pid", side_effect=lambda pid, rec_file, expected_starttime=None: rec_file),
             patch("digue.finish_dictation", side_effect=fake_finish),
             patch("subprocess.Popen", return_value=recorder),
@@ -794,8 +794,8 @@ class TestSurplusOrphanRescue:
             with (
                 patch("digue._runtime_dir", return_value=tmp_path),
                 patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-                patch("digue.ensure_server"),
-                patch("digue.is_server_running", return_value=True),
+                patch("digue.container.ensure_server"),
+                patch("digue.container.is_server_running", return_value=True),
                 patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
                 patch("subprocess.Popen", return_value=recorder),
                 patch("digue._wait_recorder_end_daemon", return_value="ended"),
@@ -863,8 +863,8 @@ class TestSurplusOrphanRescue:
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
             patch("digue._pid_alive", lambda pid: pid == os.getpid()),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
             patch("digue.rescue_recording", return_value=None),
             patch("subprocess.Popen", return_value=recorder),

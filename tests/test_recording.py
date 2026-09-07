@@ -400,8 +400,8 @@ class TestStartRecordingPublishesTakeState:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", side_effect=fake_finish),
@@ -708,7 +708,7 @@ class TestRuntimeIsolation:
 
         with (
             patch("digue._process_starttime", return_value="555"),
-            patch("digue.ensure_server", side_effect=RuntimeError("stop after state lookup")),
+            patch("digue.container.ensure_server", side_effect=RuntimeError("stop after state lookup")),
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):

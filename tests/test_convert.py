@@ -243,8 +243,8 @@ class TestSilentAudioTimestamps:
         assert digue._convert_content(content, "vtt", "timestamps") == ""
 
     @patch("digue.transcribe", return_value="WEBVTT\n")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_cmd_transcribe_timestamps_on_silent_audio_succeeds(
         self, mock_running, mock_ensure, mock_transcribe, tmp_path, capsys
     ):
@@ -266,8 +266,8 @@ class TestSilentAudioTimestamps:
         assert "does not look like" not in captured.err
 
     @patch("digue.transcribe", return_value="WEBVTT\n")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_batch_transcribe_timestamps_on_silent_audio_is_not_a_failure(
         self, mock_running, mock_ensure, mock_transcribe, tmp_path
     ):

@@ -9,6 +9,7 @@ import pytest
 
 import digue
 from digue.config import _default_config, load_config
+from digue.container import CONTAINER_NAME
 
 
 class TestTimestampFormat:
@@ -241,7 +242,7 @@ class TestCompressAudio:
         with pytest.raises(KeyError):
             digue._compress_audio(rec, "mp3")
 
-    @patch("digue.container_status", return_value=None)
+    @patch("digue.container.container_status", return_value=None)
     @patch("shutil.which", return_value="/usr/bin/ffmpeg")
     @patch("subprocess.run")
     def test_local_ffmpeg_writes_temp_in_final_directory_and_replaces(
@@ -271,7 +272,7 @@ class TestCompressAudio:
         assert temp_paths[0].name.startswith(".") and temp_paths[0].name.endswith(".tmp")
         assert [path.name for path in tmp_path.iterdir() if path.is_file()] == [result.name]
 
-    @patch("digue.container_status", return_value=None)
+    @patch("digue.container.container_status", return_value=None)
     @patch("shutil.which", return_value="/usr/bin/ffmpeg")
     @patch("subprocess.run")
     def test_local_ffmpeg_failure_removes_temp_and_reservation_keeps_wav(
@@ -316,7 +317,7 @@ class TestCompressAudio:
 
         with (
             patch("shutil.which", return_value=None),
-            patch("digue.container_status", return_value="running"),
+            patch("digue.container.container_status", return_value="running"),
             patch("subprocess.run", side_effect=OSError("docker gone")),
             pytest.raises(OSError),
         ):
@@ -337,7 +338,7 @@ class TestCompressAudio:
         assert existing.read_bytes() == b"original"
         assert rec.exists()
 
-    @patch("digue.container_status", return_value="running")
+    @patch("digue.container.container_status", return_value="running")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_container_fallback_when_host_ffmpeg_missing(self, mock_run, mock_which, mock_status, tmp_path):
@@ -354,11 +355,11 @@ class TestCompressAudio:
         assert not rec.exists()
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd[:5] == ["docker", "exec", "-i", digue.CONTAINER_NAME, "ffmpeg"]
+        assert cmd[:5] == ["docker", "exec", "-i", CONTAINER_NAME, "ffmpeg"]
         assert "-c:a" in cmd and "flac" in cmd
         assert mock_run.call_args[1]["input"] == b"wav-data"
 
-    @patch("digue.container_status", return_value="running")
+    @patch("digue.container.container_status", return_value="running")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_container_fallback_opus(self, mock_run, mock_which, mock_status, tmp_path):
@@ -374,11 +375,11 @@ class TestCompressAudio:
         assert result.read_bytes() == b"opus-data"
         assert not rec.exists()
         cmd = mock_run.call_args[0][0]
-        assert cmd[:5] == ["docker", "exec", "-i", digue.CONTAINER_NAME, "ffmpeg"]
+        assert cmd[:5] == ["docker", "exec", "-i", CONTAINER_NAME, "ffmpeg"]
         assert "-c:a" in cmd and "libopus" in cmd
         assert "-f" in cmd and "ogg" in cmd
 
-    @patch("digue.container_status", return_value="running")
+    @patch("digue.container.container_status", return_value="running")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_container_fallback_skipped_if_remote_backend(self, mock_run, mock_which, mock_status, tmp_path):
@@ -391,7 +392,7 @@ class TestCompressAudio:
         assert rec.exists()
         mock_run.assert_not_called()
 
-    @patch("digue.container_status", return_value=None)
+    @patch("digue.container.container_status", return_value=None)
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_container_fallback_skipped_if_container_not_running(self, mock_run, mock_which, mock_status, tmp_path):
@@ -404,7 +405,7 @@ class TestCompressAudio:
         assert rec.exists()
         mock_run.assert_not_called()
 
-    @patch("digue.container_status", return_value="running")
+    @patch("digue.container.container_status", return_value="running")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_container_fallback_failure_keeps_wav(self, mock_run, mock_which, mock_status, tmp_path):

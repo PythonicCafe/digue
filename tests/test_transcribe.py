@@ -468,8 +468,8 @@ class TestDetectLanguage:
 
 class TestCmdDetectLanguage:
     @patch("digue.detect_language", return_value="pt")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_prints_language_code(self, mock_running, mock_ensure, mock_detect, tmp_path, capsys):
         config = _default_config()
         args = MagicMock()
@@ -483,8 +483,8 @@ class TestCmdDetectLanguage:
         assert capsys.readouterr().out.strip() == "pt"
 
     @patch("digue.language_probabilities", return_value={"detected": ("pt", 0.999), "all": {"pt": 0.999}})
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_json_output_has_detected_and_all(self, mock_running, mock_ensure, mock_probs, tmp_path, capsys):
         config = _default_config()
         args = MagicMock()
@@ -500,8 +500,8 @@ class TestCmdDetectLanguage:
         assert output["probability"] == 0.999
         assert output["all"] == {"pt": 0.999}
 
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_missing_file_gives_clear_error(self, mock_running, mock_ensure, tmp_path, capsys):
         config = _default_config()
         args = MagicMock()
@@ -552,8 +552,8 @@ class TestDetectLanguageVerbose:
         args.verbose = False
         with (
             patch("digue.detect_language", return_value="pt") as mock_detect,
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
         ):
             assert digue.cmd_detect_language(args, config) == 0
         assert mock_detect.call_args[1]["verbose"] is False
@@ -562,8 +562,8 @@ class TestDetectLanguageVerbose:
 class TestCmdTranscribeInput:
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="text")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_directory_input_gives_clear_error_not_ffmpeg(
         self, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path, capsys
     ):
@@ -586,8 +586,8 @@ class TestCmdTranscribeInput:
         mock_ensure.assert_not_called()
         mock_running.assert_not_called()
 
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running")
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running")
     def test_missing_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         args = MagicMock(audio=tmp_path / "missing.wav")
 
@@ -598,8 +598,8 @@ class TestCmdTranscribeInput:
         mock_running.assert_not_called()
 
     @pytest.mark.parametrize("failure", [RuntimeError("request failed"), OSError("disk full")])
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_operational_failure_returns_1_without_traceback(
         self, mock_running, mock_ensure, failure, tmp_path, capsys
     ):
@@ -635,8 +635,8 @@ class TestCmdTranscribeInput:
         assert "Traceback" not in error
 
     @patch("digue.transcribe", return_value="text")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_uses_config_prompt_when_cli_absent(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"audio")
@@ -651,8 +651,8 @@ class TestOutputFilesEndWithOneNewline:
     VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n"
 
     @patch("digue.transcribe", return_value=VTT)
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_transcribe_output_file(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
         """VTT/SRT results already end with a newline (see _post_process_subtitle);
         -o appended another one, ending every subtitle file with a blank line."""
@@ -668,8 +668,8 @@ class TestOutputFilesEndWithOneNewline:
         assert content == self.VTT
 
     @patch("digue.transcribe", return_value=VTT)
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_batch_transcribe_output_file(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
@@ -683,8 +683,8 @@ class TestOutputFilesEndWithOneNewline:
         assert (output_dir / "a.vtt").read_text() == self.VTT
 
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
     def test_text_output_still_gets_its_newline(self, mock_running, mock_ensure, mock_transcribe, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")

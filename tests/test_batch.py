@@ -7,8 +7,8 @@ from digue.config import _default_config
 
 
 class TestCmdBatchTranscribeInput:
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running")
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running")
     def test_empty_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
@@ -22,8 +22,8 @@ class TestCmdBatchTranscribeInput:
         mock_ensure.assert_not_called()
         mock_running.assert_not_called()
 
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running")
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running")
     def test_completed_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
@@ -119,8 +119,8 @@ class TestCmdBatchSimplifyVtt:
 
 class TestCmdBatchTranscribe:
     @patch("digue.transcribe", return_value="transcribed text")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_transcribes_audio_files(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
@@ -145,8 +145,8 @@ class TestCmdBatchTranscribe:
         assert not (output_dir / "readme.vtt").exists()
 
     @patch("digue.transcribe", return_value="text")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_skips_already_transcribed(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
@@ -170,8 +170,8 @@ class TestCmdBatchTranscribe:
         assert (output_dir / "done.vtt").read_text() == "already done"
 
     @patch("digue.transcribe", side_effect=["first", RuntimeError("request failed")])
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_returns_failure_reports_counts_and_leaves_no_partial_output(
         self, mock_ensure, mock_running, mock_transcribe, tmp_path, capsys
     ):
@@ -200,8 +200,8 @@ class TestCmdBatchTranscribe:
 
     @patch("pathlib.Path.replace", side_effect=OSError("replace failed"))
     @patch("digue.transcribe", return_value="partial")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_failed_replace_does_not_leave_output_or_temp(
         self, mock_ensure, mock_running, mock_transcribe, mock_replace, tmp_path
     ):
@@ -217,8 +217,8 @@ class TestCmdBatchTranscribe:
         assert not list(output_dir.glob("*.tmp"))
 
     @patch("digue.transcribe", return_value="WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_supports_timestamps_format(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
@@ -237,8 +237,8 @@ class TestCmdBatchTranscribe:
         assert mock_transcribe.call_args[0][3] == "vtt"
 
     @patch("digue.transcribe", return_value="WEBVTT\n")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_uses_config_format_prompt_and_wrapping(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"

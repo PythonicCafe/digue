@@ -384,8 +384,8 @@ class TestDeliveryResult:
 
         with (
             patch("digue._runtime_dir", return_value=tmp_path),
-            patch("digue.ensure_server"),
-            patch("digue.is_server_running", return_value=True),
+            patch("digue.container.ensure_server"),
+            patch("digue.container.is_server_running", return_value=True),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.finish_dictation", return_value=result),
@@ -407,7 +407,7 @@ class TestFinishDictationBackend:
         config["server"]["backend"] = "remote"
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        with patch("digue.detect_backend") as mock_detect:
+        with patch("digue.container.detect_backend") as mock_detect:
             digue.finish_dictation(config, rec_file)
 
         mock_save.assert_called_once()
@@ -425,7 +425,7 @@ class TestFinishDictationBackend:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        with patch("digue.detect_backend") as mock_detect:
+        with patch("digue.container.detect_backend") as mock_detect:
             digue.finish_dictation(config, rec_file)
 
         mock_detect.assert_not_called()

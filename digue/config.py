@@ -10,7 +10,6 @@ from typing import Any
 
 from digue import (
     AVAILABLE_MODELS,
-    BACKENDS,
     DEFAULT_LANGUAGE,
     DEFAULT_MAX_RECORD_SECONDS,
     DEFAULT_MODELS,
@@ -103,6 +102,8 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
         if value not in choices:
             options = ", ".join(choices)
             raise ValueError(f"Invalid {section}.{key}: {value!r}; expected one of: {options}")
+
+    from digue.container import BACKENDS
 
     require_choice("server", "backend", ("auto", *BACKENDS))
     port = require_type("server", "port", int)

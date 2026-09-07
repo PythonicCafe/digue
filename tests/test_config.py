@@ -10,6 +10,7 @@ import pytest
 
 import digue
 from digue import config as config_mod
+from digue import container as container_mod
 
 # -- Config -------------------------------------------------------------------
 
@@ -369,7 +370,7 @@ class TestServerHost:
     def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
         config = config_mod._default_config()
         config["server"]["bind_ip"] = bind_ip
-        assert digue.server_host(config) == expected
+        assert container_mod.server_host(config) == expected
 
 
 class TestConfigValueValidation:

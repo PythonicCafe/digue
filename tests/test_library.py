@@ -10,8 +10,8 @@ from digue.config import _default_config
 
 class TestTranscribeFile:
     @patch("digue.transcribe", return_value="hello")
-    @patch("digue.is_server_running", return_value=True)
-    @patch("digue.ensure_server")
+    @patch("digue.container.is_server_running", return_value=True)
+    @patch("digue.container.ensure_server")
     def test_uses_config_and_returns_text(self, mock_ensure, mock_running, mock_transcribe, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")
@@ -25,8 +25,8 @@ class TestTranscribeFile:
         assert mock_transcribe.call_args.args[2] == "pt"
         assert mock_transcribe.call_args.kwargs["prompt"] == "KINAI"
 
-    @patch("digue.ensure_server")
-    @patch("digue.is_server_running", return_value=False)
+    @patch("digue.container.ensure_server")
+    @patch("digue.container.is_server_running", return_value=False)
     def test_raises_when_server_down(self, mock_running, mock_ensure, tmp_path):
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")

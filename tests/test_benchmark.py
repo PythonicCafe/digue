@@ -7,6 +7,7 @@ import pytest
 
 import benchmark_models
 import digue
+from digue import container as container_mod
 from digue.config import _default_config
 
 
@@ -35,13 +36,13 @@ class TestBenchmarkTempFiles:
 class TestBenchmarkContainerState:
     def test_absent_container_is_only_cleaned_up(self):
         with (
-            patch("digue.container_status", return_value=None),
-            patch("digue.container_exists", return_value=True),
-            patch("digue.remove_container") as mock_remove,
-            patch("digue._rename_container") as mock_rename,
-            patch("digue.stop_container") as mock_stop,
-            patch("digue.start_container") as mock_start,
-            digue.preserve_container_for_benchmark(),
+            patch("digue.container.container_status", return_value=None),
+            patch("digue.container.container_exists", return_value=True),
+            patch("digue.container.remove_container") as mock_remove,
+            patch("digue.container._rename_container") as mock_rename,
+            patch("digue.container.stop_container") as mock_stop,
+            patch("digue.container.start_container") as mock_start,
+            container_mod.preserve_container_for_benchmark(),
         ):
             pass
 
@@ -54,21 +55,21 @@ class TestBenchmarkContainerState:
         statuses = iter(["exited"])
         existence = iter([True])
         with (
-            patch("digue.container_status", side_effect=lambda: next(statuses)),
-            patch("digue.container_exists", side_effect=lambda: next(existence)),
-            patch("digue.remove_container") as mock_remove,
-            patch("digue._rename_container") as mock_rename,
-            patch("digue.stop_container") as mock_stop,
-            patch("digue.start_container") as mock_start,
+            patch("digue.container.container_status", side_effect=lambda: next(statuses)),
+            patch("digue.container.container_exists", side_effect=lambda: next(existence)),
+            patch("digue.container.remove_container") as mock_remove,
+            patch("digue.container._rename_container") as mock_rename,
+            patch("digue.container.stop_container") as mock_stop,
+            patch("digue.container.start_container") as mock_start,
             patch("digue.os.getpid", return_value=123),
             pytest.raises(KeyboardInterrupt),
-            digue.preserve_container_for_benchmark(),
+            container_mod.preserve_container_for_benchmark(),
         ):
             raise KeyboardInterrupt
 
         assert mock_rename.call_args_list == [
-            ((digue.CONTAINER_NAME, "digue-benchmark-backup-123"),),
-            (("digue-benchmark-backup-123", digue.CONTAINER_NAME),),
+            ((container_mod.CONTAINER_NAME, "digue-benchmark-backup-123"),),
+            (("digue-benchmark-backup-123", container_mod.CONTAINER_NAME),),
         ]
         mock_remove.assert_called_once_with()
         mock_stop.assert_not_called()
@@ -76,20 +77,20 @@ class TestBenchmarkContainerState:
 
     def test_running_container_is_stopped_then_restored_running(self):
         with (
-            patch("digue.container_status", return_value="running"),
-            patch("digue.container_exists", return_value=False),
-            patch("digue._rename_container") as mock_rename,
-            patch("digue.stop_container") as mock_stop,
-            patch("digue.start_container") as mock_start,
+            patch("digue.container.container_status", return_value="running"),
+            patch("digue.container.container_exists", return_value=False),
+            patch("digue.container._rename_container") as mock_rename,
+            patch("digue.container.stop_container") as mock_stop,
+            patch("digue.container.start_container") as mock_start,
             patch("digue.os.getpid", return_value=456),
-            digue.preserve_container_for_benchmark(),
+            container_mod.preserve_container_for_benchmark(),
         ):
             pass
 
         mock_stop.assert_called_once_with()
         assert mock_rename.call_args_list == [
-            ((digue.CONTAINER_NAME, "digue-benchmark-backup-456"),),
-            (("digue-benchmark-backup-456", digue.CONTAINER_NAME),),
+            ((container_mod.CONTAINER_NAME, "digue-benchmark-backup-456"),),
+            (("digue-benchmark-backup-456", container_mod.CONTAINER_NAME),),
         ]
         mock_start.assert_called_once_with()
 
@@ -98,14 +99,14 @@ class TestRunBenchmarkLanguage:
     def test_language_default_comes_from_transcribe_section(self, tmp_path, capsys):
         config = _default_config()
         with (
-            patch("digue.download_model"),
-            patch("digue.preserve_container_for_benchmark"),
-            patch("digue.container_exists", return_value=True),
-            patch("digue.remove_container"),
-            patch("digue.create_container"),
-            patch("digue._wait_for_server", return_value=True),
+            patch("digue.container.download_model"),
+            patch("digue.container.preserve_container_for_benchmark"),
+            patch("digue.container.container_exists", return_value=True),
+            patch("digue.container.remove_container"),
+            patch("digue.container.create_container"),
+            patch("digue.container._wait_for_server", return_value=True),
             patch("digue._benchmark_run", return_value=[]),
-            patch("digue.detect_backend", return_value="cpu"),
+            patch("digue.container.detect_backend", return_value="cpu"),
         ):
             digue.run_benchmark(tmp_path / "no-audio.wav", config)
         err = capsys.readouterr().err
@@ -114,14 +115,14 @@ class TestRunBenchmarkLanguage:
     def test_removes_benchmark_container_when_transcription_is_interrupted(self, tmp_path):
         config = _default_config()
         with (
-            patch("digue.download_model"),
-            patch("digue.preserve_container_for_benchmark"),
-            patch("digue.container_exists", return_value=True),
-            patch("digue.remove_container") as mock_remove,
-            patch("digue.create_container"),
-            patch("digue._wait_for_server", return_value=True),
+            patch("digue.container.download_model"),
+            patch("digue.container.preserve_container_for_benchmark"),
+            patch("digue.container.container_exists", return_value=True),
+            patch("digue.container.remove_container") as mock_remove,
+            patch("digue.container.create_container"),
+            patch("digue.container._wait_for_server", return_value=True),
             patch("digue._benchmark_run", side_effect=KeyboardInterrupt),
-            patch("digue.detect_backend", return_value="cpu"),
+            patch("digue.container.detect_backend", return_value="cpu"),
             pytest.raises(KeyboardInterrupt),
         ):
             digue.run_benchmark(tmp_path / "audio.wav", config)
@@ -137,13 +138,13 @@ class TestBenchmarkRespectsConfig:
         config = _default_config()
         config["server"]["backend"] = "cpu"
         with (
-            patch("digue.download_model"),
-            patch("digue.preserve_container_for_benchmark"),
-            patch("digue.container_exists", return_value=False),
-            patch("digue.create_container") as mock_create,
-            patch("digue._wait_for_server", return_value=True),
+            patch("digue.container.download_model"),
+            patch("digue.container.preserve_container_for_benchmark"),
+            patch("digue.container.container_exists", return_value=False),
+            patch("digue.container.create_container") as mock_create,
+            patch("digue.container._wait_for_server", return_value=True),
             patch("digue._benchmark_run", return_value=[]),
-            patch("digue.detect_backend", return_value="intel"),
+            patch("digue.container.detect_backend", return_value="intel"),
         ):
             digue.run_benchmark(tmp_path / "audio.wav", config)
 
@@ -158,24 +159,24 @@ class TestBenchmarkRespectsConfig:
         config["server"]["backend"] = "amd"
         config["server"]["image"] = "x"
         with (
-            patch("digue.download_model"),
-            patch("digue.preserve_container_for_benchmark"),
-            patch("digue.container_exists", return_value=False),
-            patch("digue.create_container") as mock_create,
-            patch("digue._wait_for_server", return_value=True),
+            patch("digue.container.download_model"),
+            patch("digue.container.preserve_container_for_benchmark"),
+            patch("digue.container.container_exists", return_value=False),
+            patch("digue.container.create_container") as mock_create,
+            patch("digue.container._wait_for_server", return_value=True),
             patch("digue._benchmark_run", return_value=[]),
-            patch("digue.detect_backend", return_value="amd"),
+            patch("digue.container.detect_backend", return_value="amd"),
         ):
             digue.run_benchmark(tmp_path / "audio.wav", config)
 
         images = {backend: [] for backend in ("cpu", "amd")}
         for create_call in mock_create.call_args_list:
             bench_config, backend = create_call.args
-            images[backend].append(digue.resolve_image(backend, bench_config))
+            images[backend].append(container_mod.resolve_image(backend, bench_config))
             assert bench_config["server"]["image"] == ("x" if backend == "amd" else "")
-        assert images == {"cpu": [digue.DOCKER_IMAGES["cpu"]] * 2, "amd": ["x", "x"]}
+        assert images == {"cpu": [container_mod.DOCKER_IMAGES["cpu"]] * 2, "amd": ["x", "x"]}
         err = capsys.readouterr().err
-        assert f"Image: {digue.DOCKER_IMAGES['cpu']}" in err
+        assert f"Image: {container_mod.DOCKER_IMAGES['cpu']}" in err
         assert "Image: x" in err
 
     @patch("time.sleep")
@@ -194,11 +195,11 @@ class TestBenchmarkModels:
         config = _default_config()
         config["server"]["data_dir"] = str(tmp_path)
         with (
-            patch("benchmark_models.digue.create_container"),
-            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.container_mod.create_container"),
+            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
             patch("benchmark_models.digue.transcribe", side_effect=KeyboardInterrupt),
-            patch("benchmark_models.digue.container_exists", return_value=True),
-            patch("benchmark_models.digue.remove_container") as mock_remove,
+            patch("benchmark_models.container_mod.container_exists", return_value=True),
+            patch("benchmark_models.container_mod.remove_container") as mock_remove,
             pytest.raises(KeyboardInterrupt),
         ):
             benchmark_models.benchmark_case(config, "cpu", "small")
@@ -214,8 +215,8 @@ class TestBenchmarkModels:
             patch("benchmark_models.create_parser") as mock_parser,
             patch("benchmark_models.download_sample"),
             patch("benchmark_models.load_config", return_value=config),
-            patch("benchmark_models.digue.detect_backend", return_value="cpu"),
-            patch("benchmark_models.digue.preserve_container_for_benchmark", return_value=manager),
+            patch("benchmark_models.container_mod.detect_backend", return_value="cpu"),
+            patch("benchmark_models.container_mod.preserve_container_for_benchmark", return_value=manager),
             patch("benchmark_models.benchmark_case", side_effect=KeyboardInterrupt),
         ):
             mock_parser.return_value.parse_args.return_value = argparse.Namespace(
@@ -253,8 +254,8 @@ class TestBenchmarkModelsConfig:
             patch("benchmark_models.create_parser") as mock_parser,
             patch("benchmark_models.download_sample"),
             patch("benchmark_models.load_config", return_value=config),
-            patch("benchmark_models.digue.detect_backend", return_value="intel"),
-            patch("benchmark_models.digue.preserve_container_for_benchmark"),
+            patch("benchmark_models.container_mod.detect_backend", return_value="intel"),
+            patch("benchmark_models.container_mod.preserve_container_for_benchmark"),
             patch("benchmark_models.benchmark_case", return_value=None),
         ):
             mock_parser.return_value.parse_args.return_value = argparse.Namespace(
@@ -272,17 +273,17 @@ class TestBenchmarkModelsConfig:
         config["server"]["image"] = "x"
         config["server"]["data_dir"] = str(tmp_path)
         with (
-            patch("benchmark_models.digue.create_container") as mock_create,
-            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.container_mod.create_container") as mock_create,
+            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
             patch("benchmark_models.digue.transcribe", return_value="hello"),
-            patch("benchmark_models.digue.container_exists", return_value=False),
+            patch("benchmark_models.container_mod.container_exists", return_value=False),
         ):
             assert benchmark_models.benchmark_case(config, "intel", "small") is not None
 
         bench_config, backend = mock_create.call_args.args
         assert backend == "intel"
         assert bench_config["server"]["image"] == ""
-        assert digue.resolve_image(backend, bench_config) == digue.DOCKER_IMAGES["intel"]
+        assert container_mod.resolve_image(backend, bench_config) == container_mod.DOCKER_IMAGES["intel"]
 
     def test_case_keeps_custom_image_for_resolved_backend(self, tmp_path):
         config = _default_config()
@@ -290,10 +291,10 @@ class TestBenchmarkModelsConfig:
         config["server"]["image"] = "x"
         config["server"]["data_dir"] = str(tmp_path)
         with (
-            patch("benchmark_models.digue.create_container") as mock_create,
-            patch("benchmark_models.digue._wait_for_server", return_value=True),
+            patch("benchmark_models.container_mod.create_container") as mock_create,
+            patch("benchmark_models.container_mod._wait_for_server", return_value=True),
             patch("benchmark_models.digue.transcribe", return_value="hello"),
-            patch("benchmark_models.digue.container_exists", return_value=False),
+            patch("benchmark_models.container_mod.container_exists", return_value=False),
         ):
             assert benchmark_models.benchmark_case(config, "cpu", "small") is not None
 

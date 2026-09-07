@@ -20,6 +20,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digue
+from digue import container as container_mod
 from digue.config import load_config
 
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
@@ -41,7 +42,7 @@ def download_sample() -> None:
         print(f"Sample: {sample}", file=sys.stderr)
         return
     print("Downloading sample audio...", file=sys.stderr, flush=True)
-    digue._download_file(SAMPLE_URL, sample, sample.name)
+    container_mod._download_file(SAMPLE_URL, sample, sample.name)
     print(f"Saved: {sample} ({sample.stat().st_size / 1024:.0f} KB)", file=sys.stderr)
 
 
@@ -50,7 +51,7 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
     label = f"{backend} / {model}"
     print(f"\n=== {label} ===", file=sys.stderr)
 
-    resolved = digue.resolve_backend(config)
+    resolved = container_mod.resolve_backend(config)
     models_dir = Path(config["server"]["data_dir"]) / "models"
     model_path = models_dir / f"ggml-{model}.bin"
     if not model_path.exists():
@@ -65,21 +66,21 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
     if backend != resolved:
         bench_server["image"] = ""
     bench_config = {**config, "server": bench_server, "models": {**config["models"], backend: model}}
-    print(f"  Image: {digue.resolve_image(backend, bench_config)}", file=sys.stderr)
+    print(f"  Image: {container_mod.resolve_image(backend, bench_config)}", file=sys.stderr)
 
     print("  Starting server...", file=sys.stderr, flush=True)
     try:
         try:
-            digue.create_container(bench_config, backend)
+            container_mod.create_container(bench_config, backend)
         except RuntimeError as exc:
             print(f"  Skipped: {exc}", file=sys.stderr)
             return None
 
-        if not digue._wait_for_server(config, verbose=True):
+        if not container_mod._wait_for_server(config, verbose=True):
             print("  Server failed to start (see: docker logs digue), skipping", file=sys.stderr)
             return None
 
-        url = digue.server_url(config)
+        url = container_mod.server_url(config)
 
         try:
             digue.transcribe(url, sample_path(), "en", timeout=digue.BENCHMARK_TRANSCRIPTION_TIMEOUT)
@@ -108,8 +109,8 @@ def benchmark_case(config: dict[str, dict[str, Any]], backend: str, model: str) 
             "text": text,
         }
     finally:
-        if digue.container_exists():
-            digue.remove_container()
+        if container_mod.container_exists():
+            container_mod.remove_container()
 
 
 def positive_int(value: str) -> int:
@@ -129,8 +130,8 @@ def create_parser() -> argparse.ArgumentParser:
         "--backends",
         nargs="+",
         default=None,
-        choices=list(digue.DOCKER_IMAGES.keys()),
-        help=f"Backends to test (default: auto-detected + cpu). Options: {', '.join(digue.DOCKER_IMAGES.keys())}",
+        choices=list(container_mod.DOCKER_IMAGES.keys()),
+        help=f"Backends to test (default: auto-detected + cpu). Options: {', '.join(container_mod.DOCKER_IMAGES.keys())}",
     )
     parser.add_argument(
         "-m",
@@ -158,14 +159,14 @@ def main() -> int:
     RUNS = args.runs
 
     config = load_config()
-    if digue._is_remote(config):
+    if container_mod._is_remote(config):
         print("Benchmarking requires a local container; backend 'remote' is not supported.", file=sys.stderr)
         return 1
 
     download_sample()
 
     if args.backends is None:
-        resolved = digue.resolve_backend(config)
+        resolved = container_mod.resolve_backend(config)
         backends = [resolved]
         if resolved != "cpu":
             backends.append("cpu")
@@ -186,7 +187,7 @@ def main() -> int:
 
     all_results = []
     try:
-        with digue.preserve_container_for_benchmark():
+        with container_mod.preserve_container_for_benchmark():
             for backend in backends:
                 for model in args.models:
                     result = benchmark_case(config, backend, model)
