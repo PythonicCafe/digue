@@ -2691,17 +2691,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
 
 def cmd_detect_language(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     """Detects the spoken language of an audio file (no transcription)."""
-    ensure_server(config, silent=True)
-    if not is_server_running(config):
-        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
-        return 1
-
     audio_path: Path = args.audio
     if not audio_path.exists():
         print(f"Error: file not found: {audio_path}", file=sys.stderr)
         return 1
     if not audio_path.is_file():
         print(f"Error: not a file: {audio_path} (expected an audio file; got a directory?)", file=sys.stderr)
+        return 1
+
+    ensure_server(config, silent=True)
+    if not is_server_running(config):
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
         return 1
 
     url = server_url(config)
@@ -2829,17 +2829,17 @@ def cmd_dictate(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> 
 
 def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
 
-    ensure_server(config, silent=True)
-    if not is_server_running(config):
-        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
-        return 1
-
     audio_path = args.audio
     if not audio_path.exists():
         print(f"Error: file not found: {audio_path}", file=sys.stderr)
         return 1
     if not audio_path.is_file():
         print(f"Error: not a file: {audio_path} (expected an audio file; got a directory?)", file=sys.stderr)
+        return 1
+
+    ensure_server(config, silent=True)
+    if not is_server_running(config):
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
         return 1
 
     language = args.language or config["transcribe"]["language"]
@@ -3140,11 +3140,6 @@ def _format_extension(response_format: str) -> str:
 def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     import time
 
-    ensure_server(config, silent=True)
-    if not is_server_running(config):
-        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
-        return 1
-
     language = args.language or config["transcribe"]["language"]
     response_format = args.response_format or config["transcribe"]["output_format"]
     prompt = config["transcribe"]["prompt"]
@@ -3172,6 +3167,11 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
     if not pending:
         print("All files already transcribed", file=sys.stderr)
         return 0
+
+    ensure_server(config, silent=True)
+    if not is_server_running(config):
+        print(f"Error: server is not running. {server_not_running_hint(config)}", file=sys.stderr)
+        return 1
 
     succeeded = 0
     failed = 0

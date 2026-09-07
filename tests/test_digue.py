@@ -1894,6 +1894,8 @@ class TestCmdDetectLanguage:
 
         assert result == 1
         assert "not found" in capsys.readouterr().err
+        mock_ensure.assert_not_called()
+        mock_running.assert_not_called()
 
 
 class TestDetectLanguageVerbose:
@@ -3619,6 +3621,40 @@ class TestOutputFilesEndWithOneNewline:
         assert (tmp_path / "a.txt").read_text() == "hello\n"
 
 
+class TestCmdBatchTranscribeInput:
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running")
+    def test_empty_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
+
+        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 1
+
+        assert "No audio files" in capsys.readouterr().err
+        mock_ensure.assert_not_called()
+        mock_running.assert_not_called()
+
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running")
+    def test_completed_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        (input_dir / "audio.wav").write_bytes(b"audio")
+        (output_dir / "audio.txt").write_text("done\n")
+        args = MagicMock(input_dir=input_dir, output_dir=output_dir, language=None, response_format=None)
+
+        assert digue.cmd_batch_transcribe(args, digue._default_config()) == 0
+
+        assert "All files already transcribed" in capsys.readouterr().err
+        mock_ensure.assert_not_called()
+        mock_running.assert_not_called()
+
+
 class TestCmdTranscribeInput:
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="text")
@@ -3643,6 +3679,19 @@ class TestCmdTranscribeInput:
         err = capsys.readouterr().err
         assert "not a file" in err or "is a directory" in err.lower()
         mock_transcribe.assert_not_called()
+        mock_ensure.assert_not_called()
+        mock_running.assert_not_called()
+
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running")
+    def test_missing_input_does_not_start_server(self, mock_running, mock_ensure, tmp_path, capsys):
+        args = MagicMock(audio=tmp_path / "missing.wav")
+
+        assert digue.cmd_transcribe(args, digue._default_config()) == 1
+
+        assert "not found" in capsys.readouterr().err
+        mock_ensure.assert_not_called()
+        mock_running.assert_not_called()
 
     @pytest.mark.parametrize("failure", [RuntimeError("request failed"), OSError("disk full")])
     @patch("digue.ensure_server")
