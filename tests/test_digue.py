@@ -212,6 +212,16 @@ class TestCreateContainer:
 
     @patch("digue.pull_image")
     @patch("digue._docker_run")
+    def test_binds_to_configured_ip(self, mock_docker, mock_pull):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = digue._default_config()
+        config["server"]["bind_ip"] = "192.168.1.10"
+        digue.create_container(config, "cpu")
+        cmd = mock_docker.call_args[0][0]
+        assert "192.168.1.10:8178:8080" in cmd
+
+    @patch("digue.pull_image")
+    @patch("digue._docker_run")
     def test_calls_pull_image(self, mock_docker, mock_pull):
         mock_docker.return_value = MagicMock(returncode=0)
         config = digue._default_config()
@@ -690,7 +700,194 @@ class TestRemoteBackend:
         assert digue.cmd_status(MagicMock(), config) == 1
 
 
+class TestHostOverrides:
+    def test_applies_matching_host(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.thinkpad.server]
+            backend = "cpu"
+
+            [host.thinkpad.dictation]
+            max-duration = 42
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "cpu"
+        assert config["dictation"]["max_duration"] == 42
+
+    def test_matches_hostname_without_domain(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.laptop.server]
+            backend = "remote"
+        """)
+        )
+        with patch("socket.gethostname", return_value="laptop.company.com"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "remote"
+
+    def test_ignores_other_hosts(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.desktop.server]
+            backend = "remote"
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "auto"
+
+    def test_host_overrides_beat_global(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [server]
+            backend = "amd"
+
+            [host.thinkpad.server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "cpu"
+
+    def test_global_fills_what_host_does_not_override(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [server]
+            backend = "amd"
+            port = 9000
+
+            [host.thinkpad.server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "cpu"
+        assert config["server"]["port"] == 9000
+
+    def test_host_models_section(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [models]
+            cpu = "small"
+
+            [host.thinkpad.models]
+            cpu = "medium"
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["models"]["cpu"] == "medium"
+        assert config["models"]["nvidia"] == "large-v3-turbo"
+
+    def test_unknown_keys_in_host_section_are_ignored(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.thinkpad.server]
+            no-such-key = true
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        assert config["server"]["backend"] == "auto"
+
+    def test_gethostname_called_once_with_host_section(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.laptop.server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="laptop") as mock_hostname:
+            digue.load_config(config_path)
+        assert mock_hostname.call_count == 1
+
+
 # -- CLI parser ---------------------------------------------------------------
+
+
+class TestConfigCommand:
+    def test_show_toml_includes_sections(self, capsys):
+        config = digue._default_config()
+        args = MagicMock()
+        args.output_format = "toml"
+        assert digue.cmd_config(args, config) == 0
+        out = capsys.readouterr().out
+        assert "[server]" in out
+        assert "[dictation]" in out
+        assert "port = 8178" in out
+        assert 'backend = "auto"' in out
+
+    def test_show_json_unchanged(self, capsys):
+        config = digue._default_config()
+        args = MagicMock()
+        args.output_format = "json"
+        assert digue.cmd_config(args, config) == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["server"]["port"] == 8178
+
+    def test_show_resolves_host_overrides(self, tmp_path, capsys):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            textwrap.dedent("""\
+            [host.thinkpad.server]
+            backend = "cpu"
+        """)
+        )
+        with patch("socket.gethostname", return_value="thinkpad"):
+            config = digue.load_config(config_path)
+        args = MagicMock()
+        args.output_format = "toml"
+        digue.cmd_config(args, config)
+        assert 'backend = "cpu"' in capsys.readouterr().out
+
+    def test_init_creates_file(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(digue, "_config_path", lambda: tmp_path / "digue" / "config.toml")
+        args = MagicMock()
+        args.force = False
+        assert digue._config_init(args) == 0
+        created = tmp_path / "digue" / "config.toml"
+        assert created.exists()
+        assert "[server]" in created.read_text()
+        assert "Config created" in capsys.readouterr().err
+
+    def test_init_refuses_existing_without_force(self, tmp_path, capsys, monkeypatch):
+        existing = tmp_path / "config.toml"
+        existing.write_text("# my custom config")
+        monkeypatch.setattr(digue, "_config_path", lambda: existing)
+        args = MagicMock()
+        args.force = False
+        assert digue._config_init(args) == 1
+        assert existing.read_text() == "# my custom config"
+        assert "already exists" in capsys.readouterr().err
+
+    def test_init_force_overwrites(self, tmp_path, monkeypatch):
+        existing = tmp_path / "config.toml"
+        existing.write_text("# old")
+        monkeypatch.setattr(digue, "_config_path", lambda: existing)
+        args = MagicMock()
+        args.force = True
+        assert digue._config_init(args) == 0
+        assert "[server]" in existing.read_text()
+
+    def test_example_config_is_valid_toml(self, tmp_path):
+        import tomllib
+
+        example = digue._config_example()
+        parsed = tomllib.loads(example)
+        assert parsed["server"]["port"] == digue.DEFAULT_PORT
+        assert "models" in parsed
 
 
 class TestCreateParser:

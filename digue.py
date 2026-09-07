@@ -83,6 +83,7 @@ def _default_config():
             "data_dir": str(data_dir),
             "backend": "auto",
             "image": "",
+            "bind_ip": "127.0.0.1",
         },
         "dictation": {
             "language": DEFAULT_LANGUAGE,
@@ -97,26 +98,54 @@ def _default_config():
     }
 
 
+def _merge_section(target, source):
+    """Merges source keys into target dict; kebab-case keys override snake_case defaults."""
+    for key, value in source.items():
+        target[key.replace("-", "_")] = value
+
+
+def _host_overrides(user_config):
+    """Returns the [host.<this-hostname>] tables from the user config, or {}.
+
+    Matches the exact hostname first; then tries without the domain part
+    (e.g. "thinkpad" matches "thinkpad.local"). gethostname() is in-memory
+    (microseconds), so calling it on every run adds no startup delay.
+    """
+    hosts = user_config.get("host")
+    if not isinstance(hosts, dict):
+        return {}
+    import socket
+
+    hostname = socket.gethostname()
+    for candidate in (hostname, hostname.split(".")[0]):
+        if candidate in hosts and isinstance(hosts[candidate], dict):
+            return hosts[candidate]
+    return {}
+
+
 def load_config(config_path=None):
-    """Loads config from TOML file, falling back to defaults for missing keys."""
+    """Loads config from TOML file, falling back to defaults for missing keys.
+
+    If the file defines [host.<hostname>][section] tables matching this machine
+    (exact hostname, or the first dot component of it), those sections are
+    merged on top of the global ones, which in turn override the defaults.
+    """
+    import tomllib
     from pathlib import Path
 
     config = _default_config()
     path = Path(config_path) if config_path else _config_path()
 
     if path.exists():
-        import tomllib
-
         with path.open("rb") as fobj:
             user_config = tomllib.load(fobj)
         for section, defaults in config.items():
             if section in user_config:
-                for key in defaults:
-                    toml_key = key.replace("_", "-")
-                    if toml_key in user_config[section]:
-                        config[section][key] = user_config[section][toml_key]
-                    elif key in user_config[section]:
-                        config[section][key] = user_config[section][key]
+                _merge_section(config[section], user_config[section])
+        host_overrides = _host_overrides(user_config)
+        for section, defaults in config.items():
+            if section in host_overrides and isinstance(host_overrides[section], dict):
+                _merge_section(config[section], host_overrides[section])
 
     if not config["dictation"]["audio_dir"]:
         config["dictation"]["audio_dir"] = str(Path(config["server"]["data_dir"]) / "audio")
@@ -285,7 +314,7 @@ def create_container(config, backend=None):
         "--restart",
         "unless-stopped",
         "-p",
-        f"127.0.0.1:{port}:8080",
+        f"{config['server'].get('bind_ip', '127.0.0.1')}:{port}:8080",
     ]
 
     if backend == "nvidia":
@@ -413,7 +442,12 @@ def server_url(config):
 
 
 def is_server_running(config):
-    """Returns True if server is responding to HTTP requests."""
+    """Returns True if server is responding to HTTP requests.
+
+    Always probes localhost: the bind IP only controls where Docker exposes
+    the port, but the server is always reachable from the same machine via
+    localhost (Docker DNATs traffic to the container).
+    """
     import urllib.error
     import urllib.request
 
@@ -1207,6 +1241,78 @@ def _ensure_dir(value):
     return path
 
 
+CONFIG_TEMPLATE = """\
+# -- Server -------------------------------------------------------------------
+[server]
+port = {port}                     # host port for the whisper-server container
+# bind-ip = "127.0.0.1"         # IP Docker binds the port to; 127.0.0.1 = local only.
+                                #   Set to a LAN IP to expose it to that network
+                                #   (the server has no authentication; prefer SSH tunnels)
+# data-dir = ""                 # where models are stored
+                                #   (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is often
+                                #   unset, in which case: ~/.local/share/digue)
+# backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
+                                # or "remote" (server on another machine via SSH tunnel)
+# image = ""                    # override Docker image (see README for compatibility matrix)
+
+# -- Dictation ----------------------------------------------------------------
+[dictation]
+language = "auto"               # language for transcription: "auto", "pt", "en", etc.
+# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio)
+# display-server = "auto"       # "auto" (detect), "x11", or "wayland"
+# input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
+                                #   keystrokes; useful in terminals)
+# save-audio = true             # save the .wav recording as a backup
+# max-duration = 300            # stop recording after N seconds (0 = unlimited)
+# recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
+
+# -- Models per backend -------------------------------------------------------
+[models]
+nvidia = "large-v3-turbo"
+amd = "large-v3-turbo"
+intel = "large-v3-turbo"
+cpu = "small"
+# Available models: tiny, base, small, medium, large-v3-turbo, large-v3
+
+# -- Per-host overrides (version this file in your dotfiles) -------------------
+# [host.<hostname>][section] tables override the global sections of the same
+# name on that machine only (defaults < global < host). The hostname matches
+# exactly, or without the domain part (thinkpad matches thinkpad.local).
+# Example:
+#
+# [host.minideb.server]
+# backend = "amd"
+#
+# [host.thinkpad.server]
+# backend = "cpu"
+#
+# [host.thinkpad.dictation]
+# max-duration = 120
+"""
+
+
+def _config_example():
+    """Renders the example config template with the current defaults."""
+    return CONFIG_TEMPLATE.format(port=DEFAULT_PORT)
+
+
+def _config_as_toml(config):
+    """Renders the resolved config as TOML (section by section, strings quoted)."""
+    lines = []
+    for section, values in config.items():
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            elif isinstance(value, int):
+                rendered = str(value)
+            else:
+                rendered = '"' + str(value).replace('"', '\\"') + '"'
+            lines.append(f"{key} = {rendered}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def create_parser():
     from pathlib import Path
 
@@ -1312,7 +1418,26 @@ def create_parser():
         help="Audio file (records from microphone if not given)",
     )
 
-    subparsers.add_parser("config", help="Show current configuration as JSON")
+    sub_config = subparsers.add_parser("config", help="Show or initialize the configuration")
+    sub_config_sub = sub_config.add_subparsers(dest="config_action", metavar="action")
+
+    sub_config_show = sub_config_sub.add_parser("show", help="Show the resolved configuration")
+    sub_config_show.add_argument(
+        "-f",
+        "--format",
+        dest="output_format",
+        choices=("toml", "json"),
+        default="toml",
+        help="Output format (default: toml)",
+    )
+
+    sub_config_init = sub_config_sub.add_parser("init", help="Create the config file with commented defaults")
+    sub_config_init.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Overwrite the config file if it already exists",
+    )
     subparsers.add_parser("doctor", help="Check system dependencies and test Docker images")
 
     return parser
@@ -1574,7 +1699,27 @@ def cmd_benchmark(args, config):
 def cmd_config(args, config):
     import json
 
-    print(json.dumps(config, indent=2))
+    output_format = getattr(args, "output_format", "json")
+    if output_format == "toml":
+        print(_config_as_toml(config), end="")
+    else:
+        print(json.dumps(config, default=str, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _config_init(args):
+    """Creates the config file from the template. Refuses to overwrite without --force."""
+
+    path = _config_path()
+    if path.exists() and not args.force:
+        print(f"Error: config file already exists: {path}", file=sys.stderr)
+        print("Use --force to overwrite it.", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_config_example())
+    print(f"Config created: {path}", file=sys.stderr)
+    if args.force:
+        print("(existing file was overwritten)", file=sys.stderr)
     return 0
 
 
@@ -1696,6 +1841,9 @@ def main():
 
     if command == "detect":
         sys.exit(cmd_detect(args))
+
+    if command == "config" and getattr(args, "config_action", None) == "init":
+        sys.exit(_config_init(args))
 
     config = load_config(args.config)
 

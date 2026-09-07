@@ -168,7 +168,7 @@ def main():
         label = f"{result['backend']} / {result['model']}"
         print(f"  {label:<35} {result['avg_s']:>7.2f}s", file=sys.stderr)
 
-    print(json.dumps(all_results, indent=2))
+    print(json.dumps(all_results, default=str, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

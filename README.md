@@ -167,6 +167,10 @@ digue batch-simplify-vtt ./transcriptions ./simplified        # all VTT -> text
 
 # Diagnostics
 digue config                         # show current config as JSON
+digue config show                    # resolved config as TOML (default)
+digue config show -f json            # resolved config as JSON
+digue config init                    # create the config file with commented defaults
+digue config init -f                 # overwrite the config file
 digue doctor                         # check dependencies, test Docker images
 digue benchmark                      # compare backends (records from mic)
 digue benchmark audio.wav            # benchmark with existing audio
@@ -183,6 +187,9 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # Server
 [server]
 port = 8178                     # host port for the whisper-server container
+# bind-ip = "127.0.0.1"         # IP Docker binds the port to; 127.0.0.1 = local only.
+                                #   Set to a LAN IP to expose it to that network
+                                #   (the server has no authentication; prefer SSH tunnels)
 # data-dir = ""                 # where models are stored
                                 #   (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is often
                                 #   unset, in which case: ~/.local/share/digue)
@@ -213,9 +220,37 @@ nvidia = "large-v3-turbo"       # best quality, fast on dedicated GPU
 amd = "large-v3-turbo"          # good on AMD iGPUs with Vulkan
 intel = "large-v3-turbo"        # use "small" or "medium" on weaker Intel iGPUs
 cpu = "small"                   # lighter model for CPU-only machines
+
+# Per-host overrides
+# [host.<hostname>][section] tables override the global sections of the same
+# name on that machine only (defaults < global < host; hostname matches exactly
+# or without the domain part). Useful for keeping one config versioned in your
+# dotfiles for all machines:
+#
+# [host.minideb.server]
+# backend = "amd"
+#
+# [host.thinkpad.server]
+# backend = "cpu"
+#
+# [host.thinkpad.dictation]
+# max-duration = 120
 ```
 
 Paths support `~` (expanded to home directory).
+
+## Per-host configuration
+
+One config file can drive all your machines: version it in your dotfiles and add a `[host.<hostname>][section]` table per machine. Inside the host table, use the same section names as the top level (`server`, `dictation`, `models`); keys there override the global sections when the hostname matches, and global keys you did not override are still inherited. The hostname is read with `gethostname()` (an in-memory call, microseconds) - it does not delay the dictation hotkey. Run `digue config show` on each machine to confirm what was resolved.
+
+## Config command
+
+```bash
+digue config init            # create ~/.config/digue/config.toml with commented defaults
+digue config init -f         # overwrite an existing config file
+digue config show            # resolved configuration (defaults + file + host overrides), as TOML
+digue config show -f json    # same, as JSON
+```
 
 
 ## Audio formats
@@ -271,7 +306,7 @@ Without ffmpeg, unsupported formats produce a clear error instead of a raw HTTP 
 
 ## Remote access via SSH tunnel
 
-The server binds to `127.0.0.1` and is not exposed to the network. To use a remote machine's server (e.g. offloading from a laptop to a desktop):
+The server binds to `127.0.0.1` (see `bind-ip` in the config) and is not exposed to the network. To use a remote machine's server (e.g. offloading from a laptop to a desktop):
 
 ```bash
 ssh -NfL 8178:127.0.0.1:8178 user@desktop
