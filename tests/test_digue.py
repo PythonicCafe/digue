@@ -1272,7 +1272,7 @@ class TestOrphanStartingTake:
 
     def test_expired_orphan_without_wav_is_removed(self, tmp_path):
 
-        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1)
+        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
         config = digue._default_config()
 
         with patch("digue._runtime_dir", return_value=tmp_path), patch("digue._pid_alive", return_value=False):
@@ -1285,7 +1285,7 @@ class TestOrphanStartingTake:
 
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
-        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1)
+        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
         config = digue._default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
@@ -1308,9 +1308,7 @@ class TestOrphanStartingTake:
 
     def test_orphan_with_alive_daemon_is_left_alone(self, tmp_path):
 
-        take = self.make_starting_take(
-            tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1, daemon_starttime=555
-        )
+        take = self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1, daemon_starttime=555)
         config = digue._default_config()
 
         with (
@@ -1329,7 +1327,7 @@ class TestOrphanStartingTake:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         rec_file = tmp_path / "digue-recording.wav"
         rec_file.write_bytes(b"audio")
-        self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_STARTING_MIN_AGE_SECONDS + 1, rec_file=rec_file)
+        self.make_starting_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1, rec_file=rec_file)
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
 
         with (
@@ -1565,6 +1563,187 @@ class TestOrphanTakeClaim:
         assert len(states) == 1
         assert states[0].state == "recovering"
         assert states[0].recoverer_pid == os.getpid()
+
+
+class TestRecoverClaimedTake:
+    """Recovery of a claimed orphan runs outside the dictate lock: a live
+    recorder with a valid identity is stopped through it, a dead one's WAV
+    goes straight to delivery, and the claimed state is removed only after a
+    terminal outcome (retryable failures and unexpected exceptions preserve
+    state and WAV for the next toggle)."""
+
+    def make_recovering_take(self, tmp_path, age_seconds=10.0, **changes):
+        import time
+
+        values = {
+            "version": digue.TAKE_STATE_VERSION,
+            "take_id": "0123456789abcdef",
+            "created_at_ns": time.time_ns() - int(age_seconds * 1e9),
+            "state": "recovering",
+            "rec_file": tmp_path / "digue-recording.wav",
+            "daemon_pid": 999999,
+            "daemon_starttime": 1,
+            "recorder_pid": 888888,
+            "recorder_starttime": 2,
+            "recoverer_pid": 777777,
+            "recoverer_starttime": 3,
+        }
+        values.update(changes)
+        with patch("digue._runtime_dir", return_value=tmp_path):
+            take = digue.TakeState(**values)
+            digue._write_take_state(take)
+        return take
+
+    def make_config(self, tmp_path):
+        config = digue._default_config()
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+        return config
+
+    def patch_recovery(self, tmp_path, finish_result):
+        return (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.finish_dictation", return_value=finish_result),
+        )
+
+    def test_stops_a_live_recorder_with_valid_identity_and_delivers(self, tmp_path):
+        recorder = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(
+            tmp_path,
+            recorder_pid=recorder.pid,
+            recorder_starttime=int(digue._process_starttime(recorder.pid)),
+            rec_file=rec_file,
+        )
+        delivered = []
+
+        def fake_finish(_config, file, limit_reached=False, take_id=None):
+            delivered.append((file, take_id))
+            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+
+        try:
+            with (
+                patch("digue._runtime_dir", return_value=tmp_path),
+                patch("digue.finish_dictation", side_effect=fake_finish),
+            ):
+                exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+        finally:
+            recorder.wait(timeout=5)
+
+        assert exit_code == 0
+        assert delivered == [(rec_file, take.take_id)]
+        assert recorder.poll() is not None
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_dead_recorder_with_wav_delivers_without_signaling(self, tmp_path):
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+        delivered = []
+
+        def fake_finish(_config, file, limit_reached=False, take_id=None):
+            delivered.append(file)
+            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.os.killpg") as mock_killpg,
+            patch("digue.finish_dictation", side_effect=fake_finish),
+        ):
+            exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert exit_code == 0
+        mock_killpg.assert_not_called()
+        assert delivered == [rec_file]
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_recycled_recorder_pid_is_not_signaled(self, tmp_path):
+        import os
+
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file, recorder_pid=os.getpid(), recorder_starttime=111)
+        delivered = []
+
+        def fake_finish(_config, file, limit_reached=False, take_id=None):
+            delivered.append(file)
+            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue._process_starttime", return_value="999"),
+            patch("digue.os.killpg") as mock_killpg,
+            patch("digue.finish_dictation", side_effect=fake_finish),
+        ):
+            exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert exit_code == 0
+        mock_killpg.assert_not_called()
+        assert delivered == [take.rec_file]
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+
+    def test_retryable_failure_preserves_state_and_wav(self, tmp_path):
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch(
+                "digue.finish_dictation",
+                return_value=digue.DeliveryResult(outcome="retryable_failure", exit_code=1),
+            ),
+        ):
+            exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert exit_code == 1
+        assert rec_file.exists()
+        assert list(tmp_path.glob("digue-take-*.json")) == [tmp_path / f"digue-take-{take.take_id}.json"]
+
+    def test_unexpected_exception_preserves_state_and_wav(self, tmp_path):
+        rec_file = tmp_path / "digue-recording.wav"
+        rec_file.write_bytes(b"audio")
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch("digue.finish_dictation", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError),
+        ):
+            digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert rec_file.exists()
+        assert list(tmp_path.glob("digue-take-*.json")) == [tmp_path / f"digue-take-{take.take_id}.json"]
+
+    def test_empty_wav_younger_than_min_age_preserves_state(self, tmp_path):
+        take = self.make_recovering_take(tmp_path, age_seconds=1.0)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch(
+                "digue.finish_dictation",
+                return_value=digue.DeliveryResult(outcome="empty", exit_code=1),
+            ),
+        ):
+            exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert exit_code == 1
+        assert list(tmp_path.glob("digue-take-*.json")) == [tmp_path / f"digue-take-{take.take_id}.json"]
+
+    def test_empty_wav_older_than_min_age_removes_state(self, tmp_path):
+        take = self.make_recovering_take(tmp_path, age_seconds=digue.ORPHAN_MIN_AGE_SECONDS + 1)
+
+        with (
+            patch("digue._runtime_dir", return_value=tmp_path),
+            patch(
+                "digue.finish_dictation",
+                return_value=digue.DeliveryResult(outcome="empty", exit_code=1),
+            ),
+        ):
+            exit_code = digue._recover_claimed_take(self.make_config(tmp_path), take)
+
+        assert exit_code == 1
+        assert list(tmp_path.glob("digue-take-*.json")) == []
 
 
 class TestSpawnLimitWatchdog:

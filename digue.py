@@ -1641,7 +1641,13 @@ def _take_states() -> list[TakeState]:
     return sorted(states, key=lambda take: (take.created_at_ns, take.take_id))
 
 
-ORPHAN_STARTING_MIN_AGE_SECONDS = 60
+ORPHAN_MIN_AGE_SECONDS = 60
+
+
+def _take_age_seconds(take: TakeState) -> float:
+    import time
+
+    return (time.time_ns() - take.created_at_ns) / 1e9
 
 
 def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) -> Path | None:
@@ -1650,17 +1656,15 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
 
     No /proc/*/fd scanning (complex, racy, and it yields no identity). Rules:
     while the daemon is alive or the state is younger than
-    ORPHAN_STARTING_MIN_AGE_SECONDS, nothing happens; after that, a missing or
+    ORPHAN_MIN_AGE_SECONDS, nothing happens; after that, a missing or
     empty WAV expires together with its state, and a non-empty WAV is rescued
     (never transcribed/pasted automatically: the recorder may still be
     writing). Returns the rescued path or None.
     """
-    import time
 
     if _pid_alive(take.daemon_pid) and _process_starttime(take.daemon_pid) == str(take.daemon_starttime):
         return None
-    age_seconds = (time.time_ns() - take.created_at_ns) / 1e9
-    if age_seconds < ORPHAN_STARTING_MIN_AGE_SECONDS:
+    if _take_age_seconds(take) < ORPHAN_MIN_AGE_SECONDS:
         return None
     state_file = _take_state_file(take.take_id)
     if not take.rec_file.exists() or take.rec_file.stat().st_size == 0:
@@ -1725,9 +1729,14 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
     """Recovers a claimed orphan take; called outside the dictate lock.
 
     The recorder identity published by the dead daemon is revalidated before
-    signaling; a dead recorder's WAV goes straight to the delivery flow. The
-    claimed state is removed after delivery. A "starting" take has no recorder
-    identity to trust or stop, so the conservative expiry rules apply instead.
+    signaling: stop_recording_pid stops a live recorder and no-ops on a dead
+    or recycled one, so both cases converge on the delivery flow. The claimed
+    state is removed only after a terminal outcome (delivered, rescued, empty):
+    retryable failures and unexpected exceptions preserve state and WAV, and
+    the next toggle finds a recovering take with a dead recoverer and retries.
+    An empty WAV only expires after the minimum age: a fresh zero-byte file
+    may be transient. A "starting" take has no recorder identity to trust or
+    stop, so the conservative expiry rules apply instead.
     """
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
@@ -1736,6 +1745,10 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         return 0
     rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
     result = finish_dictation(config, rec_file, take_id=take.take_id)
+    if result.outcome not in TERMINAL_OUTCOMES:
+        return result.exit_code
+    if result.outcome == "empty" and _take_age_seconds(take) < ORPHAN_MIN_AGE_SECONDS:
+        return result.exit_code
     _take_state_file(take.take_id).unlink(missing_ok=True)
     return result.exit_code
 
@@ -2631,8 +2644,23 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             notify(server_not_running_hint(config), timeout_ms=5000)
             _remove_daemon_state(daemon_pid)
             return 1
-        if claimed is not None:
-            recovery_exit = _recover_claimed_take(config, claimed)
+    except FileNotFoundError as exc:
+        notify(
+            f"Recorder not found: {exc.filename}. Install it (pipewire for pw-record, alsa-utils for arecord)",
+            timeout_ms=10000,
+        )
+        _remove_daemon_state(daemon_pid)
+        return 1
+    except Exception as exc:
+        notify(f"Failed to start recording: {exc}", timeout_ms=5000)
+        _remove_daemon_state(daemon_pid)
+        return 1
+    # Recovery runs outside the try/except above: an unexpected exception in
+    # the delivery flow must preserve the claimed state and WAV (the next
+    # toggle retries), not be reported as a failed recording start.
+    if claimed is not None:
+        recovery_exit = _recover_claimed_take(config, claimed)
+    try:
         limit = config["dictate"]["max_duration"]
         message = (
             f"Recording... (max {limit}s, press again to stop)" if limit > 0 else "Recording... (press again to stop)"
