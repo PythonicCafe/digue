@@ -3025,6 +3025,25 @@ class TestCmdConfig:
         assert "nvidia" in output["models"]
 
 
+class TestRecordingFileOf:
+    def test_finds_the_open_wav_through_a_symlinked_runtime_dir(self, tmp_path):
+        """readlink returns the kernel's resolved path; a symlinked
+        XDG_RUNTIME_DIR must not hide the recorder's file (TakeState already
+        compares resolved paths)."""
+        import os
+
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link"
+        link_dir.symlink_to(real_dir)
+        wav = link_dir / "digue-take.wav"
+        with wav.open("wb") as open_wav, patch("digue._runtime_dir", return_value=link_dir):
+            open_wav.write(b"x")
+            found = digue._recording_file_of(os.getpid())
+
+        assert found == real_dir / "digue-take.wav"
+
+
 class TestSendTextDeliveryLock:
     def test_concurrent_deliveries_are_serialized(self, tmp_path):
         """The clipboard is global: two overlapping deliveries must not
@@ -3076,25 +3095,6 @@ class TestSendTextDeliveryLock:
             digue.send_text("text")
 
         assert mock_detect.call_count == 1
-
-
-class TestRecordingFileOf:
-    def test_finds_the_open_wav_through_a_symlinked_runtime_dir(self, tmp_path):
-        """readlink returns the kernel's resolved path; a symlinked
-        XDG_RUNTIME_DIR must not hide the recorder's file (TakeState already
-        compares resolved paths)."""
-        import os
-
-        real_dir = tmp_path / "real"
-        real_dir.mkdir()
-        link_dir = tmp_path / "link"
-        link_dir.symlink_to(real_dir)
-        wav = link_dir / "digue-take.wav"
-        with wav.open("wb") as open_wav, patch("digue._runtime_dir", return_value=link_dir):
-            open_wav.write(b"x")
-            found = digue._recording_file_of(os.getpid())
-
-        assert found == real_dir / "digue-take.wav"
 
 
 class TestDaemonAlive:
@@ -5063,10 +5063,12 @@ class TestSaveAudioConfig:
         config["server"]["backend"] = "remote"
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        digue.finish_dictation(config, rec_file)
+        with patch("digue.detect_backend") as mock_detect:
+            digue.finish_dictation(config, rec_file)
 
         mock_save.assert_called_once()
         assert mock_save.call_args[1]["backend"] == "remote"
+        mock_detect.assert_not_called()  # only remote-or-not matters here: no nvidia-smi/lspci per delivery
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")
