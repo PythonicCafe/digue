@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from digue import cli as cli_mod
-from digue import config as config_mod
+from digue import config
 from digue import container as container_mod
 
 # -- Config -------------------------------------------------------------------
@@ -17,25 +17,25 @@ from digue import container as container_mod
 
 class TestDefaultConfig:
     def test_has_required_sections(self):
-        config = config_mod._default_config()
-        assert "server" in config
-        assert "dictate" in config
-        assert "models" in config
+        cfg = config._default_config()
+        assert "server" in cfg
+        assert "dictate" in cfg
+        assert "models" in cfg
 
     def test_default_port(self):
-        config = config_mod._default_config()
-        assert config["server"]["port"] == 8178
+        cfg = config._default_config()
+        assert cfg["server"]["port"] == 8178
 
     def test_default_models_include_nvidia(self):
-        config = config_mod._default_config()
-        assert "nvidia" in config["models"]
-        assert config["models"]["nvidia"] == "large-v3-turbo"
+        cfg = config._default_config()
+        assert "nvidia" in cfg["models"]
+        assert cfg["models"]["nvidia"] == "large-v3-turbo"
 
 
 class TestLoadConfig:
     def test_returns_defaults_when_no_file(self, tmp_path):
-        config = config_mod.load_config(tmp_path / "nonexistent.toml")
-        assert config["server"]["port"] == 8178
+        cfg = config.load_config(tmp_path / "nonexistent.toml")
+        assert cfg["server"]["port"] == 8178
 
     def test_reads_toml_overrides(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -49,17 +49,17 @@ class TestLoadConfig:
             cpu = "tiny"
         """)
         )
-        config = config_mod.load_config(config_path)
-        assert config["server"]["port"] == 9999
-        assert config["models"]["nvidia"] == "medium"
-        assert config["models"]["cpu"] == "tiny"
-        assert config["models"]["amd"] == "large-v3-turbo"  # untouched
+        cfg = config.load_config(config_path)
+        assert cfg["server"]["port"] == 9999
+        assert cfg["models"]["nvidia"] == "medium"
+        assert cfg["models"]["cpu"] == "tiny"
+        assert cfg["models"]["amd"] == "large-v3-turbo"  # untouched
 
     def test_kebab_case_keys(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text('[server]\ndata-dir = "/opt/data"\n')
-        config = config_mod.load_config(config_path)
-        assert config["server"]["data_dir"] == "/opt/data"
+        cfg = config.load_config(config_path)
+        assert cfg["server"]["data_dir"] == "/opt/data"
 
     def test_main_reports_invalid_toml_without_traceback(self, tmp_path, capsys):
         config_path = tmp_path / "invalid.toml"
@@ -87,29 +87,29 @@ class TestLoadConfig:
             audio-dir = "~/whisper-audio"
         """)
         )
-        config = config_mod.load_config(config_path)
-        assert "~" not in config["server"]["data_dir"]
-        assert "~" not in config["dictate"]["audio_dir"]
-        assert config["server"]["data_dir"].endswith("whisper/data")
-        assert config["dictate"]["audio_dir"].endswith("whisper-audio")
+        cfg = config.load_config(config_path)
+        assert "~" not in cfg["server"]["data_dir"]
+        assert "~" not in cfg["dictate"]["audio_dir"]
+        assert cfg["server"]["data_dir"].endswith("whisper/data")
+        assert cfg["dictate"]["audio_dir"].endswith("whisper-audio")
 
     def test_custom_docker_image_is_allowed(self, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text('[server]\nimage = "registry.example/my-whisper:custom"\n')
-        assert config_mod.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
+        assert config.load_config(config_path)["server"]["image"] == "registry.example/my-whisper:custom"
 
 
 class TestModelForBackend:
     def test_returns_default_without_config(self):
-        assert config_mod.model_for_backend("nvidia") == "large-v3-turbo"
-        assert config_mod.model_for_backend("cpu") == "small"
+        assert config.model_for_backend("nvidia") == "large-v3-turbo"
+        assert config.model_for_backend("cpu") == "small"
 
     def test_respects_config_override(self):
-        config = {"models": {"nvidia": "medium"}}
-        assert config_mod.model_for_backend("nvidia", config) == "medium"
+        cfg = {"models": {"nvidia": "medium"}}
+        assert config.model_for_backend("nvidia", cfg) == "medium"
 
     def test_unknown_backend_falls_back_to_small(self):
-        assert config_mod.model_for_backend("unknown") == "small"
+        assert config.model_for_backend("unknown") == "small"
 
 
 class TestHostOverrides:
@@ -125,9 +125,9 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
-        assert config["server"]["backend"] == "cpu"
-        assert config["dictate"]["max_duration"] == 42
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "cpu"
+        assert cfg["dictate"]["max_duration"] == 42
 
     def test_matches_hostname_without_domain(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -138,8 +138,8 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="laptop.company.com"):
-            config = config_mod.load_config(config_path)
-        assert config["server"]["backend"] == "remote"
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "remote"
 
     def test_ignores_other_hosts(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -150,8 +150,8 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
-        assert config["server"]["backend"] == "auto"
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "auto"
 
     def test_host_overrides_beat_global(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -165,8 +165,8 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
-        assert config["server"]["backend"] == "cpu"
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "cpu"
 
     def test_global_fills_what_host_does_not_override(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -181,9 +181,9 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
-        assert config["server"]["backend"] == "cpu"
-        assert config["server"]["port"] == 9000
+            cfg = config.load_config(config_path)
+        assert cfg["server"]["backend"] == "cpu"
+        assert cfg["server"]["port"] == 9000
 
     def test_host_models_section(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -197,9 +197,9 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
-        assert config["models"]["cpu"] == "medium"
-        assert config["models"]["nvidia"] == "large-v3-turbo"
+            cfg = config.load_config(config_path)
+        assert cfg["models"]["cpu"] == "medium"
+        assert cfg["models"]["nvidia"] == "large-v3-turbo"
 
     def test_unknown_keys_in_host_section_are_rejected(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -210,7 +210,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"), pytest.raises(ValueError, match="no-such-key"):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_gethostname_called_once_with_host_section(self, tmp_path):
         config_path = tmp_path / "config.toml"
@@ -221,7 +221,7 @@ class TestHostOverrides:
         """)
         )
         with patch("socket.gethostname", return_value="laptop") as mock_hostname:
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
         assert mock_hostname.call_count == 1
 
 
@@ -238,35 +238,35 @@ class TestConfigStructureValidation:
     def load_with_hostname(self, tmp_path, toml, hostname="thinkpad"):
         config_path = self.write_config(tmp_path, toml)
         with patch("socket.gethostname", return_value=hostname):
-            return config_mod.load_config(config_path)
+            return config.load_config(config_path)
 
     def test_unknown_top_level_section_lists_valid_ones(self, tmp_path):
         config_path = self.write_config(tmp_path, '[serv]\nbackend = "cpu"\n')
         with pytest.raises(ValueError) as excinfo:
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
         message = str(excinfo.value)
         assert '"serv"' in message
         for name in ("server", "transcribe", "dictate", "models", "host"):
             assert name in message
 
     def test_host_is_a_valid_top_level_section(self, tmp_path):
-        config = self.load_with_hostname(tmp_path, '[host.desktop.server]\nbackend = "cpu"\n')
-        assert config["server"]["backend"] == "auto"
+        cfg = self.load_with_hostname(tmp_path, '[host.desktop.server]\nbackend = "cpu"\n')
+        assert cfg["server"]["backend"] == "auto"
 
     def test_section_value_must_be_a_table(self, tmp_path):
         config_path = self.write_config(tmp_path, 'server = "cpu"\n')
         with pytest.raises(ValueError, match=r"\[server\].*must be a table"):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_unknown_key_suggests_close_match(self, tmp_path):
         config_path = self.write_config(tmp_path, '[server]\nbackends = "cpu"\n')
         with pytest.raises(ValueError, match=r'Unknown server key "backends".*did you mean "backend"'):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_unknown_key_without_match_lists_valid_keys(self, tmp_path):
         config_path = self.write_config(tmp_path, "[server]\nxyzzy = 1\n")
         with pytest.raises(ValueError) as excinfo:
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
         message = str(excinfo.value)
         assert '"xyzzy"' in message
         assert "port" in message
@@ -277,14 +277,14 @@ class TestConfigStructureValidation:
         key that only works by accident."""
         config_path = self.write_config(tmp_path, "[dictate]\nmax-durations = 5\n")
         with pytest.raises(ValueError) as excinfo:
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
         message = str(excinfo.value)
         assert 'did you mean "max-duration"' in message
         assert "audio-dir" in message and "save-audio" in message
         assert "max_duration" not in message and "audio_dir" not in message
 
     def test_snake_and_kebab_keys_are_both_accepted(self, tmp_path):
-        config = self.load_with_hostname(
+        cfg = self.load_with_hostname(
             tmp_path,
             """\
             [server]
@@ -296,30 +296,30 @@ class TestConfigStructureValidation:
             input_mode = "type"
         """,
         )
-        assert config["server"]["data_dir"] == "/opt/d1"
-        assert config["server"]["bind_ip"] == "0.0.0.0"
-        assert config["dictate"]["max_duration"] == 42
-        assert config["dictate"]["input_mode"] == "type"
+        assert cfg["server"]["data_dir"] == "/opt/d1"
+        assert cfg["server"]["bind_ip"] == "0.0.0.0"
+        assert cfg["dictate"]["max_duration"] == 42
+        assert cfg["dictate"]["input_mode"] == "type"
 
     def test_kebab_and_snake_collision_after_normalization_is_rejected(self, tmp_path):
         config_path = self.write_config(tmp_path, '[server]\ndata-dir = "/a"\ndata_dir = "/b"\n')
         with pytest.raises(ValueError, match=r'Conflicting.*"data-dir".*"data_dir"'):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_models_rejects_unknown_backends(self, tmp_path):
         config_path = self.write_config(tmp_path, '[models]\nremote = "small"\n')
         with pytest.raises(ValueError, match=r'Unknown models key "remote"'):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_models_rejects_values_outside_available_models(self, tmp_path):
         config_path = self.write_config(tmp_path, '[models]\ncpu = "giant"\n')
         with pytest.raises(ValueError, match=r"Invalid models\.cpu.*giant"):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
     def test_models_accepts_valid_backends_and_values(self, tmp_path):
-        config = self.load_with_hostname(tmp_path, '[models]\nnvidia = "tiny"\ncpu = "large-v3"\n')
-        assert config["models"]["nvidia"] == "tiny"
-        assert config["models"]["cpu"] == "large-v3"
+        cfg = self.load_with_hostname(tmp_path, '[models]\nnvidia = "tiny"\ncpu = "large-v3"\n')
+        assert cfg["models"]["nvidia"] == "tiny"
+        assert cfg["models"]["cpu"] == "large-v3"
 
     def test_host_keys_are_validated_for_other_hosts(self, tmp_path):
         with pytest.raises(ValueError, match=r'Unknown server key "no-such-key"'):
@@ -335,7 +335,7 @@ class TestConfigStructureValidation:
         not claim the hostname was the actual problem."""
         config_path = self.write_config(tmp_path, '[host.thinkpad.local.server]\nbackend = "cpu"\n')
         with pytest.raises(ValueError) as excinfo:
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
         message = str(excinfo.value)
         assert 'Unknown host subsection "local"' in message
         assert "if the hostname contains dots, quote it" in message
@@ -368,9 +368,9 @@ class TestServerHost:
         (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")),
     )
     def test_local_server_host_matches_reachable_bind_address(self, bind_ip, expected):
-        config = config_mod._default_config()
-        config["server"]["bind_ip"] = bind_ip
-        assert container_mod.server_host(config) == expected
+        cfg = config._default_config()
+        cfg["server"]["bind_ip"] = bind_ip
+        assert container_mod.server_host(cfg) == expected
 
 
 class TestConfigValueValidation:
@@ -398,7 +398,7 @@ class TestConfigValueValidation:
         config_path = tmp_path / "config.toml"
         config_path.write_text(toml)
         with pytest.raises(ValueError, match=message):
-            config_mod.load_config(config_path)
+            config.load_config(config_path)
 
 
 # -- CLI parser ---------------------------------------------------------------
@@ -406,10 +406,10 @@ class TestConfigValueValidation:
 
 class TestConfigCommand:
     def test_show_toml_includes_sections(self, capsys):
-        config = config_mod._default_config()
+        cfg = config._default_config()
         args = MagicMock()
         args.output_format = "toml"
-        assert config_mod.cmd_config(args, config) == 0
+        assert config.cmd_config(args, cfg) == 0
         out = capsys.readouterr().out
         assert "[server]" in out
         assert "[dictate]" in out
@@ -422,10 +422,10 @@ class TestConfigCommand:
         it documents. It must also be valid TOML that loads back unchanged."""
         import tomllib
 
-        config = config_mod._default_config()
+        cfg = config._default_config()
         args = MagicMock()
         args.output_format = "toml"
-        config_mod.cmd_config(args, config)
+        config.cmd_config(args, cfg)
         out = capsys.readouterr().out
 
         assert "data-dir = " in out
@@ -433,13 +433,13 @@ class TestConfigCommand:
         assert "output-format = " in out
         assert "_" not in "".join(line.split("=")[0] for line in out.splitlines() if "=" in line)
         parsed = tomllib.loads(out)
-        assert {key.replace("-", "_"): value for key, value in parsed["dictate"].items()} == config["dictate"]
+        assert {key.replace("-", "_"): value for key, value in parsed["dictate"].items()} == cfg["dictate"]
 
     def test_show_json_unchanged(self, capsys):
-        config = config_mod._default_config()
+        cfg = config._default_config()
         args = MagicMock()
         args.output_format = "json"
-        assert config_mod.cmd_config(args, config) == 0
+        assert config.cmd_config(args, cfg) == 0
         output = json.loads(capsys.readouterr().out)
         assert output["server"]["port"] == 8178
 
@@ -452,18 +452,18 @@ class TestConfigCommand:
         """)
         )
         with patch("socket.gethostname", return_value="thinkpad"):
-            config = config_mod.load_config(config_path)
+            cfg = config.load_config(config_path)
         args = MagicMock()
         args.output_format = "toml"
-        config_mod.cmd_config(args, config)
+        config.cmd_config(args, cfg)
         assert 'backend = "cpu"' in capsys.readouterr().out
 
     def test_init_creates_file(self, tmp_path, capsys, monkeypatch):
-        monkeypatch.setattr(config_mod, "_config_path", lambda: tmp_path / "digue" / "config.toml")
+        monkeypatch.setattr(config, "_config_path", lambda: tmp_path / "digue" / "config.toml")
         args = MagicMock()
         args.force = False
         args.output = None
-        assert config_mod._config_init(args) == 0
+        assert config._config_init(args) == 0
         created = tmp_path / "digue" / "config.toml"
         assert created.exists()
         assert "[server]" in created.read_text()
@@ -472,22 +472,22 @@ class TestConfigCommand:
     def test_init_refuses_existing_without_force(self, tmp_path, capsys, monkeypatch):
         existing = tmp_path / "config.toml"
         existing.write_text("# my custom config")
-        monkeypatch.setattr(config_mod, "_config_path", lambda: existing)
+        monkeypatch.setattr(config, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = False
         args.output = None
-        assert config_mod._config_init(args) == 1
+        assert config._config_init(args) == 1
         assert existing.read_text() == "# my custom config"
         assert "already exists" in capsys.readouterr().err
 
     def test_init_force_overwrites(self, tmp_path, monkeypatch):
         existing = tmp_path / "config.toml"
         existing.write_text("# old")
-        monkeypatch.setattr(config_mod, "_config_path", lambda: existing)
+        monkeypatch.setattr(config, "_config_path", lambda: existing)
         args = MagicMock()
         args.force = True
         args.output = None
-        assert config_mod._config_init(args) == 0
+        assert config._config_init(args) == 0
         assert "[server]" in existing.read_text()
 
     def test_init_output_path(self, tmp_path, capsys):
@@ -495,28 +495,28 @@ class TestConfigCommand:
         args = MagicMock()
         args.force = False
         args.output = str(target)
-        assert config_mod._config_init(args) == 0
+        assert config._config_init(args) == 0
         assert target.exists()
         assert "[server]" in target.read_text()
 
     def test_init_uses_args_config_path(self, tmp_path):
         target = tmp_path / "selected.toml"
         args = MagicMock(config=str(target), output=None, force=False)
-        assert config_mod._config_init(args) == 0
+        assert config._config_init(args) == 0
         assert target.exists()
 
     def test_example_config_is_valid_toml(self, tmp_path):
         import tomllib
 
-        example = config_mod._config_example()
+        example = config._config_example()
         parsed = tomllib.loads(example)
         assert "models" in parsed  # sections exist; all keys stay commented
 
 
 class TestCmdConfig:
     def test_prints_json(self, capsys):
-        config = config_mod._default_config()
-        result = config_mod.cmd_config(MagicMock(output_format="json"), config)
+        cfg = config._default_config()
+        result = config.cmd_config(MagicMock(output_format="json"), cfg)
         assert result == 0
         output = json.loads(capsys.readouterr().out)
         assert output["server"]["port"] == 8178
@@ -531,4 +531,4 @@ class TestConfigTemplateSync:
         fence_start = section.index("```toml") + len("```toml\n")
         fence_end = section.index("```", fence_start)
         readme_block = section[fence_start:fence_end].strip()
-        assert readme_block == config_mod._config_example().strip()
+        assert readme_block == config._config_example().strip()
