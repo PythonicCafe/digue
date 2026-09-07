@@ -40,8 +40,6 @@ SERVER_STARTUP_TIMEOUT = 180
 
 DOWNLOAD_TIMEOUT = 60
 
-# -- Detection ----------------------------------------------------------------
-
 
 def detect_backend() -> str:
     """Detects GPU backend: nvidia, amd, intel, or cpu."""
@@ -134,12 +132,11 @@ def container_image(name: str | None = None) -> str | None:
 
 
 def _image_mismatch(config: dict[str, dict[str, Any]]) -> tuple[str, str] | None:
-    """(current, configured) when the existing container was created from an
-    image other than the one the config resolves to now, else None.
+    """(current, configured) when the existing container was created from an image other than the one the config
+    resolves to now, else None.
 
-    `docker start` reuses the container's original image: a new `image` in the
-    config (or `server start --image`) would otherwise silently do nothing
-    until the container is destroyed by hand.
+    `docker start` reuses the container's original image: a new `image` in the config (or `server start --image`) would
+    otherwise silently do nothing until the container is destroyed by hand.
     """
     current = container_image(resolve_container_name(config))
     if current is None:
@@ -204,9 +201,8 @@ def create_container(
 ) -> str:
     """Creates the digue container.
 
-    Resolves backend and image from config (with auto-detection fallback).
-    Downloads the model and pulls the Docker image if not present locally.
-    Desktop notifications are for the dictation hotkey path only.
+    Resolves backend and image from config (with auto-detection fallback).  Downloads the model and pulls the Docker
+    image if not present locally.  Desktop notifications are for the dictation hotkey path only.
     """
     if backend is None:
         backend = resolve_backend(config)
@@ -332,7 +328,7 @@ def preserve_container_for_benchmark(name: str | None = None) -> Iterator[None]:
                     start_container(container)
 
 
-# -- Server -------------------------------------------------------------------
+# Server
 
 
 def server_host(config: dict[str, dict[str, Any]]) -> str:
@@ -482,7 +478,7 @@ def server_not_running_hint(config: dict[str, dict[str, Any]]) -> str:
     return "Run: digue server start"
 
 
-# -- Download -----------------------------------------------------------------
+# Download
 
 
 def _download_progress_hook(label: str, with_notification: bool = False) -> Any:

@@ -6,8 +6,6 @@ import argparse
 import sys
 from pathlib import Path
 
-# -- CLI ----------------------------------------------------------------------
-
 
 def _existing_dir(value: str) -> Path:
     """argparse type: validates that the path is an existing directory."""
@@ -332,8 +330,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command is None:
-        # No default command on purpose: an accidental bare `digue` (wrong
-        # keybinding, typo) would otherwise toggle recording out of nowhere.
+        # No default command on purpose: an accidental bare `digue` (wrong keybinding, typo) would otherwise toggle
+        # recording out of nowhere.
         parser.print_help()
         sys.exit(1)
 

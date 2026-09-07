@@ -11,7 +11,7 @@ import pytest
 from digue import cli as cli_mod
 from digue import config
 
-# -- Config -------------------------------------------------------------------
+# Config
 
 
 class TestDefaultConfig:
@@ -439,7 +439,7 @@ class TestConfigValueValidation:
             config.load_config(config_path)
 
 
-# -- CLI parser ---------------------------------------------------------------
+# CLI parser
 
 
 class TestAvailableModels:

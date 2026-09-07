@@ -10,7 +10,7 @@ from digue import convert as convert_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
-# -- Transcription ------------------------------------------------------------
+# Transcription
 
 
 class TestTranscribe:
@@ -211,7 +211,7 @@ class TestTranscribe:
         assert "\n" in result
 
 
-# -- Ffmpeg fallback ----------------------------------------------------------
+# ffmpeg fallback
 
 
 class TestTranscribeFfmpegFallback:
@@ -352,7 +352,7 @@ class TestSendAudioTokenTimestamps:
         assert audio_data == b"converted"
 
 
-# -- VTT simplification ------------------------------------------------------
+# VTT simplification
 
 
 class TestWrapCueLines:

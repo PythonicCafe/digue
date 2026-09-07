@@ -9,8 +9,6 @@ from digue import notify as notify_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
 
-# -- Notifications -----------------------------------------------------------
-
 
 class TestNotify:
     @patch("subprocess.run")

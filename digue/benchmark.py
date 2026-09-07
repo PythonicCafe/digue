@@ -17,9 +17,8 @@ BENCHMARK_MODELS = ("small", "large-v3-turbo")
 
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
 
-# GGML model sizes (MiB, rounded), to warn before a benchmark triggers downloads.
-# From the huggingface.co/ggerganov/whisper.cpp file list (same order as
-# AVAILABLE_MODELS).
+# GGML model sizes (MiB, rounded), to warn before a benchmark triggers downloads.  From the
+# huggingface.co/ggerganov/whisper.cpp file list (same order as AVAILABLE_MODELS).
 MODEL_SIZES_MB = {
     "tiny": 74,
     "tiny-q8_0": 42,
@@ -56,13 +55,10 @@ MODEL_SIZES_MB = {
     "large-v3-turbo-q5_0": 547,
 }
 
-# -- Benchmark ----------------------------------------------------------------
-
 
 def sample_path() -> Path:
-    """The whisper.cpp JFK sample, kept in the runtime dir: it is private to
-    the user (a fixed name in /tmp could be a symlink planted by another
-    local user)."""
+    """The whisper.cpp JFK sample, kept in the runtime dir: it is private to the user (a fixed name in /tmp could be a
+    symlink planted by another local user)."""
     from digue.recording import _runtime_dir
 
     return _runtime_dir() / "digue-bench-jfk.wav"
@@ -103,9 +99,8 @@ def _benchmark_run(url: str, audio_path: str | Path, language: str, runs: int) -
 def _case_config(config: dict[str, dict[str, Any]], backend: str, model: str) -> dict[str, dict[str, Any]]:
     """The config for one backend+model case.
 
-    server.image is a single global override that only makes sense for the
-    backend the config resolved to (e.g. image "main" pinned for a Kaby Lake
-    CPU); other cases fall back to DOCKER_IMAGES through the empty image.
+    server.image is a single global override that only makes sense for the backend the config resolved to (e.g. image
+    "main" pinned for a Kaby Lake CPU); other cases fall back to DOCKER_IMAGES through the empty image.
     """
     from digue.container import resolve_backend
 
@@ -124,11 +119,10 @@ def benchmark_case(
 ) -> dict[str, Any] | None:
     """Benchmarks one backend+model combination on audio_path.
 
-    Creates the container for the case (downloading the model if missing),
-    waits for the server, runs `_benchmark_run` and removes the container
-    again -- also on Ctrl+c or an error. Returns the case result, or None
-    when the case was skipped (image incompatible with this CPU, server did
-    not come up, transcription failed); the skip reason goes to stderr.
+    Creates the container for the case (downloading the model if missing), waits for the server, runs `_benchmark_run`
+    and removes the container again -- also on Ctrl+c or an error. Returns the case result, or None when the case was
+    skipped (image incompatible with this CPU, server did not come up, transcription failed); the skip reason goes to
+    stderr.
     """
     from digue.container import (
         _wait_for_server,
@@ -185,9 +179,8 @@ def benchmark_case(
 
 
 def default_backends(config: dict[str, dict[str, Any]]) -> list[str]:
-    """The resolved backend plus cpu: a forced backend in the config wins
-    over hardware detection (a cpu pinned with an image override must not be
-    bypassed by the GPU it cannot run on)."""
+    """The resolved backend plus cpu: a forced backend in the config wins over hardware detection (a cpu pinned with an
+    image override must not be bypassed by the GPU it cannot run on)."""
     from digue.container import resolve_backend
 
     resolved = resolve_backend(config)
@@ -221,11 +214,9 @@ def run_benchmark(
     models: list[str] | None = None,
     runs: int = BENCHMARK_RUNS,
 ) -> list[dict[str, Any]]:
-    """Benchmarks every backend x model case on the same audio and returns
-    the results (also printed as a summary). Defaults: the resolved backend
-    plus cpu, and BENCHMARK_MODELS. The user's own container is preserved
-    around the run; Ctrl+c stops the cases, prints the partial summary and
-    propagates (the caller decides how to exit)."""
+    """Benchmarks every backend x model case on the same audio and returns the results (also printed as a summary).
+    Defaults: the resolved backend plus cpu, and BENCHMARK_MODELS. The user's own container is preserved around the
+    run; Ctrl+c stops the cases, prints the partial summary and propagates (the caller decides how to exit)."""
     from digue.container import preserve_container_for_benchmark, resolve_container_name
 
     backends = backends or default_backends(config)
@@ -277,10 +268,9 @@ def record_benchmark_audio(
 
 
 def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
-    """`digue benchmark`: audio from a file, the JFK sample or the microphone;
-    backends, models ("all" = every model) and runs from the options; the
-    summary on stderr and, with --json, the results on stdout (also the
-    partial ones on Ctrl+c, exit 130)."""
+    """`digue benchmark`: audio from a file, the JFK sample or the microphone; backends, models ("all" = every model)
+    and runs from the options; the summary on stderr and, with --json, the results on stdout (also the partial ones on
+    Ctrl+c, exit 130)."""
     import json
 
     from digue import AVAILABLE_MODELS
@@ -299,8 +289,7 @@ def cmd_benchmark(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -
     elif args.sample:
         audio_path = download_sample()
     else:
-        # the runtime dir is private to the user; a fixed name in /tmp could be
-        # a symlink planted by another local user
+        # the runtime dir is private to the user; a fixed name in /tmp could be a symlink planted by another local user
         audio_path = _runtime_dir() / "digue-bench.wav"
         record_benchmark_audio(audio_path, config=config)
         print(file=sys.stderr)

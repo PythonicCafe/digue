@@ -12,13 +12,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import subprocess
 
-# The daemon enforces max-duration (200ms poll); the detached watchdog is only
-# a safety killer for a SIGKILLed daemon, so it fires this much later. With an
-# equal deadline the watchdog won the race (measured: at 20s the recorder was
+# The daemon enforces max-duration (200ms poll); the detached watchdog is only a safety killer for a SIGKILLed daemon,
+# so it fires this much later. With an equal deadline the watchdog won the race (measured: at 20s the recorder was
 # already dead when the daemon checked) and the daemon saw "died", not "limit".
 WATCHDOG_GRACE_SECONDS = 5
-
-# -- Recording ----------------------------------------------------------------
 
 
 def _runtime_dir() -> Path:
@@ -37,8 +34,8 @@ def _runtime_dir() -> Path:
 def _write_state_file(path: Path, content: str) -> None:
     """Publishes a small state file in one step (temp sibling + rename).
 
-    Path.write_text truncates before writing, so a concurrent toggle could read
-    an empty file and conclude there is no daemon/recorder.
+    Path.write_text truncates before writing, so a concurrent toggle could read an empty file and conclude there is no
+    daemon/recorder.
     """
 
     temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -58,7 +55,6 @@ def _rec_file(suffix: str = ".wav") -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
-
     try:
         os.kill(pid, 0)
         return True
@@ -90,8 +86,8 @@ def _cache_dir() -> Path:
 def _pw_record_supports_flac() -> bool:
     """True when this pw-record's libsndfile was built with the flac container.
 
-    Result is cached under XDG_CACHE_HOME, keyed by the binary path and mtime,
-    so a libsndfile upgrade is picked up and a missing binary is not.
+    Result is cached under XDG_CACHE_HOME, keyed by the binary path and mtime, so a libsndfile upgrade is picked up and
+    a missing binary is not.
     """
     import shutil
     import subprocess
@@ -143,8 +139,7 @@ def _native_flac_available(config: dict[str, dict[str, Any]]) -> bool:
 def _live_recording_suffix(config: dict[str, dict[str, Any]]) -> str:
     """Suffix of the live take file: .flac when pw-record can write it, else .wav.
 
-    Both are LIVE_RECORDING_SUFFIXES: the take state and the /proc fd scan
-    accept exactly these.
+    Both are LIVE_RECORDING_SUFFIXES: the take state and the /proc fd scan accept exactly these.
     """
     if config["dictate"]["audio_format"] != "flac":
         return ".wav"
@@ -159,9 +154,9 @@ def recording_command(
 ) -> list[str]:
     """Builds the argv that records mono 16 kHz s16 audio to rec_file.
 
-    recorder: "auto" (pw-record if available, else arecord), "pw-record", or "arecord".
-    device: empty keeps the system default; otherwise pw-record --target / arecord -D.
-    container: pw-record --container (e.g. "flac"); inferred from a .flac suffix.
+    recorder: "auto" (pw-record if available, else arecord), "pw-record", or "arecord".  device: empty keeps the system
+    default; otherwise pw-record --target / arecord -D.  container: pw-record --container (e.g. "flac"); inferred from
+    a .flac suffix.
     """
     recorder = _resolve_recorder(recorder)
     rec_path = Path(rec_file)
@@ -194,9 +189,8 @@ def _popen_recorder(
 ) -> subprocess.Popen[bytes]:
     """Starts the recorder. Raises RuntimeError if it exits non-zero immediately.
 
-    With keep_stderr the stderr file (_recorder_stderr_path) outlives this
-    call so the owner can report why a recorder died mid-take; the owner
-    removes it with _consume_recorder_stderr.
+    With keep_stderr the stderr file (_recorder_stderr_path) outlives this call so the owner can report why a recorder
+    died mid-take; the owner removes it with _consume_recorder_stderr.
     """
     import subprocess
     import time
@@ -232,8 +226,8 @@ def _popen_recorder(
 
 
 def _consume_recorder_stderr(processes: RecordingProcesses) -> str:
-    """Removes the recorder's stderr file and returns what it said (compacted),
-    or the exit code when it said nothing. Never raises."""
+    """Removes the recorder's stderr file and returns what it said (compacted), or the exit code when it said nothing.
+    Never raises."""
     detail = ""
     if processes.stderr_path is not None:
         with contextlib.suppress(OSError):
@@ -257,8 +251,8 @@ class RecordingProcesses:
 
 TAKE_STATE_VERSION = 1
 
-# Suffixes a live take may have in the runtime dir: .wav, or .flac when
-# pw-record writes the flac container natively (_live_recording_suffix).
+# Suffixes a live take may have in the runtime dir: .wav, or .flac when pw-record writes the flac container natively
+# (_live_recording_suffix).
 LIVE_RECORDING_SUFFIXES = frozenset((".wav", ".flac"))
 
 TAKE_STATES = ("starting", "recording", "delivering", "recovering")
@@ -399,10 +393,9 @@ def _read_take_state(state_path: Path) -> TakeState | None:
 
 
 def _report_unreadable_take_state(state_path: Path, exc: Exception) -> None:
-    """Reports a malformed take state: stderr every time, and a desktop
-    notification the first time only (a marker sibling records that it was
-    shown). The state is never touched, so under a hotkey the stderr line
-    alone would repeat forever where nobody reads it."""
+    """Reports a malformed take state: stderr every time, and a desktop notification the first time only (a marker
+    sibling records that it was shown). The state is never touched, so under a hotkey the stderr line alone would
+    repeat forever where nobody reads it."""
     from digue.notify import send_notification
 
     message = f"Unreadable take state at {state_path}: {exc}"
@@ -418,12 +411,10 @@ def _report_unreadable_take_state(state_path: Path, exc: Exception) -> None:
 def _mark_take_delivering(take_id: str) -> None:
     """Moves the daemon's own take from "recording" to "delivering".
 
-    Called together with the daemon file transition, before the recorder is
-    stopped: the persisted take state then mirrors the daemon file, and a
-    recovery reads what phase the dead daemon was in. A state that cannot
-    be read (or is not "recording") is left alone: the daemon file already
-    carries the phase, and the unreadable-state rule (report, never touch)
-    applies.
+    Called together with the daemon file transition, before the recorder is stopped: the persisted take state then
+    mirrors the daemon file, and a recovery reads what phase the dead daemon was in. A state that cannot be read (or is
+    not "recording") is left alone: the daemon file already carries the phase, and the unreadable-state rule (report,
+    never touch) applies.
     """
     import dataclasses
 
@@ -445,9 +436,8 @@ ORPHAN_MIN_AGE_SECONDS = 60
 
 
 def _take_timestamp(take: TakeState) -> str:
-    """The filename timestamp of a recovered take: when it started recording
-    (created_at_ns), not when some later toggle found it. A rescue hours
-    after a crash must not name the audio with the rescue time."""
+    """The filename timestamp of a recovered take: when it started recording (created_at_ns), not when some later
+    toggle found it. A rescue hours after a crash must not name the audio with the rescue time."""
     import datetime
 
     return datetime.datetime.fromtimestamp(take.created_at_ns / 1e9).strftime("%Y%m%d-%H%M%S")
@@ -460,15 +450,13 @@ def _take_age_seconds(take: TakeState) -> float:
 
 
 def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) -> Path | None:
-    """Conservative recovery for a "starting" take whose daemon died (e.g. it
-    was killed between publishing the state and registering the recorder).
+    """Conservative recovery for a "starting" take whose daemon died (e.g. it was killed between publishing the state
+    and registering the recorder).
 
-    No /proc/*/fd scanning (complex, racy, and it yields no identity). Rules:
-    while the daemon is alive or the state is younger than
-    ORPHAN_MIN_AGE_SECONDS, nothing happens; after that, a missing or
-    empty WAV expires together with its state, and a non-empty WAV is rescued
-    (never transcribed/pasted automatically: the recorder may still be
-    writing). Returns the rescued path or None.
+    No /proc/*/fd scanning (complex, racy, and it yields no identity). Rules: while the daemon is alive or the state is
+    younger than ORPHAN_MIN_AGE_SECONDS, nothing happens; after that, a missing or empty WAV expires together with its
+    state, and a non-empty WAV is rescued (never transcribed/pasted automatically: the recorder may still be writing).
+    Returns the rescued path or None.
     """
 
     from digue.audio import rescue_recording
@@ -497,12 +485,11 @@ def _expire_orphan_starting(config: dict[str, dict[str, Any]], take: TakeState) 
 
 
 def _take_identity_alive(pid: int | None, starttime: int | str | None) -> bool:
-    """True only when pid is alive AND is still the process that published the
-    identity: a pid alone is not an identity (pids get recycled).
+    """True only when pid is alive AND is still the process that published the identity: a pid alone is not an identity
+    (pids get recycled).
 
-    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps
-    its starttime, but cannot stop a recorder nor deliver: it counts as dead,
-    the same rule as `_daemon_alive` and `_group_alive`.
+    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps its starttime, but cannot stop a
+    recorder nor deliver: it counts as dead, the same rule as `_daemon_alive` and `_group_alive`.
     """
     if pid is None or starttime is None:
         return False
@@ -520,15 +507,12 @@ def _take_is_orphan(take: TakeState) -> bool:
 def _claim_orphan_take() -> TakeState | None:
     """Claims the oldest orphan take for recovery by the current process.
 
-    Must be called while holding the dictate lock (discovery + transition only,
-    nothing slow). Returns the take in state "recovering" with this process as
-    recoverer, or None when there is nothing to recover: a recovering take
-    with a live recoverer is not an orphan, so a concurrent toggle claims
-    nothing and starts a new take instead. A claim always means work: an
-    orphan without a recorder identity (a "starting" take) is only claimed
-    once it is old enough for the conservative expiry rules to act on it
-    (ORPHAN_MIN_AGE_SECONDS), so a toggle never returns after claiming a take
-    it could do nothing with.
+    Must be called while holding the dictate lock (discovery + transition only, nothing slow). Returns the take in
+    state "recovering" with this process as recoverer, or None when there is nothing to recover: a recovering take with
+    a live recoverer is not an orphan, so a concurrent toggle claims nothing and starts a new take instead. A claim
+    always means work: an orphan without a recorder identity (a "starting" take) is only claimed once it is old enough
+    for the conservative expiry rules to act on it (ORPHAN_MIN_AGE_SECONDS), so a toggle never returns after claiming a
+    take it could do nothing with.
     """
     import dataclasses
 
@@ -554,45 +538,39 @@ def _claim_orphan_take() -> TakeState | None:
 def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) -> int:
     """Recovers a claimed orphan take; called outside the dictate lock.
 
-    The recorder identity published by the dead daemon is revalidated before
-    signaling: stop_recording_pid stops a live recorder and no-ops on a dead
-    or recycled one, so both cases converge on the delivery flow -- unless
-    the transcript for this take already exists in audio-dir, which proves the
-    text was pasted (the daemon died during the archive): then only the audio
-    is archived, so a take is never pasted twice. The claimed
-    state is removed only after a terminal outcome (delivered, rescued, empty):
-    retryable failures and unexpected exceptions preserve state and WAV, and
-    the next toggle finds a recovering take with a dead recoverer and retries.
-    An empty WAV is final here, whatever the take's age: stop_recording_pid
-    leaves the recorder dead (or already gone) and unlinks an empty file, and
-    the no-speech path archives it -- keeping the state would make every toggle
-    reclaim a take that no longer has audio. Only a "starting" take, which has
-    no recorder identity to trust or stop, gets the age-based expiry rules.
+    The recorder identity published by the dead daemon is revalidated before signaling: stop_recording_pid stops a live
+    recorder and no-ops on a dead or recycled one, so both cases converge on the delivery flow -- unless the transcript
+    for this take already exists in audio-dir, which proves the text was pasted (the daemon died during the archive):
+    then only the audio is archived, so a take is never pasted twice. The claimed state is removed only after a
+    terminal outcome (delivered, rescued, empty): retryable failures and unexpected exceptions preserve state and WAV,
+    and the next toggle finds a recovering take with a dead recoverer and retries.  An empty WAV is final here,
+    whatever the take's age: stop_recording_pid leaves the recorder dead (or already gone) and unlinks an empty file,
+    and the no-speech path archives it -- keeping the state would make every toggle reclaim a take that no longer has
+    audio. Only a "starting" take, which has no recorder identity to trust or stop, gets the age-based expiry rules.
     """
     from digue.audio import _archive_recovered_take, _delivered_transcript
     from digue.dictate import TERMINAL_OUTCOMES, DeliveryResult, finish_dictation
     from digue.notify import notify_close
 
-    # The dead daemon's "Recording..." popup (timeout 0) is in its own slot
-    # and would otherwise stay until the manual fix in the README.
+    # The dead daemon's "Recording..." popup (timeout 0) is in its own slot and would otherwise stay until the manual
+    # fix in the README.
     notify_close(take.daemon_pid)
     if take.recorder_pid is None:
-        # A rescued starting take keeps its audio and warns the user; not a
-        # failure of this toggle (the new take's exit code still dominates).
+        # A rescued starting take keeps its audio and warns the user; not a failure of this toggle (the new take's exit
+        # code still dominates).
         _expire_orphan_starting(config, take)
         return 0
     rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
     transcript = _delivered_transcript(Path(config["dictate"]["audio_dir"]), take.take_id)
     if transcript is not None and rec_file is None:
-        # Text delivered and the live file already gone: the daemon finished
-        # the archive and died before removing its state. Nothing to do but
-        # drop the state; reporting "Empty or missing audio file" here would
-        # turn a complete take into an error.
+        # Text delivered and the live file already gone: the daemon finished the archive and died before removing its
+        # state. Nothing to do but drop the state; reporting "Empty or missing audio file" here would turn a complete
+        # take into an error.
         print(f"Take {take.take_id} was already delivered ({transcript})", file=sys.stderr)
         result = DeliveryResult(outcome="delivered", exit_code=0)
     elif transcript is not None and rec_file is not None:
-        # the dead daemon had already pasted and saved the text (it died during
-        # the archive): archive the audio, never paste twice
+        # the dead daemon had already pasted and saved the text (it died during the archive): archive the audio, never
+        # paste twice
         result = _archive_recovered_take(config, rec_file, transcript)
     else:
         result = finish_dictation(config, rec_file, take_id=take.take_id, timestamp=_take_timestamp(take))
@@ -603,9 +581,8 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
 
 
 def _take_state_payload(take: TakeState, state: str | None = None) -> dict[str, Any]:
-    """JSON payload of a take state; `state` overrides the lifecycle state (the
-    archived "rescued" metadata is written outside the runtime dir, where the
-    strict parser never sees it)."""
+    """JSON payload of a take state; `state` overrides the lifecycle state (the archived "rescued" metadata is written
+    outside the runtime dir, where the strict parser never sees it)."""
     return {
         "version": take.version,
         "take_id": take.take_id,
@@ -624,9 +601,9 @@ def _take_state_payload(take: TakeState, state: str | None = None) -> dict[str, 
 def _archive_rescued_take_state(take: TakeState, audio_dir: str | Path, timestamp: str) -> None:
     """Moves the take state JSON next to the rescued recording (state "rescued").
 
-    The JSON is metadata of the recording, not a live take state: it is kept
-    beside the audio, and clean removes it
-    together with the recording of the same stem (never on its own)."""
+    The JSON is metadata of the recording, not a live take state: it is kept beside the audio, and clean removes it
+    together with the recording of the same stem (never on its own).
+    """
     import json
 
     from digue.audio import _saved_stem, month_dir_for
@@ -643,11 +620,11 @@ def _archive_rescued_take_state(take: TakeState, audio_dir: str | Path, timestam
 def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> Path | None:
     """Rescues one surplus orphan take's audio without transcribing it.
 
-    A live recorder is stopped through its published identity first; the WAV
-    goes to rescue_recording (exclusive name per take id) and the take state
-    JSON is archived next to it. Returns the rescued path, or None when there
-    was nothing to rescue (the state is then removed) or the rescue failed
-    (the state is kept, so the next toggle retries)."""
+    A live recorder is stopped through its published identity first; the WAV goes to rescue_recording (exclusive name
+    per take id) and the take state JSON is archived next to it. Returns the rescued path, or None when there was
+    nothing to rescue (the state is then removed) or the rescue failed (the state is kept, so the next toggle
+    retries).
+    """
     from digue.audio import rescue_recording
     from digue.notify import notify_close
 
@@ -673,17 +650,16 @@ def _rescue_surplus_take(config: dict[str, dict[str, Any]], take: TakeState) -> 
 def _rescue_surplus_orphans(config: dict[str, dict[str, Any]]) -> list[Path]:
     """Rescues the remaining orphan takes after the oldest one was delivered.
 
-    Each take is claimed (under the dictate lock) and rescued one by one, so a
-    concurrent toggle never races a claim. Only the oldest orphan is ever
-    transcribed and pasted; the rest keep their audio and metadata. Stops at
-    the first take whose state could not be removed (rescue failure), leaving
-    it for the next toggle."""
+    Each take is claimed (under the dictate lock) and rescued one by one, so a concurrent toggle never races a claim.
+    Only the oldest orphan is ever transcribed and pasted; the rest keep their audio and metadata. Stops at the first
+    take whose state could not be removed (rescue failure), leaving it for the next toggle.
+    """
     from digue.dictate import _dictate_lock
 
     rescued_paths: list[Path] = []
     while True:
-        # This loop runs outside the toggle's lock (the rescue itself is slow
-        # I/O), so each claim takes it: _claim_orphan_take requires the lock.
+        # This loop runs outside the toggle's lock (the rescue itself is slow I/O), so each claim takes it:
+        # _claim_orphan_take requires the lock.
         with _dictate_lock():
             surplus = _claim_orphan_take()
         if surplus is None:
@@ -698,15 +674,12 @@ def _rescue_surplus_orphans(config: dict[str, dict[str, Any]]) -> list[Path]:
 def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
     """Starts the recorder and safety watchdog, returning their owned handles.
 
-    The take identity is published before the recorder exists (starting), and
-    the recorder identity is published before the watchdog is spawned
-    (recording): publishing the state is two syscalls (~50 us) while spawning
-    the watchdog is fork+exec (~10 ms), so identity -- the thing recovery knows
-    how to act on -- is exposed the soonest. On a Popen failure the state is
-    removed (no WAV, no process). The recorder runs in a new process group so
-    it survives a killed daemon; the take state carries the recorder identity
-    as the recovery contract for a later invocation, while the live daemon
-    retains Popen handles so it can reap both children.
+    The take identity is published before the recorder exists (starting), and the recorder identity is published before
+    the watchdog is spawned (recording): publishing the state is two syscalls (~50 us) while spawning the watchdog is
+    fork+exec (~10 ms), so identity -- the thing recovery knows how to act on -- is exposed the soonest. On a Popen
+    failure the state is removed (no WAV, no process). The recorder runs in a new process group so it survives a killed
+    daemon; the take state carries the recorder identity as the recovery contract for a later invocation, while the
+    live daemon retains Popen handles so it can reap both children.
     """
     import dataclasses
     import time
@@ -740,11 +713,9 @@ def start_recording(config: dict[str, dict[str, Any]]) -> RecordingProcesses:
         raise
     recorder_starttime = _process_starttime(recorder.pid)
     if recorder_starttime is None:
-        # /proc/<pid>/stat unreadable for our own unreaped child: no recorder
-        # identity means no take state and no watchdog could be published, so
-        # the recorder must not be left running. Practically unreachable (a
-        # zombie still has its stat), but silently continuing here used to
-        # hand back a recorder nobody could stop or recover.
+        # /proc/<pid>/stat unreadable for our own unreaped child: no recorder identity means no take state and no
+        # watchdog could be published, so the recorder must not be left running. Practically unreachable (a zombie
+        # still has its stat), but silently continuing here used to hand back a recorder nobody could stop or recover.
         _take_state_file(take_id).unlink(missing_ok=True)
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(recorder.pid, 15)
@@ -786,12 +757,10 @@ def _process_pgrp(pid: int, stat_path: Path | None = None) -> int | None:
 def _recorder_identity_valid(pid: int, expected_starttime: str | int | None) -> bool:
     """True when pid is still the recorder about to be signaled.
 
-    killpg assumes the pid still leads its process group, and a recycled pid
-    could be an unrelated process of the same user: the /proc starttime catches
-    recycling and pgrp == pid catches a process that no longer leads a group
-    (the recorder is spawned with start_new_session=True, so pid == pgid). No
-    expectation always validates -- the owner's unreaped Popen child cannot be
-    recycled; recovery paths must pass an identity.
+    killpg assumes the pid still leads its process group, and a recycled pid could be an unrelated process of the same
+    user: the /proc starttime catches recycling and pgrp == pid catches a process that no longer leads a group (the
+    recorder is spawned with start_new_session=True, so pid == pgid). No expectation always validates -- the owner's
+    unreaped Popen child cannot be recycled; recovery paths must pass an identity.
     """
     if expected_starttime is None:
         return True
@@ -801,11 +770,9 @@ def _recorder_identity_valid(pid: int, expected_starttime: str | int | None) -> 
 def _spawn_limit_watchdog(pgid: int, max_duration: int) -> subprocess.Popen[bytes]:
     """Spawns an identity-checking safety killer and returns its handle.
 
-    The detached child survives a SIGKILLed daemon. Before signaling, it checks
-    the same identity as _recorder_identity_valid (Linux /proc starttime and
-    pgrp == pid) so a stale watchdog cannot kill a recycled PGID. It
-    sleeps WATCHDOG_GRACE_SECONDS past max_duration so the daemon, which polls,
-    always reaches the limit first.
+    The detached child survives a SIGKILLed daemon. Before signaling, it checks the same identity as
+    _recorder_identity_valid (Linux /proc starttime and pgrp == pid) so a stale watchdog cannot kill a recycled PGID.
+    It sleeps WATCHDOG_GRACE_SECONDS past max_duration so the daemon, which polls, always reaches the limit first.
     """
     import subprocess
 
@@ -857,15 +824,14 @@ def _cancel_watchdog(watchdog: subprocess.Popen[bytes] | None) -> None:
 def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: int) -> str:
     """Waits on the daemon's own recorder handle and reaps spontaneous exits.
 
-    An exit at or past the limit is reported as "limit" whoever stopped the
-    recorder (the watchdog may have), so the limit notification is never lost.
+    An exit at or past the limit is reported as "limit" whoever stopped the recorder (the watchdog may have), so the
+    limit notification is never lost.
     """
     import time
 
-    # The flags are read through the module on every iteration: a
-    # `from digue.dictate import _got_sigterm` would copy the value at call
-    # time (False) and never see the handler set it, so a second toggle or
-    # Ctrl+c would only stop the take at the duration limit.
+    # The flags are read through the module on every iteration: a `from digue.dictate import _got_sigterm` would copy
+    # the value at call time (False) and never see the handler set it, so a second toggle or Ctrl+c would only stop the
+    # take at the duration limit.
     from digue import dictate
 
     start = time.monotonic()
@@ -896,9 +862,8 @@ def _process_is_zombie(pid: int) -> bool:
 def _group_alive(pid: int) -> bool:
     """True while the recorder group still has a running process.
 
-    A zombie recorder (exited, not yet reaped by the daemon's Popen.wait)
-    still answers signal 0, so it is checked explicitly: otherwise every stop
-    escalated to SIGKILL and paid the full grace period.
+    A zombie recorder (exited, not yet reaped by the daemon's Popen.wait) still answers signal 0, so it is checked
+    explicitly: otherwise every stop escalated to SIGKILL and paid the full grace period.
     """
 
     try:
@@ -911,15 +876,13 @@ def _group_alive(pid: int) -> bool:
 def _recording_file_of(pid: int) -> Path | None:
     """Finds the audio file a recording PID is writing, via /proc/<pid>/fd.
 
-    The recorder argv carries the target path, so scanning its open file
-    descriptors is the single source of truth -- no state file can drift out
-    of sync (a timestamped rec_file name regenerated at stop time once made
-    stop_recording check a file the recorder never wrote). Returns None when
-    the process is already gone (its descriptors are closed).
+    The recorder argv carries the target path, so scanning its open file descriptors is the single source of truth --
+    no state file can drift out of sync (a timestamped rec_file name regenerated at stop time once made stop_recording
+    check a file the recorder never wrote). Returns None when the process is already gone (its descriptors are closed).
     """
 
-    # readlink yields the kernel's resolved path: compare against the resolved
-    # runtime dir (XDG_RUNTIME_DIR may be a symlink), as TakeState does
+    # readlink yields the kernel's resolved path: compare against the resolved runtime dir (XDG_RUNTIME_DIR may be a
+    # symlink), as TakeState does
     runtime_dir = _runtime_dir().resolve()
     try:
         fd_links = list(Path(f"/proc/{pid}/fd").iterdir())
@@ -953,16 +916,13 @@ def stop_recording_pid(
 ) -> Path | None:
     """Stops the recorder process group `pid` and returns its audio file or None.
 
-    Used by the take's owner (the daemon that started this recorder). With
-    overlapping takes each daemon stops only its own recorder -- there is no
-    global recorder state to stop, so a stop can never act on another take.
-    The owner passes the rec_file captured while the recorder was alive;
-    without it, the /proc/<pid>/fd scan (_recording_file_of) is the only
-    confirmation, and when it finds nothing (recorder already dead, its
-    descriptors closed) there is nothing to deliver. expected_starttime
-    (recovery paths) revalidates before every killpg that the pid still is the
-    recorder (same /proc starttime and still a process-group leader); a
-    diverged identity is never signaled and the validated WAV is returned.
+    Used by the take's owner (the daemon that started this recorder). With overlapping takes each daemon stops only its
+    own recorder -- there is no global recorder state to stop, so a stop can never act on another take.
+    The owner passes the rec_file captured while the recorder was alive; without it, the /proc/<pid>/fd scan
+    (_recording_file_of) is the only confirmation, and when it finds nothing (recorder already dead, its descriptors
+    closed) there is nothing to deliver. expected_starttime (recovery paths) revalidates before every killpg that the
+    pid still is the recorder (same /proc starttime and still a process-group leader); a diverged identity is never
+    signaled and the validated WAV is returned.
     """
     import time
 
@@ -974,8 +934,8 @@ def stop_recording_pid(
             break
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal)
-        # Poll instead of a fixed sleep: pw-record exits within milliseconds,
-        # and this wait sits between the hotkey and the transcription.
+        # Poll instead of a fixed sleep: pw-record exits within milliseconds, and this wait sits between the hotkey and
+        # the transcription.
         deadline = time.monotonic() + 0.5
         while _group_alive(pid) and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -1001,13 +961,10 @@ def record_to(
 ) -> Path:
     """Records from the microphone into output_path for seconds, then returns it.
 
-    Honors [dictate] recorder, device and (for a .flac path) native FLAC when
-    pw-record supports it; when it does not (arecord, or a pw-record whose
-    libsndfile lacks the container), the take is recorded as WAV under the
-    same stem and the returned path ends in .wav -- arecord would otherwise
-    write WAV data into a file named .flac. Raises RuntimeError if the
-    recorder exits at start (bad --target, missing PCM, ...). Does not
-    transcribe or paste.
+    Honors [dictate] recorder, device and (for a .flac path) native FLAC when pw-record supports it; when it does not
+    (arecord, or a pw-record whose libsndfile lacks the container), the take is recorded as WAV under the same stem and
+    the returned path ends in .wav -- arecord would otherwise write WAV data into a file named .flac. Raises
+    RuntimeError if the recorder exits at start (bad --target, missing PCM, ...). Does not transcribe or paste.
     """
     import time
 

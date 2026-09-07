@@ -17,18 +17,14 @@ from digue import (
     DEFAULT_TRANSCRIPTION_TIMEOUT,
 )
 
-# -- Config -------------------------------------------------------------------
-
 
 def _config_path() -> Path:
-
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "digue" / "config.toml"
 
 
 def _default_config() -> dict[str, dict[str, Any]]:
-
     xdg = os.environ.get("XDG_DATA_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
     data_dir = base / "digue"
@@ -74,13 +70,11 @@ def _merge_section(target: dict[str, Any], source: dict[str, Any]) -> None:
 def _host_overrides(user_config: dict[str, Any]) -> dict[str, Any]:
     """Returns the [host.<this-hostname>] tables from the user config, or {}.
 
-    Matched with or without the domain part, in both directions: the exact
-    hostname first, then the hostname without its domain as an exact table
-    name, then a table name whose own first label equals the short hostname
-    (a dotfile written with the FQDN, a machine whose gethostname() returns
-    the short name). Two tables matching only by short name is ambiguous and
-    rejected. gethostname() is in-memory (microseconds), so calling it on
-    every run adds no startup delay.
+    Matched with or without the domain part, in both directions: the exact hostname first, then the hostname without
+    its domain as an exact table name, then a table name whose own first label equals the short hostname (a dotfile
+    written with the FQDN, a machine whose gethostname() returns the short name). Two tables matching only by short
+    name is ambiguous and rejected. gethostname() is in-memory (microseconds), so calling it on every run adds no
+    startup delay.
     """
     hosts = user_config.get("host")
     if not isinstance(hosts, dict):
@@ -159,9 +153,8 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
 def _check_section_keys(section: str, table: dict[str, Any]) -> None:
     """Validates key names (and models values) of a raw config section.
 
-    Accepts kebab-case and snake_case spellings (merge normalizes later) but
-    rejects unknown keys, models backends or models outside AVAILABLE_MODELS,
-    and keys that collide after normalizing hyphens.
+    Accepts kebab-case and snake_case spellings (merge normalizes later) but rejects unknown keys, models backends or
+    models outside AVAILABLE_MODELS, and keys that collide after normalizing hyphens.
     """
     defaults = _default_config()[section]
     seen: dict[str, str] = {}
@@ -183,8 +176,8 @@ def _check_section_keys(section: str, table: dict[str, Any]) -> None:
         elif canonical not in defaults:
             import difflib
 
-            # the file format is kebab-case (see CONFIG_TEMPLATE): suggest and
-            # list the names the user would actually write
+            # the file format is kebab-case (see CONFIG_TEMPLATE): suggest and list the names the user would actually
+            # write
             valid_keys = [name.replace("_", "-") for name in defaults]
             matches = difflib.get_close_matches(canonical.replace("_", "-"), valid_keys, n=1)
             suggestion = f'; did you mean "{matches[0]}"?' if matches else ""
@@ -194,8 +187,8 @@ def _check_section_keys(section: str, table: dict[str, Any]) -> None:
 def _validate_host_config(hosts: dict[str, Any]) -> None:
     """Validates every [host.<hostname>] table, not just the current machine's.
 
-    The config file is versioned in dotfiles and shared across machines, so a
-    typo under another host must fail here too.
+    The config file is versioned in dotfiles and shared across machines, so a typo under another host must fail here
+    too.
     """
     for hostname, sections in hosts.items():
         if not isinstance(sections, dict):
@@ -234,9 +227,8 @@ def _validate_config_structure(user_config: dict[str, Any]) -> None:
 def load_config(config_path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     """Loads config from TOML file, falling back to defaults for missing keys.
 
-    If the file defines [host.<hostname>][section] tables matching this machine
-    (exact hostname, or the first dot component of it), those sections are
-    merged on top of the global ones, which in turn override the defaults.
+    If the file defines [host.<hostname>][section] tables matching this machine (exact hostname, or the first dot
+    component of it), those sections are merged on top of the global ones, which in turn override the defaults.
     """
     import tomllib
 
@@ -278,84 +270,70 @@ def model_for_backend(backend: str, config: dict[str, dict[str, Any]] | None = N
 
 
 CONFIG_TEMPLATE = """\
-# Only the sections and keys documented below are accepted (each key in
-# kebab-case or snake_case, not both spellings at once); anything else --
-# including inside [host.<hostname>] tables -- is rejected when the config
-# is loaded. `digue config show` prints the resolved settings for this machine.
+# Only the sections and keys documented below are accepted (each key in kebab-case or snake_case, not both spellings at
+# once); anything else -- including inside [host.<hostname>] tables -- is rejected when the config is loaded.
+# `digue config show` prints the resolved settings for this machine.
 
-# -- Server -------------------------------------------------------------------
 [server]
-# port = 8178                   # host port for the whisper-server container
-# bind-ip = "127.0.0.1"         # IP Docker binds the port to; 127.0.0.1 = local only.
-                                #   Set to a LAN IP to expose it to that network
-                                #   (the server has no authentication; prefer SSH tunnels)
-# data-dir = ""                 # where models are stored
-                                #   (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is often
-                                #   unset, in which case: ~/.local/share/digue)
-# backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
-                                # or "remote" (server on another machine via SSH tunnel)
-# remote-host = ""              # for backend = "remote": the server host (LAN IP,
-                                #   hostname, or empty = 127.0.0.1 via SSH tunnel)
-# image = ""                    # Docker image for whisper-server; empty = the backend's
-                                #   default (see README for the compatibility matrix), e.g.
-                                #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
-                                #   main-vulkan crashes. `digue server start` recreates a
-                                #   container created from another image
+# port = 8178                           # Host port for the whisper-server container
+# bind-ip = "127.0.0.1"                 # IP Docker binds the port to; 127.0.0.1 = local only.
+                                        #   Set to a LAN IP to expose it to that network (the server has no
+                                        #   authentication; prefer SSH tunnels)
+# data-dir = ""                         # Where models are stored (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is
+                                        #   often unset, in which case: ~/.local/share/digue)
+# backend = "auto"                      # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu", or "remote" (server on
+                                        #   another machine via SSH tunnel)
+# remote-host = ""                      # For backend = "remote": the server host (LAN IP, hostname, or empty =
+                                        #   127.0.0.1 via SSH tunnel)
+# image = ""                            # Docker image for whisper-server; empty = the backend's
+                                        #   default (see README for the compatibility matrix), e.g.
+                                        #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where main-vulkan crashes.
+                                        #   `digue server start` recreates a container created from another image
 # container-name = "digue-whisper.cpp"  # Docker container name (`digue server start -n` overrides)
 
-# -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
-[transcribe]
-# language = "auto"             # language for transcription: "auto", "pt", "en", etc.
-# prompt = ""                   # initial prompt to steer spelling of names/acronyms,
-                                #   e.g. "KINAI, Turicas, Pythonic Café"
-# output-format = "text"        # transcribe output: "vtt", "srt", "timestamps"
-                                #   ([00:00:12] text lines) or "text" (plain)
-# max-line-length = 42          # subtitle cue wrapping (vtt/srt): max chars per line
-# max-lines = 2                 # max lines per cue when wrapping
-# timeout = 600                 # seconds to wait for the server's answer (the server
-                                #   only replies after transcribing the whole file:
-                                #   long files on CPU need more)
+[transcribe] # Defaults for transcribe, batch-transcribe and dictate
+# language = "auto"                     # Language for transcription: "auto", "pt", "en", etc.
+# prompt = ""                           # Initial prompt to steer spelling of names/acronyms, e.g. "Turicas, Pythonic"
+# output-format = "text"                # Transcribe output: "vtt", "srt", "timestamps" ([00:00:12] text lines) or
+                                        #   "text" (plain)
+# max-line-length = 42                  # Subtitle cue wrapping (vtt/srt): max chars per line
+# max-lines = 2                         # Max lines per cue when wrapping
+# timeout = 600                         # Seconds to wait for the server's answer (the server only replies after
+                                        #   transcribing the whole file: long files on CPU need more)
 
-# -- Dictation ----------------------------------------------------------------
 [dictate]
-# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio/YYYY/MM)
-# display-server = "auto"       # "auto" (detect), "x11", or "wayland"
-# input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
-                                #   keystrokes; use "type" in terminals)
-# save-audio = true             # save the recording as a backup
-# audio-format = "flac"         # format of the saved recording: "flac" (lossless,
-                                #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
-                                #   or "wav". pw-record writes flac natively when
-                                #   libsndfile has the container; otherwise ffmpeg
-                                #   compresses a WAV (arecord always needs this)
-# max-duration = 300            # stop recording after N seconds (0 = unlimited)
-# recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
-# device = ""                   # capture source; empty = system default.
-                                #   pw-record: --target NAME (node name or serial)
-                                #   arecord: -D NAME (PCM; arecord -l lists cards)
+# audio-dir = ""                        # Where recordings are saved (default: <data-dir>/audio/YYYY/MM)
+# display-server = "auto"               # "auto" (detect), "x11", or "wayland"
+# input-mode = "paste"                  # "paste" (clipboard + Ctrl+V) or "type" (simulate keystrokes; use "type" in
+                                        #   terminals)
+# save-audio = true                     # Save the recording as a backup
+# audio-format = "flac"                 # Format of the saved recording: "flac" (lossless, ~35% of WAV; default),
+                                        #   "opus" (~7%, lossy 24 kbit/s) or "wav".
+                                        #   pw-record writes flac natively when libsndfile has the container; otherwise
+                                        #  ffmpeg compresses a WAV (arecord always needs this)
+# max-duration = 300                    # Stop recording after N seconds (0 = unlimited)
+# recorder = "auto"                     # "auto" (pw-record or arecord), "pw-record", or "arecord"
+# device = ""                           # Capture source; empty = system default.
+                                        #   pw-record: --target NAME (node name or serial)
+                                        #   arecord: -D NAME (PCM; arecord -l lists cards)
 
-# -- Models per backend -------------------------------------------------------
 [models]
 # nvidia = "large-v3-turbo"
 # amd = "large-v3-turbo"
 # intel = "large-v3-turbo"
 # cpu = "small"
-# Available models (multilingual): tiny, base, small, medium, large-v1,
-#   large-v2, large-v3, large-v3-turbo. Quantized copies (smaller, usually
-#   faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1,
-#   base-q8_0, base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0,
-#   large-v2-q8_0, large-v2-q5_0, large-v3-q5_0, large-v3-turbo-q8_0,
-#   large-v3-turbo-q5_0. English-only: tiny.en, base.en, small.en, medium.en
-#   and their -q8_0 / -q5_x copies. See README, Quantized models.
+# Available models (multilingual): tiny, base, small, medium, large-v1, large-v2, large-v3, large-v3-turbo.
+# Quantized copies (smaller, usually faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1, base-q8_0,
+# base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0, large-v2-q8_0, large-v2-q5_0, large-v3-q5_0,
+# large-v3-turbo-q8_0, large-v3-turbo-q5_0. English-only: tiny.en, base.en, small.en, medium.en and their -q8_0 / -q5_x
+# copies. See section "Quantized models" on README or run `digue models`.
 
-# -- Per-host overrides (version this file in your dotfiles) -------------------
-# [host.<hostname>][section] tables override the global sections of the same
-# name on that machine only (defaults < global < host). The hostname matches
-# exactly, or without the domain part on either side (thinkpad matches
-# "thinkpad.local" and vice versa; two tables differing only by domain are
-# rejected as ambiguous).
-# Hostnames containing dots must be quoted, or TOML parses each dot as a
-# nested table and the file is rejected: [host."minipc.local".server]
+# Per-host overrides:
+# [host.<hostname>][section] tables override the global sections of the same name on that machine only
+# (defaults < global < host). The hostname matches exactly, or without the domain part on either side (thinkpad matches
+# "thinkpad.local" and vice versa; two tables differing only by domain are rejected as ambiguous).
+# Hostnames containing dots must be quoted, or TOML parses each dot as a nested table and the file is rejected:
+# [host."minipc.local".server]
 # Example:
 #
 # [host.minideb.server]
@@ -377,8 +355,8 @@ def _config_example() -> str:
 def _config_as_toml(config: dict[str, dict[str, Any]]) -> str:
     """Renders the resolved config as TOML (section by section, strings quoted).
 
-    Keys use the kebab-case spelling of the template and README (data-dir),
-    so the output can be pasted back into config.toml as documented.
+    Keys use the kebab-case spelling of the template and README (data-dir), so the output can be pasted back into
+    config.toml as documented.
     """
     lines = []
     for section, values in config.items():

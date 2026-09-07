@@ -17,8 +17,6 @@ from digue import dictate as dictate_mod
 from digue import recording as recording_mod
 from digue.config import _default_config
 
-# -- Recording ----------------------------------------------------------------
-
 
 class TestTakeState:
     def make_state(self, tmp_path, **changes):

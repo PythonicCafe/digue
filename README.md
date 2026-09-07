@@ -191,7 +191,7 @@ digue -c ./config.toml server status # use a custom config file
 
 # Dictation
 digue dictate                        # toggle recording/transcription
-digue dictate -p "KINAI, Turicas"    # override the shared transcription prompt
+digue dictate -p "Turicas, Pythonic" # override the shared transcription prompt
 
 # Server management
 digue detect                         # print detected backend
@@ -214,28 +214,28 @@ digue clean -f                       # remove without asking
 digue clean -w recordings            # remove only recordings (also: transcripts, both)
 
 # File transcription
-digue transcribe audio.mp3                       # text to stdout (silent)
-digue transcribe audio.mp3 -v                    # show progress messages
-digue transcribe interview.mp4 -f vtt -o out.vtt # VTT from video
-digue transcribe audio.mp3 -f srt -o out.srt     # SRT to file
+digue transcribe audio.mp3                           # text to stdout (silent)
+digue transcribe audio.mp3 -v                        # show progress messages
+digue transcribe interview.mp4 -f vtt -o out.vtt     # VTT from video
+digue transcribe audio.mp3 -f srt -o out.srt         # SRT to file
 digue transcribe audio.mp3 -f timestamps -o out.txt  # [00:00:12] text lines
-digue transcribe audio.mp3 -l pt                 # force language
-digue transcribe audio.mp3 -p "KINAI, Turicas"   # hint names/acronyms
+digue transcribe audio.mp3 -l pt                     # force language
+digue transcribe audio.mp3 -p "Turicas, Pythonic"    # hint names/acronyms
 
 # Format conversion (no server needed)
-digue convert a.vtt b.txt                        # VTT -> timestamps (.txt is inferred as timestamps)
-digue convert a.vtt b.txt -t text                # VTT -> plain text
-digue convert a.vtt                              # VTT -> plain text on stdout
-digue convert -f vtt - b.txt                     # VTT on stdin -> timestamps in b.txt
-digue convert -f vtt -                           # VTT on stdin -> plain text on stdout
-digue convert -f vtt - -t timestamps -           # VTT on stdin -> timestamps on stdout
-digue convert a.srt b.vtt                        # SRT -> VTT
+digue convert a.vtt b.txt                            # VTT -> timestamps (.txt is inferred as timestamps)
+digue convert a.vtt b.txt -t text                    # VTT -> plain text
+digue convert a.vtt                                  # VTT -> plain text on stdout
+digue convert -f vtt - b.txt                         # VTT on stdin -> timestamps in b.txt
+digue convert -f vtt -                               # VTT on stdin -> plain text on stdout
+digue convert -f vtt - -t timestamps -               # VTT on stdin -> timestamps on stdout
+digue convert a.srt b.vtt                            # SRT -> VTT
 # Formats accepted by -f/--from-format and -t/--to-format: vtt, srt, timestamps, text
 
 # Batch operations
-digue batch-transcribe ./audios ./transcriptions              # use shared output-format (text by default)
-digue batch-transcribe ./audios ./transcriptions -f vtt       # override with VTT (also: srt, text)
-digue batch-simplify-vtt ./transcriptions ./simplified        # all VTT -> text
+digue batch-transcribe ./audios ./transcriptions         # use shared output-format (text by default)
+digue batch-transcribe ./audios ./transcriptions -f vtt  # override with VTT (also: srt, text)
+digue batch-simplify-vtt ./transcriptions ./simplified   # all VTT -> text
 
 # Diagnostics
 digue config show                    # resolved config as TOML (default)
@@ -257,105 +257,11 @@ digue benchmark -b amd cpu -m medium -n 5 --json   # pick backends/models/runs; 
 
 All settings have sensible defaults. The config file is optional; `digue config init` writes it with every setting documented (defaults commented out).
 
-Unknown sections, keys, or `[models]` backends are rejected when the config is loaded -- including inside `[host.<hostname>]` tables and for every host, not just the current machine, since the file is versioned in dotfiles. If you are upgrading from an earlier version, a config file that relied on misspelled or otherwise ignored keys will now fail with an error naming the offending entry (with a suggestion when the spelling is close to a valid key).
+Unknown sections, keys, or `[models]` backends are rejected when the config is loaded -- including inside `[host.<hostname>]` tables and for every host, not just the current machine, since the file is versioned in dotfiles.
 
-Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
+Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`). Paths support `~` (expanded to home directory).
 
-```toml
-# Only the sections and keys documented below are accepted (each key in
-# kebab-case or snake_case, not both spellings at once); anything else --
-# including inside [host.<hostname>] tables -- is rejected when the config
-# is loaded. `digue config show` prints the resolved settings for this machine.
-
-# -- Server -------------------------------------------------------------------
-[server]
-# port = 8178                   # host port for the whisper-server container
-# bind-ip = "127.0.0.1"         # IP Docker binds the port to; 127.0.0.1 = local only.
-                                #   Set to a LAN IP to expose it to that network
-                                #   (the server has no authentication; prefer SSH tunnels)
-# data-dir = ""                 # where models are stored
-                                #   (default: $XDG_DATA_HOME/digue -- XDG_DATA_HOME is often
-                                #   unset, in which case: ~/.local/share/digue)
-# backend = "auto"              # "auto" (detect GPU), "nvidia", "amd", "intel", "cpu",
-                                # or "remote" (server on another machine via SSH tunnel)
-# remote-host = ""              # for backend = "remote": the server host (LAN IP,
-                                #   hostname, or empty = 127.0.0.1 via SSH tunnel)
-# image = ""                    # Docker image for whisper-server; empty = the backend's
-                                #   default (see README for the compatibility matrix), e.g.
-                                #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where
-                                #   main-vulkan crashes. `digue server start` recreates a
-                                #   container created from another image
-# container-name = "digue-whisper.cpp"  # Docker container name (`digue server start -n` overrides)
-
-# -- Transcription (defaults for transcribe, batch-transcribe and dictate) -----
-[transcribe]
-# language = "auto"             # language for transcription: "auto", "pt", "en", etc.
-# prompt = ""                   # initial prompt to steer spelling of names/acronyms,
-                                #   e.g. "KINAI, Turicas, Pythonic Café"
-# output-format = "text"        # transcribe output: "vtt", "srt", "timestamps"
-                                #   ([00:00:12] text lines) or "text" (plain)
-# max-line-length = 42          # subtitle cue wrapping (vtt/srt): max chars per line
-# max-lines = 2                 # max lines per cue when wrapping
-# timeout = 600                 # seconds to wait for the server's answer (the server
-                                #   only replies after transcribing the whole file:
-                                #   long files on CPU need more)
-
-# -- Dictation ----------------------------------------------------------------
-[dictate]
-# audio-dir = ""                # where recordings are saved (default: <data-dir>/audio/YYYY/MM)
-# display-server = "auto"       # "auto" (detect), "x11", or "wayland"
-# input-mode = "paste"          # "paste" (clipboard + Ctrl+V) or "type" (simulate
-                                #   keystrokes; use "type" in terminals)
-# save-audio = true             # save the recording as a backup
-# audio-format = "flac"         # format of the saved recording: "flac" (lossless,
-                                #   ~35% of WAV; default), "opus" (~7%, lossy 24 kbit/s)
-                                #   or "wav". pw-record writes flac natively when
-                                #   libsndfile has the container; otherwise ffmpeg
-                                #   compresses a WAV (arecord always needs this)
-# max-duration = 300            # stop recording after N seconds (0 = unlimited)
-# recorder = "auto"             # "auto" (pw-record or arecord), "pw-record", or "arecord"
-# device = ""                   # capture source; empty = system default.
-                                #   pw-record: --target NAME (node name or serial)
-                                #   arecord: -D NAME (PCM; arecord -l lists cards)
-
-# -- Models per backend -------------------------------------------------------
-[models]
-# nvidia = "large-v3-turbo"
-# amd = "large-v3-turbo"
-# intel = "large-v3-turbo"
-# cpu = "small"
-# Available models (multilingual): tiny, base, small, medium, large-v1,
-#   large-v2, large-v3, large-v3-turbo. Quantized copies (smaller, usually
-#   faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1,
-#   base-q8_0, base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0,
-#   large-v2-q8_0, large-v2-q5_0, large-v3-q5_0, large-v3-turbo-q8_0,
-#   large-v3-turbo-q5_0. English-only: tiny.en, base.en, small.en, medium.en
-#   and their -q8_0 / -q5_x copies. See README, Quantized models.
-
-# -- Per-host overrides (version this file in your dotfiles) -------------------
-# [host.<hostname>][section] tables override the global sections of the same
-# name on that machine only (defaults < global < host). The hostname matches
-# exactly, or without the domain part on either side (thinkpad matches
-# "thinkpad.local" and vice versa; two tables differing only by domain are
-# rejected as ambiguous).
-# Hostnames containing dots must be quoted, or TOML parses each dot as a
-# nested table and the file is rejected: [host."minipc.local".server]
-# Example:
-#
-# [host.minideb.server]
-# backend = "amd"
-#
-# [host.thinkpad.server]
-# backend = "cpu"
-#
-# [host.thinkpad.dictate]
-# max-duration = 120
-```
-
-
-Paths support `~` (expanded to home directory).
-
-## Shared and per-host configuration
+### Shared and per-host configuration
 
 `[transcribe]` is the real shared configuration for `transcribe`, `batch-transcribe`, and `dictate`: `language`, `prompt`, `output-format`, `max-line-length`, `max-lines`, and `timeout` are inherited by all applicable commands. CLI options override those values. `[dictate]` contains only capture and delivery settings.
 

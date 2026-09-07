@@ -10,19 +10,18 @@ from typing import Any
 
 from digue import DEFAULT_TRANSCRIPTION_TIMEOUT
 
-# Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3,
-# Ogg/Vorbis, AIFF). Verified empirically against whisper-server (ghcr.io main-vulkan
-# image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3, ogg-vorbis and aiff
-# return HTTP 200; opus-in-ogg (WhatsApp voice notes), m4a/AAC, mp4, webm, mka and
-# wma return HTTP 400. Everything else is converted with ffmpeg before upload.
+# Container formats whisper-server decodes natively (miniaudio: RIFF/PCM, fLaC, MP3, Ogg/Vorbis, AIFF). Verified
+# empirically against whisper-server (ghcr.io main-vulkan image, built with WHISPER_COMMON_FFMPEG=OFF): wav, flac, mp3,
+# ogg-vorbis and aiff return HTTP 200; opus-in-ogg (WhatsApp voice notes), m4a/AAC, mp4, webm, mka and wma return HTTP
+# 400. Everything else is converted with ffmpeg before upload.
 NATIVE_FORMATS = frozenset((".wav", ".flac", ".mp3", ".ogg", ".aiff", ".aif"))
 
 RESPONSE_FORMATS = ("text", "vtt", "srt", "timestamps")
 
 TRANSCRIPTION_TIMEOUT = DEFAULT_TRANSCRIPTION_TIMEOUT
 
-# whisper.cpp g_lang (src/whisper.cpp): full names the server's JSON "language"
-# field may carry, mapped to the two-letter codes.
+# whisper.cpp g_lang (src/whisper.cpp): full names the server's JSON "language" field may carry, mapped to the
+# two-letter codes.
 LANGUAGE_FULL_TO_CODE: dict[str, str] = {
     "afrikaans": "af",
     "albanian": "sq",
@@ -144,7 +143,7 @@ AUDIO_EXTENSIONS = frozenset(
     )
 )
 
-# -- HTTP helpers -------------------------------------------------------------
+# HTTP helpers
 
 
 def _multipart_request(
@@ -152,9 +151,8 @@ def _multipart_request(
 ) -> str:
     """Sends a multipart/form-data POST request using only stdlib.
 
-    The filename is a quoted header parameter: quotes are percent-encoded
-    (RFC 7578, section 4.2) and CR/LF dropped, so a file named with them
-    cannot end the value early or inject a header line.
+    The filename is a quoted header parameter: quotes are percent-encoded (RFC 7578, section 4.2) and CR/LF dropped, so
+    a file named with them cannot end the value early or inject a header line.
     """
     import time
     import urllib.request
@@ -188,14 +186,14 @@ def _multipart_request(
         response.close()
 
 
-# -- Transcription ------------------------------------------------------------
+# Transcription
 
 
 def _convert_to_wav(audio_path: Path) -> bytes:
     """Converts audio to 16 kHz mono WAV in memory using ffmpeg. Returns the bytes.
 
-    Nothing is written to disk: ffmpeg writes to stdout, which is captured
-    (16 kHz mono s16 is ~32 KB/s, so a 300 s recording tops out around 10 MB).
+    Nothing is written to disk: ffmpeg writes to stdout, which is captured (16 kHz mono s16 is ~32 KB/s, so a 300 s
+    recording tops out around 10 MB).
     """
     import shutil
     import subprocess
@@ -242,17 +240,14 @@ def _send_audio(
 ) -> str:
     """Uploads a single audio file to the server and returns the stripped response.
 
-    token_timestamps=false disables the server's max_len=60 segment wrapping,
-    which breaks segments on token boundaries (mid-word, e.g. "trans|crevendo").
-    Verified against whisper-server: with it disabled, text output comes as one
+    token_timestamps=false disables the server's max_len=60 segment wrapping, which breaks segments on token boundaries
+    (mid-word, e.g. "trans|crevendo").  Verified against whisper-server: with it disabled, text output comes as one
     line per natural segment.
-    prompt, when set, is sent as the whisper initial prompt (steers spelling of
-    names/acronyms).
+    prompt, when set, is sent as the whisper initial prompt (steers spelling of names/acronyms).
     """
     data = audio_data if audio_data is not None else audio_path.read_bytes()
-    # The server's default language is "en" (server.cpp): omitting the field
-    # would transcribe everything as English. "auto" is passed as-is and makes
-    # whisper detect the language in the same pass (no extra cost).
+    # The server's default language is "en" (server.cpp): omitting the field would transcribe everything as English.
+    # "auto" is passed as-is and makes whisper detect the language in the same pass (no extra cost).
     fields = {"response_format": response_format, "token_timestamps": "false", "language": language or "auto"}
     if prompt:
         fields["prompt"] = prompt
@@ -262,8 +257,8 @@ def _send_audio(
 def _language_code(full_name: str) -> str:
     """Maps a whisper full language name ("portuguese") to its code ("pt").
 
-    Codes pass through unchanged; unknown names are lowercased as-is (the
-    server may add languages before this map is updated).
+    Codes pass through unchanged; unknown names are lowercased as-is (the server may add languages before this map is
+    updated).
     """
     name = full_name.strip().lower()
     if name in LANGUAGE_FULL_TO_CODE:
@@ -276,12 +271,11 @@ def detect_language(
 ) -> str:
     """Detects the spoken language of an audio file. Returns the language code (e.g. "pt").
 
-    The server only reports the language in verbose_json (plain json returns
-    {"text":""} even with detect_language=true). detect_language=true makes
-    whisper return right after the encoder pass, skipping text decoding.
-    Formats the server cannot decode are converted in memory (upfront for
-    unknown extensions, as a retry after HTTP 400), like transcribe. Progress
-    messages follow the verbose flag (default off: quiet library use).
+    The server only reports the language in verbose_json (plain json returns {"text":""} even with
+    detect_language=true). detect_language=true makes whisper return right after the encoder pass, skipping text
+    decoding.
+    Formats the server cannot decode are converted in memory (upfront for unknown extensions, as a retry after HTTP
+    400), like transcribe. Progress messages follow the verbose flag (default off: quiet library use).
     """
     import json
     import urllib.error
@@ -323,10 +317,9 @@ def language_probabilities(
 ) -> dict[str, Any]:
     """Detects the language and returns {"detected": (code, probability), "all": {code: probability}}.
 
-    Runs a full verbose_json request (the server computes the probability
-    table from the encoder's first-token logits and reports it in the
-    response; a full transcription pass also runs server-side). Progress
-    messages follow the verbose flag (default off: quiet library use).
+    Runs a full verbose_json request (the server computes the probability table from the encoder's first-token logits
+    and reports it in the response; a full transcription pass also runs server-side). Progress messages follow the
+    verbose flag (default off: quiet library use).
     """
     import json
     import urllib.error
@@ -378,11 +371,9 @@ def language_probabilities(
 def _post_process_subtitle(content: str, response_format: str, max_line_length: int, max_lines: int) -> str:
     """Cleans subtitle cues: strips outer spaces and wraps long cue text.
 
-    whisper cues start with a space (" Álvaro, ..."); subtitles should not.
-    Cues longer than max_line_length * max_lines are wrapped word-aligned over
-    up to max_lines lines (overflow stays on the last line, no truncation).
-    The block structure (index line, timestamp line, text line) of VTT and SRT
-    is preserved.
+    whisper cues start with a space (" Álvaro, ..."); subtitles should not.  Cues longer than max_line_length *
+    max_lines are wrapped word-aligned over up to max_lines lines (overflow stays on the last line, no truncation).
+    The block structure (index line, timestamp line, text line) of VTT and SRT is preserved.
     """
     import re
 
@@ -442,18 +433,14 @@ def transcribe(
 ) -> str:
     """Sends audio to the server and returns the response (text, VTT, or SRT).
 
-    Formats the server cannot decode are converted to WAV with ffmpeg in memory
-    (nothing is written to disk), either upfront (unknown extension) or as a
-    fallback after an HTTP 400. Status messages (conversion attempts etc.) print
+    Formats the server cannot decode are converted to WAV with ffmpeg in memory (nothing is written to disk), either
+    upfront (unknown extension) or as a fallback after an HTTP 400. Status messages (conversion attempts etc.) print
     only when verbose=True -- the CLI default is silent.
 
-    The "text" format is normalized to a single line (whisper segments start
-    with a space and the server joins them with newlines; the segment breaks
-    carry no semantic value - use vtt/srt when timestamps are needed).
-    prompt, when set, is sent as the whisper initial prompt (steers spelling of
-    names/acronyms).
-    VTT/SRT cues are space-stripped and wrapped word-aligned to max_line_length
-    chars over max_lines lines.
+    The "text" format is normalized to a single line (whisper segments start with a space and the server joins them
+    with newlines; the segment breaks carry no semantic value - use vtt/srt when timestamps are needed).  prompt, when
+    set, is sent as the whisper initial prompt (steers spelling of names/acronyms).
+    VTT/SRT cues are space-stripped and wrapped word-aligned to max_line_length chars over max_lines lines.
     """
     import urllib.error
 
@@ -502,7 +489,7 @@ def _finalize_output(
     return result
 
 
-# -- VTT simplification -------------------------------------------------------
+# VTT simplification
 
 
 def _wrap_cue_lines(text: str, max_line_length: int, max_lines: int) -> list[str]:
@@ -551,9 +538,8 @@ def _strip_vtt_tags(text: str) -> str:
 def simplify_vtt(content: str, keep_timestamps: bool = True) -> str:
     """Simplifies a VTT file to timestamped plain text, removing duplications.
 
-    With keep_timestamps=False, returns the joined text without timestamps.
-    The deduplication only collapses exact repeats (the YouTube "rolling caption"
-    pattern repeats the full previous line verbatim); distinct cues with similar
+    With keep_timestamps=False, returns the joined text without timestamps.  The deduplication only collapses exact
+    repeats (the YouTube "rolling caption" pattern repeats the full previous line verbatim); distinct cues with similar
     text are kept.
     """
     result_lines = []
@@ -602,9 +588,8 @@ def transcribe_file(
 ) -> str:
     """Ensures the server is up and transcribes audio_path. Returns the text.
 
-    config None loads the user config. language / response_format / prompt
-    default to the [transcribe] section. Raises RuntimeError if the server
-    cannot be reached.
+    config None loads the user config. language / response_format / prompt default to the [transcribe] section. Raises
+    RuntimeError if the server cannot be reached.
     """
     from digue.config import load_config
     from digue.container import ensure_server, is_server_running, server_not_running_hint, server_url
@@ -695,8 +680,8 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
     timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
     url = server_url(config)
 
-    # timestamps output is meant for reading on one screen: cues are not
-    # wrapped, so each timestamp gets exactly one line with all its text.
+    # timestamps output is meant for reading on one screen: cues are not wrapped, so each timestamp gets exactly one
+    # line with all its text.
     wrap_subtitles = response_format != "timestamps"
     try:
         result = transcribe(
@@ -724,8 +709,8 @@ def cmd_transcribe(args: argparse.Namespace, config: dict[str, dict[str, Any]]) 
         else:
             print(result)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-        # SubprocessError is not an OSError: ffmpeg's TimeoutExpired (600 s
-        # on a huge file) was the one operational failure still tracebacking
+        # SubprocessError is not an OSError: ffmpeg's TimeoutExpired (600 s on a huge file) was the one operational
+        # failure still tracebacking
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
@@ -767,8 +752,8 @@ def cmd_batch_transcribe(args: argparse.Namespace, config: dict[str, dict[str, A
         print("All files already transcribed", file=sys.stderr)
         return 0
 
-    # created here, once there is something to write: a directory made at
-    # argument-parse time survived every failure that followed
+    # created here, once there is something to write: a directory made at argument-parse time survived every failure
+    # that followed
     args.output_dir.mkdir(parents=True, exist_ok=True)
     ensure_server(config, silent=True)
     if not is_server_running(config):

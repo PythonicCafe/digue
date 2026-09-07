@@ -210,9 +210,6 @@ class TestParseSubtitleTimestamp:
             convert_mod._parse_subtitle_timestamp("00:60:00.000")
 
 
-# -- Batch commands -----------------------------------------------------------
-
-
 class TestSilentAudioTimestamps:
     """whisper-server answers a silent file with a bare "WEBVTT" header (no
     cues); the timestamps format is built from that VTT and must not fail."""

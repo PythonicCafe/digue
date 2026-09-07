@@ -35,13 +35,11 @@ def _dictate_lock() -> Any:
 def _daemon_pid_file() -> Path:
     """The daemon is the digue process that started the recording and waits for it.
 
-    Content: "<pid> <state> <starttime>". state is "starting" while startup is
-    reserved, "recording" while the recorder is alive (a second toggle should
-    stop it), and "delivering" while the take is being delivered (a second
-    toggle must NOT stop it -- it starts a new take instead). starttime is the
-    /proc starttime of the daemon: a pid alone is not an identity (the file
-    outlives a SIGKILLed daemon and the kernel reuses pids), and signaling a
-    recycled pid would SIGTERM an unrelated process of the same user.
+    Content: "<pid> <state> <starttime>". state is "starting" while startup is reserved, "recording" while the recorder
+    is alive (a second toggle should stop it), and "delivering" while the take is being delivered (a second toggle must
+    NOT stop it -- it starts a new take instead). starttime is the /proc starttime of the daemon: a pid alone is not an
+    identity (the file outlives a SIGKILLed daemon and the kernel reuses pids), and signaling a recycled pid would
+    SIGTERM an unrelated process of the same user.
     """
     from digue.recording import _runtime_dir
 
@@ -58,8 +56,8 @@ def _write_daemon_state(daemon_pid: int, state: str) -> None:
 def _daemon_state() -> tuple[int, str, str] | None:
     """Returns (pid, state, starttime) from the daemon file, or None.
 
-    A file without the starttime (older format, or a truncated write) has no
-    verifiable identity and is treated as absent.
+    A file without the starttime (older format, or a truncated write) has no verifiable identity and is treated as
+    absent.
     """
     daemon_file = _daemon_pid_file()
     try:
@@ -72,9 +70,8 @@ def _daemon_state() -> tuple[int, str, str] | None:
 def _daemon_alive(entry: tuple[int, str, str]) -> bool:
     """True only if the pid is alive AND is still the process that wrote the file.
 
-    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps
-    its starttime, but cannot stop anything: it counts as dead, like in
-    _group_alive.
+    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps its starttime, but cannot stop anything:
+    it counts as dead, like in _group_alive.
     """
     from digue.recording import _take_identity_alive
 
@@ -124,9 +121,8 @@ TERMINAL_OUTCOMES = ("delivered", "rescued", "empty")
 
 @dataclass(frozen=True)
 class DeliveryResult:
-    """Terminal result of a delivery flow: the outcome alone does not carry the
-    exit code nor where a rescued recording was kept (paste failed but the
-    transcript and audio were saved -> rescued, exit 1; nothing salvaged ->
+    """Terminal result of a delivery flow: the outcome alone does not carry the exit code nor where a rescued recording
+    was kept (paste failed but the transcript and audio were saved -> rescued, exit 1; nothing salvaged ->
     retryable_failure, which recovery retries on the next toggle)."""
 
     outcome: DeliveryOutcome
@@ -143,11 +139,9 @@ def finish_dictation(
 ) -> DeliveryResult:
     """Runs the full delivery flow (transcribe, paste, archive) for a stopped recording.
 
-    Called by the daemon once the recorder is dead: manual stop (second toggle
-    signaled the daemon, which stopped the recorder) or duration limit (the
-    watchdog safety killer stopped it). timestamp names the saved files; the
-    daemon leaves it to now (the take just stopped), a recovery passes the
-    take's start time.
+    Called by the daemon once the recorder is dead: manual stop (second toggle signaled the daemon, which stopped the
+    recorder) or duration limit (the watchdog safety killer stopped it). timestamp names the saved files; the daemon
+    leaves it to now (the take just stopped), a recovery passes the take's start time.
     """
     from digue.audio import _archive_recording, _write_transcript, now_timestamp, rescue_recording
     from digue.container import server_url
@@ -166,16 +160,15 @@ def finish_dictation(
     def archive_audio() -> bool:
         """Runs the post-delivery archiving (copy + compression, the slow part).
 
-        Returns False when the archive failed; the raw WAV is then rescued
-        (moved) and the path is left in rescued_path for the caller to report
-        (rescued vs retryable_failure)."""
+        Returns False when the archive failed; the raw WAV is then rescued (moved) and the path is left in rescued_path
+        for the caller to report (rescued vs retryable_failure).
+        """
         nonlocal rescued_path
         archived, rescued_path = _archive_recording(config, rec_file, timestamp, take_id)
         return archived
 
-    # Ctrl+c leaves "^C" echoed on the current terminal line; the \r redraw in
-    # send_notification() would write over it and leave stray glyphs ("v"). Start a fresh
-    # line for the transcription status.
+    # Ctrl+c leaves "^C" echoed on the current terminal line; the \r redraw in send_notification() would write over it
+    # and leave stray glyphs ("v"). Start a fresh line for the transcription status.
     if _stderr_is_tty():
         print(file=sys.stderr, flush=True)
     message = (
@@ -226,22 +219,19 @@ def finish_dictation(
         except Exception as save_exc:
             send_notification(f"Failed to save transcript: {save_exc}", timeout_ms=10000)
             print(text, file=sys.stderr)
-        # Nothing reached the user: the outcome is only terminal if the audio
-        # left the runtime dir (archived or rescued); otherwise the take state
-        # stays. The retry only archives: the .txt above is what a recovery
-        # reads as "delivered" (_delivered_transcript), and the user was told
-        # where the text is -- pasting it later into whatever window has the
-        # focus would be worse than not pasting it.
+        # Nothing reached the user: the outcome is only terminal if the audio left the runtime dir (archived or
+        # rescued); otherwise the take state stays. The retry only archives: the .txt above is what a recovery reads as
+        # "delivered" (_delivered_transcript), and the user was told where the text is -- pasting it later into
+        # whatever window has the focus would be worse than not pasting it.
         if archive_audio() or rescued_path is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
     verb = "Pasted" if config["dictate"]["input_mode"] == "paste" else "Typed"
     send_notification(f"{verb} ({len(text)} chars)", timeout_ms=3000)
 
-    # From here on every outcome is terminal: the text was pasted, and a
-    # retryable_failure would make a recovery paste it a second time. A
-    # failure to save the transcript or to archive the audio is still an
-    # error (exit 1), reported as delivered/rescued.
+    # From here on every outcome is terminal: the text was pasted, and a retryable_failure would make a recovery paste
+    # it a second time. A failure to save the transcript or to archive the audio is still an error (exit 1), reported
+    # as delivered/rescued.
     try:
         text_path = _write_transcript(audio_dir, timestamp, text, take_id=take_id)
     except Exception as exc:
@@ -265,13 +255,11 @@ def finish_dictation(
 def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     """Toggle recording/transcription. Returns exit code.
 
-    First call starts the recorder and stays alive as a daemon, waiting for
-    the recording to end (manual stop via a second toggle, duration limit, or
-    recorder crash) to run the delivery flow. A second call while the daemon
-    is alive signals SIGTERM and exits immediately: the daemon does the work,
-    so the keybinding feels instant. Killing the daemon (pkill digue) leaves
-    the recorder alive -- the next toggle transcribes what kept recording and
-    returns without starting a new take.
+    First call starts the recorder and stays alive as a daemon, waiting for the recording to end (manual stop via a
+    second toggle, duration limit, or recorder crash) to run the delivery flow. A second call while the daemon is alive
+    signals SIGTERM and exits immediately: the daemon does the work, so the keybinding feels instant. Killing the
+    daemon (pkill digue) leaves the recorder alive -- the next toggle transcribes what kept recording and returns
+    without starting a new take.
     """
     from digue.container import ensure_server, is_server_running, server_not_running_hint
     from digue.notify import _stderr_is_tty, notify_close, send_notification
@@ -297,27 +285,24 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
                     os.kill(current_daemon_pid, 15)  # SIGTERM: daemon stops recording and delivers
                 return 0
             if daemon_state == "starting":
-                # Startup is already owned by another toggle. It has no recorder
-                # to stop yet, so signaling it would abort or orphan the take.
-                # First use may take minutes (image pull, model download): say so.
+                # Startup is already owned by another toggle. It has no recorder to stop yet, so signaling it would
+                # abort or orphan the take.  First use may take minutes (image pull, model download): say so.
                 send_notification("Still starting the server; recording begins when it is ready", timeout_ms=3000)
                 return 0
-            # A delivering daemon owns its old take. A new recording may replace
-            # the global state; the old daemon removes it only if it still owns it.
-        # Only with no current recording does the toggle look at orphan takes:
-        # an old orphan must never keep the user from stopping the live one.
+            # A delivering daemon owns its old take. A new recording may replace the global state; the old daemon
+            # removes it only if it still owns it.
+        # Only with no current recording does the toggle look at orphan takes: an old orphan must never keep the user
+        # from stopping the live one.
         claimed = _claim_orphan_take()
         if claimed is None:
             _write_daemon_state(daemon_pid, "starting")
 
     if claimed is not None:
-        # This toggle recovers and returns; it does not record. It publishes
-        # no daemon state on purpose: a recovering take with a live recoverer
-        # is like a delivering one, so a concurrent toggle starts a new take.
-        # Recording here too would leave that new take and this one competing
-        # for the same daemon state (two recorders, one stop). An unexpected
-        # exception in the delivery flow propagates and preserves the claimed
-        # state and WAV: the next toggle retries.
+        # This toggle recovers and returns; it does not record. It publishes no daemon state on purpose: a recovering
+        # take with a live recoverer is like a delivering one, so a concurrent toggle starts a new take.  Recording
+        # here too would leave that new take and this one competing for the same daemon state (two recorders, one
+        # stop). An unexpected exception in the delivery flow propagates and preserves the claimed state and WAV: the
+        # next toggle retries.
         return _recover_orphan_takes(config, claimed)
 
     try:
@@ -327,8 +312,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             _remove_daemon_state(daemon_pid)
             return 1
     except Exception as exc:
-        # no recorder is involved yet: a missing binary here is docker (or
-        # ffmpeg during the model download), never pw-record/arecord
+        # no recorder is involved yet: a missing binary here is docker (or ffmpeg during the model download), never
+        # pw-record/arecord
         send_notification(f"Cannot start the server: {exc}", timeout_ms=10000)
         _remove_daemon_state(daemon_pid)
         return 1
@@ -338,21 +323,19 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             f"Recording... (max {limit}s, press again to stop)" if limit > 0 else "Recording... (press again to stop)"
         )
         send_notification(message)
-        # running from a terminal: the user can also Ctrl+c to stop and transcribe.
-        # send_notification() redraws its line without a trailing newline on a TTY, so this
-        # starts with \n to sit on its own line.
+        # running from a terminal: the user can also Ctrl+c to stop and transcribe. send_notification() redraws its
+        # line without a trailing newline on a TTY, so this starts with \n to sit on its own line.
         if _stderr_is_tty():
             print("\nPress Ctrl+c to stop recording and transcribe", file=sys.stderr, flush=True)
 
-        # Install handlers before publishing the daemon as recording: a second
-        # toggle must never hit the default SIGTERM action while the recorder lives.
+        # Install handlers before publishing the daemon as recording: a second toggle must never hit the default
+        # SIGTERM action while the recorder lives.
         global _got_sigterm
         import signal
 
         signal.signal(signal.SIGTERM, _on_sigterm)
-        # Ctrl+c in a terminal means "stop and transcribe": the daemon handles
-        # SIGINT itself (the global KeyboardInterrupt handler would discard the
-        # take and leave the recorder running).
+        # Ctrl+c in a terminal means "stop and transcribe": the daemon handles SIGINT itself (the global
+        # KeyboardInterrupt handler would discard the take and leave the recorder running).
         signal.signal(signal.SIGINT, _on_sigint)
         processes = start_recording(config)
     except FileNotFoundError as exc:
@@ -368,15 +351,14 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
         return 1
     recorder_pid = processes.recorder.pid
     _write_daemon_state(daemon_pid, "recording")
-    # capture the recording file while the recorder is alive: the fd scan is
-    # deterministic here and identifies the file after an unexpected death.
+    # capture the recording file while the recorder is alive: the fd scan is deterministic here and identifies the file
+    # after an unexpected death.
     rec_file = processes.rec_file or _recording_file_of(recorder_pid)
     outcome = _wait_recorder_end_daemon(processes.recorder, limit)
     _got_sigterm = False
     _got_sigint = False
-    # the take is complete: mark delivering BEFORE stopping the recorder, so a
-    # concurrent toggle never lands in the kill window (it would be dropped:
-    # SIGTERM on a daemon that is already delivering is ignored by the gate).
+    # the take is complete: mark delivering BEFORE stopping the recorder, so a concurrent toggle never lands in the
+    # kill window (it would be dropped: SIGTERM on a daemon that is already delivering is ignored by the gate).
     _write_daemon_state(daemon_pid, "delivering")
     if processes.take_id is not None:
         _mark_take_delivering(processes.take_id)
@@ -386,9 +368,8 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
     recorder_detail = _consume_recorder_stderr(processes)
     try:
         if outcome == "died" and rec_file is None:
-            # The recorder exited on its own (PipeWire restarted, device
-            # vanished) and left no audio: its stderr is the whole story, and
-            # "Empty or missing audio file" would hide it.
+            # The recorder exited on its own (PipeWire restarted, device vanished) and left no audio: its stderr is the
+            # whole story, and "Empty or missing audio file" would hide it.
             send_notification(f"Recorder exited unexpectedly: {recorder_detail}", timeout_ms=10000)
             own_result = DeliveryResult(outcome="empty", exit_code=1)
         else:
@@ -400,10 +381,9 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
             own_result = finish_dictation(config, rec_file, limit_reached=outcome == "limit", take_id=processes.take_id)
     finally:
         _remove_daemon_state(daemon_pid)
-    # Same rule as the recovery: the take state goes only after a terminal
-    # outcome. A retryable failure (server down and the rescue failed too) or
-    # an unexpected exception keeps the state and the WAV, and the next toggle
-    # claims the take -- the daemon file is gone, so the take reads as orphan.
+    # Same rule as the recovery: the take state goes only after a terminal outcome. A retryable failure (server down
+    # and the rescue failed too) or an unexpected exception keeps the state and the WAV, and the next toggle claims the
+    # take -- the daemon file is gone, so the take reads as orphan.
     if processes.take_id is not None and own_result.outcome in TERMINAL_OUTCOMES:
         _take_state_file(processes.take_id).unlink(missing_ok=True)
     return own_result.exit_code
@@ -412,11 +392,10 @@ def dictate_toggle(config: dict[str, dict[str, Any]]) -> int:
 def _recover_orphan_takes(config: dict[str, dict[str, Any]], claimed: TakeState) -> int:
     """Delivers the claimed orphan and rescues the remaining ones. Returns the exit code.
 
-    The server must be up for the delivery; a failure to reach it is reported
-    the same way a recording start would report it, and the claimed state stays
-    (retried by the next toggle). Surplus orphans are only rescued once the
-    oldest take reached a terminal outcome: a retryable failure leaves the
-    claimed state in place and the next toggle claims it again.
+    The server must be up for the delivery; a failure to reach it is reported the same way a recording start would
+    report it, and the claimed state stays (retried by the next toggle). Surplus orphans are only rescued once the
+    oldest take reached a terminal outcome: a retryable failure leaves the claimed state in place and the next toggle
+    claims it again.
     """
     from digue.container import ensure_server, is_server_running, server_not_running_hint
     from digue.notify import send_notification

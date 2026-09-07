@@ -22,7 +22,7 @@ def existing_container_has_the_configured_image(monkeypatch):
     monkeypatch.setattr(container_mod, "container_image", lambda name=None: None)
 
 
-# -- Detection ----------------------------------------------------------------
+# Detection
 
 
 class TestDetectBackend:
@@ -63,7 +63,7 @@ class TestDetectBackend:
         assert container_mod.detect_backend() == "cpu"
 
 
-# -- Command handlers ---------------------------------------------------------
+# Command handlers
 
 
 class TestCmdDetect:
@@ -74,7 +74,7 @@ class TestCmdDetect:
         assert capsys.readouterr().out.strip() == "nvidia"
 
 
-# -- Container management ----------------------------------------------------
+# Container management
 
 
 class TestContainerExists:
@@ -462,7 +462,7 @@ class TestDownloadModel:
         assert not (tmp_path / "ggml-small.bin.part").exists()
 
 
-# -- Server -------------------------------------------------------------------
+# Server
 
 
 class TestIsServerRunning:
@@ -514,7 +514,7 @@ class TestServerHost:
         assert container_mod.server_host(config) == expected
 
 
-# -- Remote backend -----------------------------------------------------------
+# Remote backend
 
 
 class TestContainerFailures:

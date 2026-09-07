@@ -6,8 +6,6 @@ import contextlib
 import os
 from typing import Any
 
-# -- Clipboard ----------------------------------------------------------------
-
 
 def detect_display_server() -> str | None:
     """Detects whether the session is Wayland or X11."""
@@ -23,18 +21,14 @@ def send_text(text: str, display_server: str = "auto", input_mode: str = "paste"
     """Sends text to the focused window.
 
     input_mode "paste" copies to the clipboard and simulates Ctrl+V.
-    input_mode "type" simulates keystrokes (useful in terminals, where the
-    paste shortcut differs). Typing is slower and may drop characters in
-    slow applications.
+    input_mode "type" simulates keystrokes (useful in terminals, where the paste shortcut differs). Typing is slower
+    and may drop characters in slow applications.
     Raises RuntimeError with actionable message on failure.
 
-    The whole body runs under an exclusive flock ("digue-delivery.lock"):
-    the clipboard is global, and two overlapping deliveries pasting within
-    the same window would deliver one text twice and lose the other. The
-    "type" mode has the sibling race (interleaved keystrokes into the
-    focused window), so it is serialized too. This is a dedicated lock, not
-    _dictate_lock: a delivery can take seconds (paste timeout is 5s) and
-    must not block state transitions.
+    The whole body runs under an exclusive flock ("digue-delivery.lock"): the clipboard is global, and two overlapping
+    deliveries pasting within the same window would deliver one text twice and lose the other. The "type" mode has the
+    sibling race (interleaved keystrokes into the focused window), so it is serialized too. This is a dedicated lock,
+    not _dictate_lock: a delivery can take seconds (paste timeout is 5s) and must not block state transitions.
     """
     if display_server == "auto":
         detected = detect_display_server()
@@ -47,8 +41,7 @@ def send_text(text: str, display_server: str = "auto", input_mode: str = "paste"
 
 
 def _delivery_lock() -> Any:
-    """Serializes deliveries (clipboard copy+paste or keystroke typing) between
-    overlapping takes."""
+    """Serializes deliveries (clipboard copy+paste or keystroke typing) between overlapping takes."""
     import fcntl
 
     from digue.recording import _runtime_dir
@@ -71,9 +64,8 @@ def _send_text_locked(text: str, display_server: str, input_mode: str) -> None:
     import subprocess
 
     if input_mode == "type":
-        # The text goes through stdin, never argv: wtype rejects any unknown
-        # -option ("Unknown parameter", it has no --no-newline flag) and
-        # xdotool would parse a transcript starting with "-" as an option.
+        # The text goes through stdin, never argv: wtype rejects any unknown -option ("Unknown parameter", it has no
+        # --no-newline flag) and xdotool would parse a transcript starting with "-" as an option.
         if display_server == "wayland":
             type_cmd = ["wtype", "-"]
             type_pkg = "wtype"
@@ -132,8 +124,7 @@ def _send_text_locked(text: str, display_server: str, input_mode: str) -> None:
 def normalize_pasted_text(text: str) -> str:
     """Joins wrapped lines into a single clean line.
 
-    Line breaks come from whisper segment boundaries (word-aligned once
-    token_timestamps is disabled, see _send_audio), so joining with a single
-    space is safe; mid-word splits do not occur anymore.
+    Line breaks come from whisper segment boundaries (word-aligned once token_timestamps is disabled, see _send_audio),
+    so joining with a single space is safe; mid-word splits do not occur anymore.
     """
     return " ".join(text.split())

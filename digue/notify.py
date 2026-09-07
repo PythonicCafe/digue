@@ -20,9 +20,8 @@ def send_notification(message: str, timeout_ms: int = 0) -> None:
     Pass a timeout for messages that should auto-dismiss (success, errors).
     If notify-send is not installed, prints a one-time warning and continues.
 
-    On a terminal the stderr line is redrawn (\\r, padded to erase a previous
-    shorter message), so it coexists with single-line progress bars; on a
-    captured stderr it is a plain line with \\n.
+    On a terminal the stderr line is redrawn (\\r, padded to erase a previous shorter message), so it coexists with
+    single-line progress bars; on a captured stderr it is a plain line with \\n.
     """
     import subprocess
 
@@ -75,8 +74,8 @@ def notification_id(pid: int | None = None) -> int:
 
 
 def notify_close(pid: int | None = None) -> None:
-    """Closes a digue notification via D-Bus: this process's slot, or the
-    slot of another (usually dead) daemon whose pid is known."""
+    """Closes a digue notification via D-Bus: this process's slot, or the slot of another (usually dead) daemon whose
+    pid is known."""
     import subprocess
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
@@ -101,8 +100,7 @@ def notify_close(pid: int | None = None) -> None:
 def _stderr_is_tty() -> bool:
     """Returns True if stderr is a terminal (dynamic progress makes sense).
 
-    With captured/piped stderr, \\r has no visual effect and every update
-    becomes a full line in the log -- hence the sparse-line mode in progress
-    and notification prints.
+    With captured/piped stderr, \\r has no visual effect and every update becomes a full line in the log -- hence the
+    sparse-line mode in progress and notification prints.
     """
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()

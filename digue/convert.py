@@ -32,9 +32,8 @@ def _guess_format_from_extension(path: Path) -> str | None:
 def _parse_timestamped_text(content: str) -> list[tuple[str | None, str]]:
     """Parses digue-generated timestamped text into (timestamp, line) pairs.
 
-    Lines matching "[HH:MM:SS] text" carry their timestamp; any other line is
-    returned with timestamp None. Used by `digue convert` for timestamps->*
-    conversions.
+    Lines matching "[HH:MM:SS] text" carry their timestamp; any other line is returned with timestamp None. Used by
+    `digue convert` for timestamps->* conversions.
     """
     import re
 
@@ -114,8 +113,8 @@ def _parse_subtitle_cues(content: str, input_format: str) -> list[SubtitleCue]:
 def _is_empty_subtitle(content: str, input_format: str) -> bool:
     """True for a subtitle file with no cues: blank, or a VTT with only its header.
 
-    whisper-server answers a silent audio with a bare "WEBVTT" line, which is
-    a valid, empty subtitle -- not malformed input.
+    whisper-server answers a silent audio with a bare "WEBVTT" line, which is a valid, empty subtitle -- not malformed
+    input.
     """
     stripped = content.strip()
     if not stripped:

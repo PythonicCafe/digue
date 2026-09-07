@@ -22,40 +22,34 @@ def now_timestamp() -> str:
 def month_dir_for(timestamp: str) -> Path:
     """Returns the YYYY/MM relative path for a YYYYMMDD-HHMMSS timestamp.
 
-    Derived from the timestamp itself (not from now()), so the .txt always
-    lands beside the audio saved with the same timestamp even across midnight.
+    Derived from the timestamp itself (not from now()), so the .txt always lands beside the audio saved with the same
+    timestamp even across midnight.
     """
     return Path(timestamp[:4]) / timestamp[4:6]
 
 
 def _saved_stem(timestamp: str, take_id: str | None) -> str:
-    """Stem for saved files: the take id suffix makes two takes that end in the
-    same second unique; the exclusive write is the second line of defense."""
+    """Stem for saved files: the take id suffix makes two takes that end in the same second unique; the exclusive write
+    is the second line of defense."""
     return f"{timestamp}-{take_id}" if take_id else timestamp
-
-
-# -- Dictation ------------------------------------------------------------------
 
 
 def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None = None) -> Path:
     """Compresses a WAV recording in place. Returns the new path (rec_file swapped).
 
     audio_format: "wav" (no-op), "flac", or "opus".
-    - flac: lossless, ~35% of WAV for speech, decodable by whisper-server natively
-      (verified). Safe choice: the archive is bit-exact to what was transcribed.
-    - opus: ~7% of WAV at 24 kbit/s (lossy). Speech quality is excellent, but the
-      archive is not identical to the input; whisper-server rejects opus, so a
-      retranscription goes through the ffmpeg fallback.
-    Tries host ffmpeg first, then falls back to running ffmpeg inside the local
-    container via stdin/stdout pipe when backend is not "remote" (any other
-    value means local; only remote-or-not is looked at).
+    - flac: lossless, ~35% of WAV for speech, decodable by whisper-server natively (verified). Safe choice: the archive
+      is bit-exact to what was transcribed.
+    - opus: ~7% of WAV at 24 kbit/s (lossy). Speech quality is excellent, but the archive is not identical to the
+      input; whisper-server rejects opus, so a retranscription goes through the ffmpeg fallback.
 
-    The final name is reserved up front (exclusive creation): two takes can
-    never overwrite each other's compressed file; a collision raises and the
-    caller rescues the WAV. Whatever happens afterwards -- ffmpeg failure,
-    timeout, a docker error -- the reservation and the temp file are dropped
-    unless the compressed file was published, so a failure never leaves an
-    empty .flac next to the WAV it kept.
+    Tries host ffmpeg first, then falls back to running ffmpeg inside the local container via stdin/stdout pipe when
+    backend is not "remote" (any other value means local; only remote-or-not is looked at).
+
+    The final name is reserved up front (exclusive creation): two takes can never overwrite each other's compressed
+    file; a collision raises and the caller rescues the WAV. Whatever happens afterwards -- ffmpeg failure, timeout, a
+    docker error -- the reservation and the temp file are dropped unless the compressed file was published, so a
+    failure never leaves an empty .flac next to the WAV it kept.
     """
     if audio_format == "wav":
         return Path(rec_file)
@@ -82,9 +76,8 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
 def _run_compression(
     rec_file: Path, converted: Path, temp_converted: Path, audio_format: str, backend: str | None
 ) -> bool:
-    """Writes the compressed audio into temp_converted and publishes it as
-    converted. Returns True when published; False (after a warning) when
-    compression was not possible. Exceptions propagate to the caller."""
+    """Writes the compressed audio into temp_converted and publishes it as converted. Returns True when published;
+    False (after a warning) when compression was not possible. Exceptions propagate to the caller."""
     import shutil
     import subprocess
 
@@ -100,8 +93,8 @@ def _run_compression(
     }
 
     if shutil.which("ffmpeg"):
-        # The temp is ours alone (ffmpeg opens the path itself, so exclusivity
-        # is the temp name); no -y: the final file is never ffmpeg's to overwrite.
+        # The temp is ours alone (ffmpeg opens the path itself, so exclusivity is the temp name); no -y: the final file
+        # is never ffmpeg's to overwrite.
         temp_converted.unlink(missing_ok=True)
         result = subprocess.run(
             [
@@ -176,12 +169,10 @@ def save_audio(
 ) -> tuple[Path, str]:
     """Copies audio to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>. Returns (saved_path, timestamp).
 
-    The timestamp comes from the caller (dictate_toggle generates it when the
-    take stops, so the audio and its transcript share the same name even when
-    archiving runs later). Without one, the current time is used. The copy is
-    exclusive: a name collision raises instead of overwriting another take's
-    file. audio_format "flac" or "opus" compresses the copy; the live recording
-    file is kept as WAV and removed after saving.
+    The timestamp comes from the caller (dictate_toggle generates it when the take stops, so the audio and its
+    transcript share the same name even when archiving runs later). Without one, the current time is used. The copy is
+    exclusive: a name collision raises instead of overwriting another take's file. audio_format "flac" or "opus"
+    compresses the copy; the live recording file is kept as WAV and removed after saving.
     """
     audio_dir = Path(audio_dir)
     timestamp = timestamp or now_timestamp()
@@ -197,8 +188,8 @@ def save_audio(
 
 
 def _copy_file_exclusive(source: Path, destination: Path) -> None:
-    """Copies source to destination with exclusive creation ("xb"): a collision
-    raises FileExistsError instead of silently overwriting another take's file."""
+    """Copies source to destination with exclusive creation ("xb"): a collision raises FileExistsError instead of
+    silently overwriting another take's file."""
     import shutil
 
     with open(destination, "xb") as destination_file, source.open("rb") as source_file:
@@ -210,16 +201,13 @@ def rescue_recording(
 ) -> Path | None:
     """Keeps a recording that could not be fully delivered. Never raises.
 
-    Copies the recording to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext>
-    (the live suffix is kept: a native FLAC take stays .flac) via an
-    exclusive temp sibling + flush + fsync + exclusive publish (runtime dir and
-    audio-dir usually live on different filesystems, the destination must
-    never be readable in a partial state, and an existing destination is
-    never overwritten; see _publish_exclusive), then removes the origin -- only after the destination
-    is valid. Any failure before the publish removes the temp, preserves the
-    origin and reports on stderr; once the destination is linked the rescue
-    is done, and a failure to remove the origin is only reported (the caller
-    must not retry: the published name is exclusive).
+    Copies the recording to <audio_dir>/YYYY/MM/<timestamp>-<take_id>.<ext> (the live suffix is kept: a native FLAC
+    take stays .flac) via an exclusive temp sibling + flush + fsync + exclusive publish (runtime dir and audio-dir
+    usually live on different filesystems, the destination must never be readable in a partial state, and an existing
+    destination is never overwritten; see _publish_exclusive), then removes the origin -- only after the destination is
+    valid. Any failure before the publish removes the temp, preserves the origin and reports on stderr; once the
+    destination is linked the rescue is done, and a failure to remove the origin is only reported (the caller must not
+    retry: the published name is exclusive).
     """
     import shutil
 
@@ -251,14 +239,11 @@ def rescue_recording(
 def _publish_exclusive(temp_path: Path, destination: Path) -> None:
     """Publishes temp_path as destination without ever overwriting it.
 
-    os.link fails with FileExistsError instead of replacing, so it is as
-    exclusive as the temp file. Filesystems without hard links (vfat/exFAT,
-    some FUSE mounts such as rclone or sshfs) refuse the link with EPERM or
-    EOPNOTSUPP; there the fallback is an existence check followed by
-    os.replace. That check-then-replace has a window another rescue could
-    slip into, accepted because the name already carries the take id: the
-    alternative was every rescue failing on such an audio-dir and the take
-    staying in the runtime dir (tmpfs, gone at reboot).
+    os.link fails with FileExistsError instead of replacing, so it is as exclusive as the temp file. Filesystems
+    without hard links (vfat/exFAT, some FUSE mounts such as rclone or sshfs) refuse the link with EPERM or EOPNOTSUPP;
+    there the fallback is an existence check followed by os.replace. That check-then-replace has a window another
+    rescue could slip into, accepted because the name already carries the take id: the alternative was every rescue
+    failing on such an audio-dir and the take staying in the runtime dir (tmpfs, gone at reboot).
     """
     import errno
 
@@ -275,9 +260,8 @@ def _publish_exclusive(temp_path: Path, destination: Path) -> None:
 def _write_transcript(audio_dir: Path, timestamp: str, text: str, take_id: str | None = None) -> Path:
     """Writes the transcript next to the recording: <audio_dir>/YYYY/MM/<timestamp>-<take_id>.txt.
 
-    The month folder comes from the timestamp itself (not from now()), so the
-    .txt always lands beside the audio saved with the same timestamp. The write
-    is exclusive: a collision raises instead of overwriting another take's text.
+    The month folder comes from the timestamp itself (not from now()), so the .txt always lands beside the audio saved
+    with the same timestamp. The write is exclusive: a collision raises instead of overwriting another take's text.
     """
     text_path = audio_dir / month_dir_for(timestamp) / f"{_saved_stem(timestamp, take_id)}.txt"
     text_path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,15 +273,13 @@ def _write_transcript(audio_dir: Path, timestamp: str, text: str, take_id: str |
 def _archive_recording(
     config: dict[str, dict[str, Any]], rec_file: Path, timestamp: str, take_id: str | None
 ) -> tuple[bool, Path | None]:
-    """Archives a delivered recording: copy + compression when save-audio is on
-    (the slow part), then removes the live file. Returns (archived, rescued_path).
+    """Archives a delivered recording: copy + compression when save-audio is on (the slow part), then removes the live
+    file. Returns (archived, rescued_path).
 
-    On failure the live recording is kept somewhere the user can find it:
-    when the exclusive copy already completed and only the compression
-    raised (ffmpeg timeout, docker exec error), that copy is the rescue --
-    it has the exact name `rescue_recording` would use, so rescuing again
-    would collide and strand the live file in the runtime dir; otherwise
-    the live file is rescued (moved) as is. Either way the user is told.
+    On failure the live recording is kept somewhere the user can find it: when the exclusive copy already completed and
+    only the compression raised (ffmpeg timeout, docker exec error), that copy is the rescue -- it has the exact name
+    `rescue_recording` would use, so rescuing again would collide and strand the live file in the runtime dir;
+    otherwise the live file is rescued (moved) as is. Either way the user is told.
     """
     from digue.container import _is_remote
     from digue.notify import send_notification
@@ -305,8 +287,7 @@ def _archive_recording(
     audio_dir = Path(config["dictate"]["audio_dir"])
     try:
         if config["dictate"]["save_audio"]:
-            # compression only needs remote-or-not: no hardware detection
-            # (nvidia-smi/lspci) on every delivery
+            # compression only needs remote-or-not: no hardware detection (nvidia-smi/lspci) on every delivery
             save_audio(
                 rec_file,
                 audio_dir,
@@ -334,9 +315,8 @@ def _archive_recording(
 
 
 def _completed_copy(rec_file: Path, audio_dir: Path, timestamp: str, take_id: str | None) -> Path | None:
-    """The uncompressed copy `save_audio` makes before compressing, when it is
-    complete (same size as the live file); None when it does not exist or the
-    copy itself is what failed (partial)."""
+    """The uncompressed copy `save_audio` makes before compressing, when it is complete (same size as the live file);
+    None when it does not exist or the copy itself is what failed (partial)."""
     copy = audio_dir / month_dir_for(timestamp) / f"{_saved_stem(timestamp, take_id)}{rec_file.suffix.lower()}"
     with contextlib.suppress(OSError):
         if copy.stat().st_size == rec_file.stat().st_size:
@@ -347,9 +327,8 @@ def _completed_copy(rec_file: Path, audio_dir: Path, timestamp: str, take_id: st
 def _delivered_transcript(audio_dir: Path, take_id: str) -> Path | None:
     """Returns the transcript already saved for a take, if any.
 
-    finish_dictation writes the transcript right after pasting, so its
-    presence proves the text reached the user: a recovery of a take whose
-    daemon died afterwards (during the archive) must not paste it again.
+    finish_dictation writes the transcript right after pasting, so its presence proves the text reached the user: a
+    recovery of a take whose daemon died afterwards (during the archive) must not paste it again.
     """
     return next(iter(sorted(audio_dir.glob(f"[0-9][0-9][0-9][0-9]/[0-9][0-9]/*-{take_id}.txt"))), None)
 
@@ -357,8 +336,9 @@ def _delivered_transcript(audio_dir: Path, take_id: str) -> Path | None:
 def _archive_recovered_take(config: dict[str, dict[str, Any]], rec_file: Path, transcript: Path) -> DeliveryResult:
     """Finishes a take whose text was already pasted and saved: archive only.
 
-    The audio takes the transcript's timestamp and take id, so it lands next
-    to the .txt. Every outcome is terminal (the text was delivered)."""
+    The audio takes the transcript's timestamp and take id, so it lands next to the .txt. Every outcome is terminal
+    (the text was delivered).
+    """
 
     from digue.notify import send_notification
 
@@ -386,12 +366,10 @@ DICTATION_RECORDING_SUFFIXES = frozenset((".wav", ".flac", ".opus"))
 def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
     """Lists <audio_dir>/YYYY/MM/<timestamp>[-<take_id>].<suffix> dictation files.
 
-    Only that exact layout qualifies: audio-dir is user-configurable, and a
-    recursive *.wav/*.flac/*.txt glob pointed at a music folder would remove
-    the library. Both layouts are accepted: the pre-take-id stem
-    (YYYYMMDD-HHMMSS, from now_timestamp()) and the current
-    YYYYMMDD-HHMMSS-<16 hex chars>. Symlinks are skipped: clean unlinks what it
-    lists, and deleting a symlink's target would destroy an outside file.
+    Only that exact layout qualifies: audio-dir is user-configurable, and a recursive *.wav/*.flac/*.txt glob pointed
+    at a music folder would remove the library. Both layouts are accepted: the pre-take-id stem (YYYYMMDD-HHMMSS, from
+    now_timestamp()) and the current YYYYMMDD-HHMMSS-<16 hex chars>. Symlinks are skipped: clean unlinks what it lists,
+    and deleting a symlink's target would destroy an outside file.
     """
     import re
 
@@ -415,8 +393,8 @@ def _dictation_files(audio_dir: Path, suffixes: frozenset[str]) -> list[Path]:
 def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     """Removes dictation recordings and/or transcripts from the audio directory.
 
-    Lists what it found and asks for confirmation; --force removes right away.
-    --what selects what is removed: recordings, transcripts, or both (default).
+    Lists what it found and asks for confirmation; --force removes right away.  --what selects what is removed:
+    recordings, transcripts, or both (default).
     """
 
     audio_dir = Path(config["dictate"]["audio_dir"])
@@ -433,10 +411,9 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
     print(f"  Recordings: {len(recordings)} file(s), {total_mb:.1f} MB", file=sys.stderr)
     print(f"  Transcripts: {len(transcripts)} file(s)", file=sys.stderr)
 
-    # A rescued take's .json is metadata of the recording, not its own
-    # category: it is removed together with the recording of the same stem
-    # (counted as one unit), never listed as a transcript, and a .json whose
-    # recording is gone is preserved.
+    # A rescued take's .json is metadata of the recording, not its own category: it is removed together with the
+    # recording of the same stem (counted as one unit), never listed as a transcript, and a .json whose recording is
+    # gone is preserved.
     recording_metadata = {path: path.with_suffix(".json") for path in recordings if path.with_suffix(".json").exists()}
 
     if not recordings and not transcripts:

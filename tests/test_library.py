@@ -18,14 +18,14 @@ class TestTranscribeFile:
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"audio")
         config = _default_config()
-        config["transcribe"]["prompt"] = "KINAI"
+        config["transcribe"]["prompt"] = "Pythonic"
         config["transcribe"]["language"] = "pt"
 
         assert transcribe_mod.transcribe_file(audio, config) == "hello"
 
         mock_ensure.assert_called_once()
         assert mock_transcribe.call_args.args[2] == "pt"
-        assert mock_transcribe.call_args.kwargs["prompt"] == "KINAI"
+        assert mock_transcribe.call_args.kwargs["prompt"] == "Pythonic"
         assert mock_transcribe.call_args.kwargs["timeout"] == 600
 
     @patch("digue.container.ensure_server")
