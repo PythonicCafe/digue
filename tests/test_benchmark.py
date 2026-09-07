@@ -61,7 +61,7 @@ class TestBenchmarkContainerState:
             patch("digue.container._rename_container") as mock_rename,
             patch("digue.container.stop_container") as mock_stop,
             patch("digue.container.start_container") as mock_start,
-            patch("digue.os.getpid", return_value=123),
+            patch("digue.container.os.getpid", return_value=123),
             pytest.raises(KeyboardInterrupt),
             container_mod.preserve_container_for_benchmark(),
         ):
@@ -82,7 +82,7 @@ class TestBenchmarkContainerState:
             patch("digue.container._rename_container") as mock_rename,
             patch("digue.container.stop_container") as mock_stop,
             patch("digue.container.start_container") as mock_start,
-            patch("digue.os.getpid", return_value=456),
+            patch("digue.container.os.getpid", return_value=456),
             container_mod.preserve_container_for_benchmark(),
         ):
             pass

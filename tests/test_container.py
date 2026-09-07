@@ -7,6 +7,7 @@ import pytest
 
 import digue
 from digue import container as container_mod
+from digue import dictate as dictate_mod
 from digue import notify as notify_mod
 from digue.config import _default_config, load_config
 
@@ -121,7 +122,7 @@ class TestDockerMissing:
             ),
             patch("digue.notify.send_notification") as mock_notify,
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         message = mock_notify.call_args.args[0]
         assert "docker not found" in message

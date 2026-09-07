@@ -3,7 +3,7 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import digue
+from digue import dictate as dictate_mod
 from digue import notify as notify_mod
 from digue import transcribe as transcribe_mod
 from digue.config import _default_config
@@ -83,7 +83,7 @@ class TestNotifyLifecycle:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         mock_close.assert_not_called()
@@ -105,7 +105,7 @@ class TestNotifyLifecycle:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["input_mode"] = "type"
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         mock_close.assert_not_called()
@@ -122,7 +122,7 @@ class TestNotifyLifecycle:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err
@@ -138,7 +138,7 @@ class TestNotifyLifecycle:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err
@@ -160,7 +160,7 @@ class TestNotifyLifecycle:
         blocker.write_text("not a dir")
         config["dictate"]["audio_dir"] = str(blocker)
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         err = capsys.readouterr().err
@@ -183,7 +183,7 @@ class TestNotifyLifecycle:
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.notify.send_notification"),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         mock_send.assert_called_once()
         assert result.outcome == "delivered"

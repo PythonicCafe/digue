@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
 from digue import audio as audio_mod
 from digue import delivery as delivery_mod
+from digue import dictate as dictate_mod
 from digue.config import _default_config
 
 
@@ -217,7 +217,7 @@ class TestDeliveryResult:
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "delivered"
         assert result.exit_code == 0
@@ -228,7 +228,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with patch("digue.delivery.send_text"), patch("digue.transcribe.transcribe", return_value=""):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "empty"
         assert result.exit_code == 0
@@ -237,7 +237,7 @@ class TestDeliveryResult:
         config = self.make_config(tmp_path)
 
         with patch("digue.notify.send_notification") as mock_notify:
-            result = digue.finish_dictation(config, None)
+            result = dictate_mod.finish_dictation(config, None)
 
         assert result.outcome == "empty"
         assert result.exit_code == 1
@@ -251,7 +251,7 @@ class TestDeliveryResult:
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down")),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "rescued"
         assert result.exit_code == 1
@@ -268,7 +268,7 @@ class TestDeliveryResult:
             patch("digue.transcribe.transcribe", side_effect=RuntimeError("server down")),
             patch("digue.audio.rescue_recording", return_value=None),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "retryable_failure"
         assert result.exit_code == 1
@@ -283,7 +283,7 @@ class TestDeliveryResult:
             patch("digue.delivery.send_text", side_effect=RuntimeError("no display")),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "rescued"
         assert result.exit_code == 1
@@ -300,7 +300,7 @@ class TestDeliveryResult:
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.audio.save_audio", side_effect=OSError("disk full")),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "rescued"
         assert result.exit_code == 1
@@ -320,10 +320,10 @@ class TestDeliveryResult:
             patch("digue.audio.save_audio", side_effect=OSError("disk full")),
             patch("digue.audio.rescue_recording", return_value=None),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "delivered"
-        assert result.outcome in digue.TERMINAL_OUTCOMES
+        assert result.outcome in dictate_mod.TERMINAL_OUTCOMES
         assert result.exit_code == 1
         assert rec_file.exists()
 
@@ -339,7 +339,7 @@ class TestDeliveryResult:
             patch("digue.audio.save_audio", side_effect=OSError("disk full")),
             patch("digue.audio.rescue_recording", return_value=None),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "retryable_failure"
         assert result.exit_code == 1
@@ -354,7 +354,7 @@ class TestDeliveryResult:
             patch("digue.transcribe.transcribe", return_value="hello"),
             patch("digue.audio.save_audio", side_effect=OSError("disk full")),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "rescued"
         assert result.rescued_path is not None and result.rescued_path.exists()
@@ -370,7 +370,7 @@ class TestDeliveryResult:
             patch("digue.audio.save_audio", side_effect=OSError("disk full")),
             patch("digue.audio.rescue_recording", return_value=None),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.outcome == "retryable_failure"
         assert result.exit_code == 1
@@ -382,7 +382,7 @@ class TestDeliveryResult:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         config["dictate"]["max_duration"] = 0
         recorder = MagicMock(pid=os.getpid(), poll=lambda: 0)
-        result = digue.DeliveryResult(outcome="rescued", exit_code=exit_code)
+        result = dictate_mod.DeliveryResult(outcome="rescued", exit_code=exit_code)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -390,12 +390,12 @@ class TestDeliveryResult:
             patch("digue.container.is_server_running", return_value=True),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", return_value=result),
+            patch("digue.dictate.finish_dictation", return_value=result),
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == exit_code
+            assert dictate_mod.dictate_toggle(config) == exit_code
 
 
 class TestFinishDictationBackend:
@@ -410,7 +410,7 @@ class TestFinishDictationBackend:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         with patch("digue.container.detect_backend") as mock_detect:
-            digue.finish_dictation(config, rec_file)
+            dictate_mod.finish_dictation(config, rec_file)
 
         mock_save.assert_called_once()
         assert mock_save.call_args[1]["backend"] == "remote"
@@ -428,7 +428,7 @@ class TestFinishDictationBackend:
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
         with patch("digue.container.detect_backend") as mock_detect:
-            digue.finish_dictation(config, rec_file)
+            dictate_mod.finish_dictation(config, rec_file)
 
         mock_detect.assert_not_called()
         assert mock_save.call_args[1]["backend"] != "remote"
@@ -444,7 +444,7 @@ class TestDictateArchivesAfterDelivery:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
 
-        assert digue.finish_dictation(config, rec_file, limit_reached=True).exit_code == 0
+        assert dictate_mod.finish_dictation(config, rec_file, limit_reached=True).exit_code == 0
 
         first_message = mock_notify.call_args_list[0].args[0]
         assert "Limit reached" in first_message
@@ -464,7 +464,7 @@ class TestDictateArchivesAfterDelivery:
         order.attach_mock(mock_send, "send_text")
         order.attach_mock(mock_save, "save_audio")
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         assert [call_record[0] for call_record in order.mock_calls] == ["transcribe", "send_text", "save_audio"]
@@ -478,7 +478,7 @@ class TestDictateArchivesAfterDelivery:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         assert not rec_file.exists()
@@ -501,7 +501,7 @@ class TestDictateArchivesAfterDelivery:
         config["dictate"]["audio_dir"] = str(audio_dir)
         config["dictate"]["save_audio"] = False
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         saved = list(audio_dir.rglob("*.wav"))
@@ -522,7 +522,7 @@ class TestDictateArchivesAfterDelivery:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 1
         assert not rec_file.exists()
@@ -551,7 +551,7 @@ class TestDictateAudioTranscriptPairing:
             patch("digue.delivery.send_text"),
             patch("digue.transcribe.transcribe", return_value="hello"),
         ):
-            result = digue.finish_dictation(config, rec_file)
+            result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         month = tmp_path / "audio" / "2026" / "09"

@@ -484,8 +484,8 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
     reclaim a take that no longer has audio. Only a "starting" take, which has
     no recorder identity to trust or stop, gets the age-based expiry rules.
     """
-    from digue import TERMINAL_OUTCOMES, finish_dictation
     from digue.audio import _archive_recovered_take, _delivered_transcript
+    from digue.dictate import TERMINAL_OUTCOMES, finish_dictation
 
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
@@ -580,7 +580,7 @@ def _rescue_surplus_orphans(config: dict[str, dict[str, Any]]) -> list[Path]:
     transcribed and pasted; the rest keep their audio and metadata. Stops at
     the first take whose state could not be removed (rescue failure), leaving
     it for the next toggle."""
-    from digue import _dictate_lock
+    from digue.dictate import _dictate_lock
 
     rescued_paths: list[Path] = []
     while True:
@@ -756,7 +756,7 @@ def _wait_recorder_end_daemon(recorder: subprocess.Popen[bytes], max_duration: i
     """
     import time
 
-    from digue import _got_sigint, _got_sigterm
+    from digue.dictate import _got_sigint, _got_sigterm
 
     start = time.monotonic()
     while True:

@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-import digue
 from digue import audio as audio_mod
+from digue import dictate as dictate_mod
 from digue.config import _default_config, load_config
 from digue.container import CONTAINER_NAME
 
@@ -484,7 +484,7 @@ class TestSaveAudioConfig:
         config["dictate"]["save_audio"] = False
         config["dictate"]["audio_dir"] = str(audio_dir)
 
-        result = digue.finish_dictation(config, rec_file)
+        result = dictate_mod.finish_dictation(config, rec_file)
 
         assert result.exit_code == 0
         mock_save.assert_not_called()

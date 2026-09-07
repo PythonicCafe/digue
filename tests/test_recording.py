@@ -13,6 +13,7 @@ import pytest
 
 import digue
 from digue import audio as audio_mod
+from digue import dictate as dictate_mod
 from digue import recording as recording_mod
 from digue.config import _default_config
 
@@ -126,7 +127,7 @@ class TestStateFilesAreWrittenAtomically:
         opened = self._truncating_writes(monkeypatch)
         daemon_file = tmp_path / "digue-daemon.pid"
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
-            digue._write_daemon_state(os.getpid(), "recording")
+            dictate_mod._write_daemon_state(os.getpid(), "recording")
 
         assert daemon_file not in opened
         assert daemon_file.read_text().split()[:2] == [str(os.getpid()), "recording"]
@@ -400,7 +401,7 @@ class TestStartRecordingPublishesTakeState:
         def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
             finish_take_ids.append(take_id)
             assert [take.state for take in recording_mod._take_states()] == ["recording"]
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -408,12 +409,12 @@ class TestStartRecordingPublishesTakeState:
             patch("digue.container.is_server_running", return_value=True),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         assert len(finish_take_ids) == 1 and finish_take_ids[0] is not None
         assert list(tmp_path.glob("digue-take-*.json")) == []
@@ -497,11 +498,11 @@ class TestWaitRecorderEndDaemon:
         recorder = MagicMock()
         recorder.poll.return_value = None
         with patch("time.monotonic", side_effect=[0.0, 0.5]), patch("time.sleep"):
-            digue._got_sigterm = True
+            dictate_mod._got_sigterm = True
             try:
                 assert recording_mod._wait_recorder_end_daemon(recorder, 300) == "manual"
             finally:
-                digue._got_sigterm = False
+                dictate_mod._got_sigterm = False
 
     def test_exit_after_the_limit_counts_as_limit(self):
         """If the watchdog killed the recorder first, the outcome is still the
@@ -684,13 +685,13 @@ class TestDaemonAlive:
             patch("digue.recording._process_starttime", return_value="555"),
             patch("digue.recording._process_is_zombie", return_value=True),
         ):
-            assert digue._daemon_alive((4242, "recording", "555")) is False
+            assert dictate_mod._daemon_alive((4242, "recording", "555")) is False
         with (
             patch("digue.recording._pid_alive", return_value=True),
             patch("digue.recording._process_starttime", return_value="555"),
             patch("digue.recording._process_is_zombie", return_value=False),
         ):
-            assert digue._daemon_alive((4242, "recording", "555")) is True
+            assert dictate_mod._daemon_alive((4242, "recording", "555")) is True
 
 
 class TestRuntimeIsolation:
@@ -698,9 +699,9 @@ class TestRuntimeIsolation:
         runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
 
         assert recording_mod._runtime_dir() == runtime_dir
-        assert digue._daemon_pid_file().parent == runtime_dir
+        assert dictate_mod._daemon_pid_file().parent == runtime_dir
         assert recording_mod._take_state_file("0123456789abcdef").parent == runtime_dir
-        with digue._dictate_lock():
+        with dictate_mod._dictate_lock():
             assert (runtime_dir / "digue.lock").exists()
 
     def test_toggle_does_not_read_state_outside_isolated_runtime(self, tmp_path):
@@ -716,7 +717,7 @@ class TestRuntimeIsolation:
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         mock_kill.assert_not_called()
 
@@ -822,12 +823,12 @@ class TestOrphanStartingTake:
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
             patch("digue.recording.start_recording") as mock_start,
-            patch("digue.finish_dictation") as mock_finish,
+            patch("digue.dictate.finish_dictation") as mock_finish,
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         rescued = list((tmp_path / "audio").rglob("*-0123456789abcdef.wav"))
         assert len(rescued) == 1
@@ -929,7 +930,7 @@ class TestOrphanTakeClaim:
         claimed = []
 
         def recover_first():
-            with digue._dictate_lock():
+            with dictate_mod._dictate_lock():
                 first_in_lock.set()
                 assert release_first.wait(2)
                 claimed.append(recording_mod._claim_orphan_take())
@@ -937,7 +938,7 @@ class TestOrphanTakeClaim:
         def recover_second():
             assert first_in_lock.wait(2)
             release_first.set()
-            with digue._dictate_lock():
+            with dictate_mod._dictate_lock():
                 claimed.append(recording_mod._claim_orphan_take())
 
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
@@ -970,7 +971,7 @@ class TestOrphanTakeClaim:
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         mock_kill.assert_called_once_with(4242, 15)
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
@@ -991,7 +992,7 @@ class TestOrphanTakeClaim:
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
             finish_calls.append((file, take_id))
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -999,13 +1000,13 @@ class TestOrphanTakeClaim:
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
             patch("digue.recording.stop_recording_pid", return_value=rec_file) as mock_stop,
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
             patch("digue.recording.start_recording") as mock_start,
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         assert finish_calls == [(rec_file, "0123456789abcdef")]
         mock_stop.assert_called_once()
@@ -1026,9 +1027,9 @@ class TestOrphanTakeClaim:
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
             with patch("digue.recording._runtime_dir", return_value=tmp_path):
-                seen["daemon_state_during_recovery"] = digue._daemon_state()
+                seen["daemon_state_during_recovery"] = dictate_mod._daemon_state()
                 seen["claim_during_recovery"] = recording_mod._claim_orphan_take()
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -1036,12 +1037,12 @@ class TestOrphanTakeClaim:
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
             patch("digue.recording.stop_recording_pid", return_value=rec_file),
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
             patch("digue.recording.start_recording") as mock_start,
             patch("digue.notify.send_notification"),
             patch("digue.notify.notify_close"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         # a second toggle at that instant sees no daemon and nothing to claim:
         # it would publish "starting" and record, as the only recorder.
@@ -1081,11 +1082,11 @@ class TestOrphanTakeClaim:
             patch("digue.container.ensure_server", return_value=None),
             patch("digue.container.is_server_running", return_value=False),
             patch("digue.recording.stop_recording_pid") as mock_stop,
-            patch("digue.finish_dictation") as mock_finish,
+            patch("digue.dictate.finish_dictation") as mock_finish,
             patch("digue.recording.start_recording") as mock_start,
             patch("digue.notify.send_notification"),
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         mock_stop.assert_not_called()
         mock_finish.assert_not_called()
@@ -1116,7 +1117,7 @@ class TestOrphanTakeClaim:
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         mock_kill.assert_not_called()
         with patch("digue.recording._runtime_dir", return_value=tmp_path):
@@ -1163,7 +1164,7 @@ class TestRecoverClaimedTake:
     def patch_recovery(self, tmp_path, finish_result):
         return (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.finish_dictation", return_value=finish_result),
+            patch("digue.dictate.finish_dictation", return_value=finish_result),
         )
 
     def test_stops_a_live_recorder_with_valid_identity_and_delivers(self, tmp_path):
@@ -1180,12 +1181,12 @@ class TestRecoverClaimedTake:
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
             delivered.append((file, take_id))
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         try:
             with (
                 patch("digue.recording._runtime_dir", return_value=tmp_path),
-                patch("digue.finish_dictation", side_effect=fake_finish),
+                patch("digue.dictate.finish_dictation", side_effect=fake_finish),
             ):
                 exit_code = recording_mod._recover_claimed_take(self.make_config(tmp_path), take)
         finally:
@@ -1204,12 +1205,12 @@ class TestRecoverClaimedTake:
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
             delivered.append(file)
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.os.killpg") as mock_killpg,
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.recording.os.killpg") as mock_killpg,
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
         ):
             exit_code = recording_mod._recover_claimed_take(self.make_config(tmp_path), take)
 
@@ -1318,13 +1319,13 @@ class TestRecoverClaimedTake:
 
         def fake_finish(_config, file, limit_reached=False, take_id=None):
             delivered.append(file)
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch("digue.recording._process_starttime", return_value="999"),
-            patch("digue.os.killpg") as mock_killpg,
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.recording.os.killpg") as mock_killpg,
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
         ):
             exit_code = recording_mod._recover_claimed_take(self.make_config(tmp_path), take)
 
@@ -1341,8 +1342,8 @@ class TestRecoverClaimedTake:
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
             patch(
-                "digue.finish_dictation",
-                return_value=digue.DeliveryResult(outcome="retryable_failure", exit_code=1),
+                "digue.dictate.finish_dictation",
+                return_value=dictate_mod.DeliveryResult(outcome="retryable_failure", exit_code=1),
             ),
         ):
             exit_code = recording_mod._recover_claimed_take(self.make_config(tmp_path), take)
@@ -1358,7 +1359,7 @@ class TestRecoverClaimedTake:
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
-            patch("digue.finish_dictation", side_effect=RuntimeError("boom")),
+            patch("digue.dictate.finish_dictation", side_effect=RuntimeError("boom")),
             pytest.raises(RuntimeError),
         ):
             recording_mod._recover_claimed_take(self.make_config(tmp_path), take)
@@ -1451,7 +1452,7 @@ class TestSurplusOrphanRescue:
 
         def fake_finish(_config, rec_file, limit_reached=False, take_id=None):
             finish_take_ids.append(take_id)
-            return digue.DeliveryResult(outcome="delivered", exit_code=0)
+            return dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
 
         with (
             patch("digue.recording._runtime_dir", return_value=tmp_path),
@@ -1462,14 +1463,14 @@ class TestSurplusOrphanRescue:
                 "digue.recording.stop_recording_pid",
                 side_effect=lambda pid, rec_file, expected_starttime=None: rec_file,
             ),
-            patch("digue.finish_dictation", side_effect=fake_finish),
+            patch("digue.dictate.finish_dictation", side_effect=fake_finish),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
             patch("digue.notify.send_notification") as mock_notify,
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         # only the oldest orphan is transcribed and pasted
         assert finish_take_ids == [oldest.take_id]
@@ -1522,14 +1523,17 @@ class TestSurplusOrphanRescue:
                 patch("digue.recording._pid_alive", lambda pid: pid == os.getpid()),
                 patch("digue.container.ensure_server"),
                 patch("digue.container.is_server_running", return_value=True),
-                patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+                patch(
+                    "digue.dictate.finish_dictation",
+                    return_value=dictate_mod.DeliveryResult(outcome="delivered", exit_code=0),
+                ),
                 patch("subprocess.Popen", return_value=recorder),
                 patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
                 patch("digue.notify.send_notification"),
                 patch("digue.notify.notify_close"),
                 patch("signal.signal"),
             ):
-                assert digue.dictate_toggle(config) == 0
+                assert dictate_mod.dictate_toggle(config) == 0
 
             assert surplus_recorder.poll() is not None
             month = tmp_path / "audio" / audio_mod.month_dir_for(audio_mod.now_timestamp())
@@ -1564,7 +1568,7 @@ class TestSurplusOrphanRescue:
             return next(takes)
 
         with (
-            patch("digue._dictate_lock", recording_lock),
+            patch("digue.dictate._dictate_lock", recording_lock),
             patch("digue.recording._claim_orphan_take", side_effect=fake_claim),
             patch("digue.recording._rescue_surplus_take", return_value=tmp_path / "rescued.wav"),
             patch("digue.recording._take_state_file", return_value=tmp_path / "gone.json"),
@@ -1591,7 +1595,10 @@ class TestSurplusOrphanRescue:
             patch("digue.recording._pid_alive", lambda pid: pid == os.getpid()),
             patch("digue.container.ensure_server"),
             patch("digue.container.is_server_running", return_value=True),
-            patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+            patch(
+                "digue.dictate.finish_dictation",
+                return_value=dictate_mod.DeliveryResult(outcome="delivered", exit_code=0),
+            ),
             patch("digue.audio.rescue_recording", return_value=None),
             patch("subprocess.Popen", return_value=recorder),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
@@ -1599,7 +1606,7 @@ class TestSurplusOrphanRescue:
             patch("digue.notify.notify_close"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
         assert surplus_wav.exists()
         assert (tmp_path / f"digue-take-{surplus_take.take_id}.json").exists()

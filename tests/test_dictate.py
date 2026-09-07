@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import digue
+from digue import dictate as dictate_mod
 from digue import recording as recording_mod
 from digue.config import _default_config
 
@@ -34,7 +34,7 @@ class TestDictateDaemon:
 
         def run_toggle():
             try:
-                results.append(digue.dictate_toggle(config))
+                results.append(dictate_mod.dictate_toggle(config))
             except BaseException as exc:
                 errors.append(exc)
 
@@ -49,7 +49,10 @@ class TestDictateDaemon:
             ) as mock_start,
             patch("digue.recording._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+            patch(
+                "digue.dictate.finish_dictation",
+                return_value=dictate_mod.DeliveryResult(outcome="delivered", exit_code=0),
+            ),
             patch("signal.signal"),
             patch("os.kill") as mock_kill,
         ):
@@ -91,11 +94,14 @@ class TestDictateDaemon:
             ),
             patch("digue.recording._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)),
+            patch(
+                "digue.dictate.finish_dictation",
+                return_value=dictate_mod.DeliveryResult(outcome="delivered", exit_code=0),
+            ),
             patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 0
+            assert dictate_mod.dictate_toggle(config) == 0
 
     def run_daemon_delivery(self, tmp_path, finish):
         """Runs the daemon path with a published take state and a mocked
@@ -128,17 +134,17 @@ class TestDictateDaemon:
             patch("digue.container.is_server_running", return_value=True),
             patch("digue.recording.start_recording", return_value=processes),
             patch("digue.recording._wait_recorder_end_daemon", return_value="ended"),
-            patch("digue.finish_dictation", side_effect=finish),
+            patch("digue.dictate.finish_dictation", side_effect=finish),
             patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
-            exit_code = digue.dictate_toggle(config)
+            exit_code = dictate_mod.dictate_toggle(config)
             state_file = recording_mod._take_state_file(take.take_id)
         return exit_code, state_file
 
     def test_daemon_removes_take_state_after_terminal_outcome(self, tmp_path):
         exit_code, state_file = self.run_daemon_delivery(
-            tmp_path, lambda *_args, **_kwargs: digue.DeliveryResult(outcome="delivered", exit_code=0)
+            tmp_path, lambda *_args, **_kwargs: dictate_mod.DeliveryResult(outcome="delivered", exit_code=0)
         )
 
         assert exit_code == 0
@@ -149,7 +155,7 @@ class TestDictateDaemon:
         """Server down and the rescue failed too: the WAV is still in the
         runtime dir, and without its state no toggle would ever pick it up."""
         exit_code, state_file = self.run_daemon_delivery(
-            tmp_path, lambda *_args, **_kwargs: digue.DeliveryResult(outcome="retryable_failure", exit_code=1)
+            tmp_path, lambda *_args, **_kwargs: dictate_mod.DeliveryResult(outcome="retryable_failure", exit_code=1)
         )
 
         assert exit_code == 1
@@ -189,7 +195,7 @@ class TestDictateDaemon:
             patch("digue.notify.send_notification"),
             patch("signal.signal"),
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         assert not daemon_file.exists()
 
@@ -208,7 +214,7 @@ class TestDictateDaemon:
             patch("digue.container.ensure_server", side_effect=replace_reservation_then_fail),
             patch("digue.notify.send_notification"),
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         assert daemon_file.read_text() == "4242 recording 1"
 
@@ -221,13 +227,13 @@ class TestDictateDaemon:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
-            patch("digue._daemon_pid_file", return_value=daemon_pid),
+            patch("digue.dictate._daemon_pid_file", return_value=daemon_pid),
             patch("digue.recording._pid_alive", return_value=True),
             patch("digue.recording._process_starttime", return_value="555"),
             patch("os.kill") as mock_kill,
-            patch("digue.finish_dictation") as mock_finish,
+            patch("digue.dictate.finish_dictation") as mock_finish,
         ):
-            result = digue.dictate_toggle(config)
+            result = dictate_mod.dictate_toggle(config)
 
         assert result == 0
         mock_kill.assert_called_once_with(4242, 15)
@@ -241,7 +247,7 @@ class TestDictateDaemon:
         config = _default_config()
         config["dictate"]["audio_dir"] = str(tmp_path / "audio")
         with (
-            patch("digue._daemon_pid_file", return_value=daemon_pid),
+            patch("digue.dictate._daemon_pid_file", return_value=daemon_pid),
             patch("digue.recording._pid_alive", return_value=False),
             patch("digue.container.ensure_server", return_value=None),
             patch("digue.container.is_server_running", return_value=True),
@@ -253,7 +259,7 @@ class TestDictateDaemon:
             ) as mock_start,
             patch("digue.notify.send_notification"),
         ):
-            result = digue.dictate_toggle(config)
+            result = dictate_mod.dictate_toggle(config)
 
         assert result == 1
         assert not daemon_pid.exists()
@@ -290,12 +296,12 @@ class TestDictateDaemon:
             return original_unlink(path, *args, **kwargs)
 
         with (
-            patch("digue._dictate_lock", side_effect=tracked_lock),
-            patch("digue._daemon_pid_file", return_value=daemon_file),
+            patch("digue.dictate._dictate_lock", side_effect=tracked_lock),
+            patch("digue.dictate._daemon_pid_file", return_value=daemon_file),
             patch.object(Path, "read_text", tracked_read_text),
             patch.object(Path, "unlink", tracked_unlink),
         ):
-            assert digue._remove_daemon_state(99) is True
+            assert dictate_mod._remove_daemon_state(99) is True
 
         assert operations == ["enter", "read", "unlink", "exit"]
 
@@ -318,7 +324,7 @@ class TestDictateDaemon:
 
         def remove_state():
             try:
-                assert digue._remove_daemon_state(99) is True
+                assert dictate_mod._remove_daemon_state(99) is True
             except BaseException as exc:
                 errors.append(exc)
 
@@ -326,8 +332,8 @@ class TestDictateDaemon:
             try:
                 assert remover_locked.wait(1)
                 publisher_started.set()
-                with digue._dictate_lock():
-                    digue._write_daemon_state(100, "recording")
+                with dictate_mod._dictate_lock():
+                    dictate_mod._write_daemon_state(100, "recording")
             except BaseException as exc:
                 errors.append(exc)
 
@@ -358,8 +364,8 @@ class TestDictateDaemon:
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text("100 recording 555")
 
-        with patch("digue._daemon_pid_file", return_value=daemon_file):
-            removed = digue._remove_daemon_state(99)
+        with patch("digue.dictate._daemon_pid_file", return_value=daemon_file):
+            removed = dictate_mod._remove_daemon_state(99)
 
         assert removed is False
         assert daemon_file.read_text() == "100 recording 555"
@@ -368,8 +374,8 @@ class TestDictateDaemon:
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text("")
 
-        with patch("digue._daemon_pid_file", return_value=daemon_file):
-            assert digue._remove_daemon_state(99) is False
+        with patch("digue.dictate._daemon_pid_file", return_value=daemon_file):
+            assert dictate_mod._remove_daemon_state(99) is False
 
         assert daemon_file.exists()
 
@@ -377,8 +383,8 @@ class TestDictateDaemon:
         daemon_file = tmp_path / "digue-daemon.pid"
         daemon_file.write_text("99 delivering 555")
 
-        with patch("digue._daemon_pid_file", return_value=daemon_file):
-            removed = digue._remove_daemon_state(99)
+        with patch("digue.dictate._daemon_pid_file", return_value=daemon_file):
+            removed = dictate_mod._remove_daemon_state(99)
 
         assert removed is True
         assert not daemon_file.exists()
@@ -396,7 +402,7 @@ class TestDictateDaemon:
             patch("digue.notify.send_notification"),
             patch("os.kill") as mock_kill,
         ):
-            digue.dictate_toggle(config)
+            dictate_mod.dictate_toggle(config)
         return [recorded_call.args for recorded_call in mock_kill.call_args_list if recorded_call.args[1] == 15]
 
     def test_toggle_does_not_signal_a_recycled_daemon_pid(self, tmp_path):
@@ -432,7 +438,7 @@ class TestDictateDaemon:
             patch("digue.notify.send_notification") as mock_notify,
             patch("os.kill") as mock_kill,
         ):
-            result = digue.dictate_toggle(config)
+            result = dictate_mod.dictate_toggle(config)
 
         assert result == 0
         assert [recorded_call.args for recorded_call in mock_kill.call_args_list if recorded_call.args[1] != 0] == []
@@ -454,7 +460,7 @@ class TestDictateDaemon:
             patch("digue.container.ensure_server", side_effect=capture_state),
             patch("digue.notify.send_notification"),
         ):
-            digue.dictate_toggle(config)
+            dictate_mod.dictate_toggle(config)
 
         assert seen == [f"{os.getpid()} starting {recording_mod._process_starttime(os.getpid())}"]
 
@@ -474,7 +480,7 @@ class TestDictateDaemon:
             patch("digue.recording.start_recording", side_effect=RuntimeError("pw-record failed: no such node")),
             patch("digue.notify.send_notification") as mock_notify,
         ):
-            assert digue.dictate_toggle(config) == 1
+            assert dictate_mod.dictate_toggle(config) == 1
 
         message = mock_notify.call_args.args[0]
         assert message.startswith("Failed to start recording:")
@@ -504,18 +510,19 @@ class TestDictateInterrupt:
 
         def fake_wait(_recorder, _limit):
             # simulate Ctrl+c arriving during the wait
-            digue._on_sigint(signal.SIGINT, None)
+            dictate_mod._on_sigint(signal.SIGINT, None)
             return "interrupted"
 
         with (
             patch("digue.recording._recording_file_of", return_value=tmp_path / "take.wav"),
             patch("digue.recording._wait_recorder_end_daemon", side_effect=fake_wait),
             patch(
-                "digue.finish_dictation", return_value=digue.DeliveryResult(outcome="delivered", exit_code=0)
+                "digue.dictate.finish_dictation",
+                return_value=dictate_mod.DeliveryResult(outcome="delivered", exit_code=0),
             ) as mock_finish,
             patch("signal.signal", side_effect=lambda sig, handler: handlers.append((sig, handler))),
         ):
-            result = digue.dictate_toggle(config)
+            result = dictate_mod.dictate_toggle(config)
 
         assert result == 0
         mock_stop_pid.assert_called_once()
@@ -523,15 +530,15 @@ class TestDictateInterrupt:
         # the daemon must have installed its own SIGINT handler
         installed = dict(handlers)
         assert signal.SIGINT in installed
-        assert installed[signal.SIGINT] is digue._on_sigint
-        assert not digue._daemon_pid_file().exists()
+        assert installed[signal.SIGINT] is dictate_mod._on_sigint
+        assert not dictate_mod._daemon_pid_file().exists()
 
     def test_wait_recorder_end_interrupted_outcome(self):
         recorder = MagicMock()
         recorder.poll.return_value = None
         with patch("time.monotonic", side_effect=[0.0, 0.5]), patch("time.sleep"):
-            digue._on_sigint(2, None)
+            dictate_mod._on_sigint(2, None)
             try:
                 assert recording_mod._wait_recorder_end_daemon(recorder, 300) == "interrupted"
             finally:
-                digue._got_sigint = False
+                dictate_mod._got_sigint = False

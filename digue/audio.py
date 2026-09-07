@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from digue import DeliveryResult
+from digue.dictate import DeliveryResult
 
 
 def now_timestamp() -> str:
