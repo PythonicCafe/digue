@@ -2315,13 +2315,47 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
       archive is not identical to the input; whisper-server rejects opus, so a
       retranscription goes through the ffmpeg fallback.
     Tries host ffmpeg first, then falls back to running ffmpeg inside the local
-    container via stdin/stdout pipe when backend is not remote.
+    container via stdin/stdout pipe when backend is not "remote" (any other
+    value means local; only remote-or-not is looked at).
+
+    The final name is reserved up front (exclusive creation): two takes can
+    never overwrite each other's compressed file; a collision raises and the
+    caller rescues the WAV. Whatever happens afterwards -- ffmpeg failure,
+    timeout, a docker error -- the reservation and the temp file are dropped
+    unless the compressed file was published, so a failure never leaves an
+    empty .flac next to the WAV it kept.
     """
+    if audio_format == "wav":
+        return Path(rec_file)
+    if audio_format not in ("flac", "opus"):
+        raise KeyError(audio_format)
+
+    rec_file = Path(rec_file)
+    converted = rec_file.with_suffix(f".{audio_format}")
+    temp_converted = converted.with_name(f".{converted.name}.{os.getpid()}.tmp")
+    converted.touch(exist_ok=False)
+    published = False
+    try:
+        published = _run_compression(rec_file, converted, temp_converted, audio_format, backend)
+    finally:
+        if not published:
+            temp_converted.unlink(missing_ok=True)
+            converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
+    if not published:
+        return rec_file
+    rec_file.unlink(missing_ok=True)
+    return converted
+
+
+def _run_compression(
+    rec_file: Path, converted: Path, temp_converted: Path, audio_format: str, backend: str | None
+) -> bool:
+    """Writes the compressed audio into temp_converted and publishes it as
+    converted. Returns True when published; False (after a warning) when
+    compression was not possible. Exceptions propagate to the caller."""
     import shutil
     import subprocess
 
-    if audio_format == "wav":
-        return Path(rec_file)
     codec_args = {
         "flac": ["-c:a", "flac"],
         "opus": ["-c:a", "libopus", "-b:a", "24k"],
@@ -2330,16 +2364,6 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
         "flac": ["-f", "flac"],
         "opus": ["-f", "ogg"],
     }
-    if audio_format not in codec_args:
-        raise KeyError(audio_format)
-
-    rec_file = Path(rec_file)
-    converted = rec_file.with_suffix(f".{audio_format}")
-    temp_converted = converted.with_name(f".{converted.name}.{os.getpid()}.tmp")
-    # Reserve the final name up front (exclusive creation): two takes can never
-    # overwrite each other's compressed file; a collision raises and the caller
-    # rescues the WAV.
-    converted.touch(exist_ok=False)
 
     if shutil.which("ffmpeg"):
         # The temp is ours alone (ffmpeg opens the path itself, so exclusivity
@@ -2361,15 +2385,12 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
         )
         if result.returncode == 0 and temp_converted.exists():
             os.replace(temp_converted, converted)
-            rec_file.unlink(missing_ok=True)
-            return converted
-        temp_converted.unlink(missing_ok=True)
-        converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
+            return True
         print(
             f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
             file=sys.stderr,
         )
-        return rec_file
+        return False
 
     if backend != "remote" and container_status() == "running":
         cmd = [
@@ -2397,22 +2418,18 @@ def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None
             with open(temp_converted, "xb") as temp_file:
                 temp_file.write(result.stdout)
             os.replace(temp_converted, converted)
-            rec_file.unlink(missing_ok=True)
-            return converted
-        temp_converted.unlink(missing_ok=True)
-        converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
+            return True
         print(
             f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
             file=sys.stderr,
         )
-        return rec_file
+        return False
 
-    converted.unlink(missing_ok=True)  # drop the reservation, keep the WAV
     print(
         f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
         file=sys.stderr,
     )
-    return rec_file
+    return False
 
 
 def save_audio(

@@ -4819,6 +4819,42 @@ class TestCompressAudio:
         assert rec.exists()
         assert [path.name for path in tmp_path.iterdir() if path.is_file()] == [rec.name]
 
+    @pytest.mark.parametrize("failure", [subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600), OSError("cannot fork")])
+    def test_unexpected_ffmpeg_error_releases_the_reservation_and_keeps_the_wav(self, failure, tmp_path):
+        """The final name is reserved up front (exclusive touch); an exception
+        out of subprocess.run must not leave that empty .flac next to the WAV."""
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        rec = audio_dir / "rec.wav"
+        rec.write_bytes(b"data")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run", side_effect=failure),
+            pytest.raises(type(failure)),
+        ):
+            digue._compress_audio(rec, "flac")
+
+        assert rec.read_bytes() == b"data"
+        assert sorted(path.name for path in audio_dir.iterdir()) == ["rec.wav"]
+
+    def test_unexpected_container_error_releases_the_reservation_and_keeps_the_wav(self, tmp_path):
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        rec = audio_dir / "rec.wav"
+        rec.write_bytes(b"data")
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("digue.container_status", return_value="running"),
+            patch("subprocess.run", side_effect=OSError("docker gone")),
+            pytest.raises(OSError),
+        ):
+            digue._compress_audio(rec, "flac", backend="cpu")
+
+        assert rec.read_bytes() == b"data"
+        assert sorted(path.name for path in audio_dir.iterdir()) == ["rec.wav"]
+
     def test_compression_never_overwrites_an_existing_destination(self, tmp_path):
         rec = tmp_path / "rec.wav"
         rec.write_bytes(b"wav-data")
