@@ -37,6 +37,25 @@ class TestCmdClean:
         assert "Aborted" in err
         assert (audio_dir / "2026" / "09" / "20260901-100000.flac").exists()
 
+    def test_without_a_terminal_asks_for_force_instead_of_tracebacking(self, tmp_path, capsys, monkeypatch):
+        audio_dir = tmp_path / "audio"
+        self._make_audio_files(audio_dir)
+        config = _default_config()
+        config["dictate"]["audio_dir"] = str(audio_dir)
+
+        def closed_stdin(prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", closed_stdin)
+
+        result = audio_mod.cmd_clean(self._args(), config)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "--force" in err
+        assert "Traceback" not in err
+        assert (audio_dir / "2026" / "09" / "20260901-100000.flac").exists()
+
     def test_removes_on_confirmation(self, tmp_path, capsys, monkeypatch):
         audio_dir = tmp_path / "audio"
         self._make_audio_files(audio_dir)

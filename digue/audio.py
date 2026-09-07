@@ -451,7 +451,13 @@ def cmd_clean(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> in
                 print(f"  {recording_metadata[path].relative_to(audio_dir)} (metadata)", file=sys.stderr)
         for path in sorted(transcripts):
             print(f"  {path.relative_to(audio_dir)}", file=sys.stderr)
-        answer = input(f"Remove all {total} file(s)? [y/N] ")
+        try:
+            answer = input(f"Remove all {total} file(s)? [y/N] ")
+        except EOFError:
+            # no terminal to ask (cron, a pipe): the listing above says what
+            # would go; the user opts in explicitly
+            print("\nNo terminal to confirm on; run again with --force to remove.", file=sys.stderr)
+            return 1
         if answer.strip().lower() not in ("y", "yes"):
             print("Aborted.", file=sys.stderr)
             return 1
