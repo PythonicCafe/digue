@@ -2996,6 +2996,91 @@ class TestCompressAudio:
         with pytest.raises(KeyError):
             digue._compress_audio(rec, "mp3")
 
+    @patch("digue.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_container_fallback_when_host_ffmpeg_missing(self, mock_run, mock_which, mock_status, tmp_path):
+        import subprocess
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"flac-data", stderr=b"")
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "flac", backend="amd")
+
+        assert result == tmp_path / "rec.flac"
+        assert result.read_bytes() == b"flac-data"
+        assert not rec.exists()
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:5] == ["docker", "exec", "-i", digue.CONTAINER_NAME, "ffmpeg"]
+        assert "-c:a" in cmd and "flac" in cmd
+        assert mock_run.call_args[1]["input"] == b"wav-data"
+
+    @patch("digue.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_container_fallback_opus(self, mock_run, mock_which, mock_status, tmp_path):
+        import subprocess
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"opus-data", stderr=b"")
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "opus")
+
+        assert result == tmp_path / "rec.opus"
+        assert result.read_bytes() == b"opus-data"
+        assert not rec.exists()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:5] == ["docker", "exec", "-i", digue.CONTAINER_NAME, "ffmpeg"]
+        assert "-c:a" in cmd and "libopus" in cmd
+        assert "-f" in cmd and "ogg" in cmd
+
+    @patch("digue.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_container_fallback_skipped_if_remote_backend(self, mock_run, mock_which, mock_status, tmp_path):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "flac", backend="remote")
+
+        assert result == rec
+        assert rec.exists()
+        mock_run.assert_not_called()
+
+    @patch("digue.container_status", return_value=None)
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_container_fallback_skipped_if_container_not_running(self, mock_run, mock_which, mock_status, tmp_path):
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "flac")
+
+        assert result == rec
+        assert rec.exists()
+        mock_run.assert_not_called()
+
+    @patch("digue.container_status", return_value="running")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_container_fallback_failure_keeps_wav(self, mock_run, mock_which, mock_status, tmp_path):
+        import subprocess
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=b"", stderr=b"conversion error"
+        )
+        rec = tmp_path / "rec.wav"
+        rec.write_bytes(b"wav-data")
+
+        result = digue._compress_audio(rec, "flac")
+
+        assert result == rec
+        assert rec.exists()
+        assert not (tmp_path / "rec.flac").exists()
+
 
 class TestSaveAudioConfig:
     def test_default_saves_audio(self):
@@ -3014,6 +3099,40 @@ class TestSaveAudioConfig:
         )
         config = digue.load_config(config_path)
         assert config["dictate"]["save_audio"] is False
+
+    @patch("digue._compress_audio")
+    def test_save_audio_passes_backend(self, mock_compress, tmp_path):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        audio_dir = tmp_path / "audio"
+        mock_compress.return_value = audio_dir / "2026/01/test.flac"
+
+        digue.save_audio(rec_file, audio_dir, audio_format="flac", timestamp="2026-01-01T00-00-00", backend="amd")
+
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args[1]["backend"] == "amd"
+
+    @patch("digue.send_text")
+    @patch("digue.transcribe", return_value="hello")
+    @patch("digue.ensure_server")
+    @patch("digue.is_server_running", return_value=True)
+    @patch("digue.stop_recording")
+    @patch("digue.is_recording", return_value=True)
+    @patch("digue.save_audio", return_value=("saved.flac", "2026-01-01T00:00:00"))
+    def test_finish_dictation_passes_resolved_backend(
+        self, mock_save, mock_recording, mock_stop, mock_running, mock_ensure, mock_transcribe, mock_send, tmp_path
+    ):
+        rec_file = tmp_path / "rec.wav"
+        rec_file.write_bytes(b"audio")
+        mock_stop.return_value = rec_file
+        config = digue._default_config()
+        config["server"]["backend"] = "remote"
+        config["dictate"]["audio_dir"] = str(tmp_path / "audio")
+
+        digue.finish_dictation(config, mock_stop.return_value)
+
+        mock_save.assert_called_once()
+        assert mock_save.call_args[1]["backend"] == "remote"
 
     @patch("digue.send_text")
     @patch("digue.transcribe", return_value="hello")

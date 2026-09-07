@@ -1788,7 +1788,7 @@ def send_text(text: str, display_server: str = "auto", input_mode: str = "paste"
 # -- Dictation ------------------------------------------------------------------
 
 
-def _compress_audio(rec_file: str | Path, audio_format: str) -> Path:
+def _compress_audio(rec_file: str | Path, audio_format: str, backend: str | None = None) -> Path:
     """Compresses a WAV recording in place. Returns the new path (rec_file swapped).
 
     audio_format: "wav" (no-op), "flac", or "opus".
@@ -1797,44 +1797,89 @@ def _compress_audio(rec_file: str | Path, audio_format: str) -> Path:
     - opus: ~7% of WAV at 24 kbit/s (lossy). Speech quality is excellent, but the
       archive is not identical to the input; whisper-server rejects opus, so a
       retranscription goes through the ffmpeg fallback.
-    Requires ffmpeg (which is optional for dictation otherwise).
+    Tries host ffmpeg first, then falls back to running ffmpeg inside the local
+    container via stdin/stdout pipe when backend is not remote.
     """
     import shutil
     import subprocess
 
     if audio_format == "wav":
         return Path(rec_file)
-    if not shutil.which("ffmpeg"):
-        print(
-            f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
-            file=sys.stderr,
-        )
-        return Path(rec_file)
-
-    rec_file = Path(rec_file)
-    converted = rec_file.with_suffix(f".{audio_format}")
     codec_args = {
         "flac": ["-c:a", "flac"],
         "opus": ["-c:a", "libopus", "-b:a", "24k"],
     }
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(rec_file), *codec_args[audio_format], str(converted)],
-        capture_output=True,
-        timeout=600,
-    )
-    if result.returncode != 0 or not converted.exists():
+    format_args = {
+        "flac": ["-f", "flac"],
+        "opus": ["-f", "ogg"],
+    }
+    if audio_format not in codec_args:
+        raise KeyError(audio_format)
+
+    rec_file = Path(rec_file)
+    converted = rec_file.with_suffix(f".{audio_format}")
+
+    if shutil.which("ffmpeg"):
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(rec_file), *codec_args[audio_format], str(converted)],
+            capture_output=True,
+            timeout=600,
+        )
+        if result.returncode != 0 or not converted.exists():
+            print(
+                f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
+                file=sys.stderr,
+            )
+            converted.unlink(missing_ok=True)
+            return rec_file
+        rec_file.unlink(missing_ok=True)
+        return converted
+
+    if backend != "remote" and container_status() == "running":
+        cmd = [
+            "docker",
+            "exec",
+            "-i",
+            CONTAINER_NAME,
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            *codec_args[audio_format],
+            *format_args[audio_format],
+            "pipe:1",
+        ]
+        result = subprocess.run(
+            cmd,
+            input=rec_file.read_bytes(),
+            capture_output=True,
+            timeout=600,
+        )
+        if result.returncode == 0 and result.stdout:
+            converted.write_bytes(result.stdout)
+            rec_file.unlink(missing_ok=True)
+            return converted
         print(
-            f"Warning: ffmpeg failed to compress recording ({result.stderr.decode().strip()[:150]}); keeping WAV",
+            f"Warning: ffmpeg failed to compress recording ({result.stderr.decode(errors='replace').strip()[:150]}); keeping WAV",
             file=sys.stderr,
         )
         converted.unlink(missing_ok=True)
         return rec_file
-    rec_file.unlink(missing_ok=True)
-    return converted
+
+    print(
+        f"Warning: ffmpeg not found, keeping the recording as WAV (install ffmpeg for {audio_format})",
+        file=sys.stderr,
+    )
+    return rec_file
 
 
 def save_audio(
-    rec_file: str | Path, audio_dir: str | Path, audio_format: str = "wav", timestamp: str | None = None
+    rec_file: str | Path,
+    audio_dir: str | Path,
+    audio_format: str = "wav",
+    timestamp: str | None = None,
+    backend: str | None = None,
 ) -> tuple[Path, str]:
     """Copies audio to <audio_dir>/YYYY/MM/<timestamp>.<ext>. Returns (saved_path, timestamp).
 
@@ -1853,7 +1898,7 @@ def save_audio(
     saved = month_dir / f"{timestamp}.wav"
     shutil.copy2(rec_file, saved)
     if audio_format != "wav":
-        saved = _compress_audio(saved, audio_format)
+        saved = _compress_audio(saved, audio_format, backend=backend)
     return saved, timestamp
 
 
@@ -2020,7 +2065,14 @@ def finish_dictation(config: dict[str, dict[str, Any]], rec_file: Path | None) -
         """Runs the post-delivery archiving (copy + compression, the slow part)."""
         try:
             if config["dictate"]["save_audio"]:
-                save_audio(rec_file, audio_dir, config["dictate"].get("audio_format", "wav"), timestamp=timestamp)
+                backend = resolve_backend(config)
+                save_audio(
+                    rec_file,
+                    audio_dir,
+                    config["dictate"].get("audio_format", "wav"),
+                    timestamp=timestamp,
+                    backend=backend,
+                )
             rec_file.unlink(missing_ok=True)
             return True
         except Exception as save_exc:
