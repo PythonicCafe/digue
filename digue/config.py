@@ -340,7 +340,13 @@ CONFIG_TEMPLATE = """\
 # amd = "large-v3-turbo"
 # intel = "large-v3-turbo"
 # cpu = "small"
-# Available models: tiny, base, small, medium, large-v3-turbo, large-v3
+# Available models (multilingual): tiny, base, small, medium, large-v1,
+#   large-v2, large-v3, large-v3-turbo. Quantized copies (smaller, usually
+#   faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1,
+#   base-q8_0, base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0,
+#   large-v2-q8_0, large-v2-q5_0, large-v3-q5_0, large-v3-turbo-q8_0,
+#   large-v3-turbo-q5_0. English-only: tiny.en, base.en, small.en, medium.en
+#   and their -q8_0 / -q5_x copies. See README, Quantized models.
 
 # -- Per-host overrides (version this file in your dotfiles) -------------------
 # [host.<hostname>][section] tables override the global sections of the same

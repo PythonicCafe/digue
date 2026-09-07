@@ -414,5 +414,5 @@ class TestRunBenchmarkCases:
         self.run(config, backends=["cpu"], models=["small", "medium"])
 
         err = capsys.readouterr().err
-        assert "Missing models (will download, ~1500 MB total): medium (~1500 MB)" in err
+        assert "Missing models (will download, ~1463 MB total): medium (~1463 MB)" in err
         assert "small (~" not in err

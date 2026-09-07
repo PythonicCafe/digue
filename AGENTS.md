@@ -42,6 +42,7 @@
 - `xclip` must be called with `stdout=DEVNULL, stderr=DEVNULL` (not `capture_output=True`) because it forks a background process that inherits pipes and causes timeout.
 - Terminal progress output must be TTY-aware: `_stderr_is_tty()` gates everything. On a TTY, progress redraws one line with `\r` (bar + notification share the line via redraw). On captured/piped stderr, `\r` does nothing visually -- each print would become a huge line in logs -- so progress prints sparse plain lines (one per ~5%) with no bar, and `send_notification()` prints plain lines with `\n`. Never assume stderr is a TTY; every progress/notification print must handle both paths.
 - `create_container` auto-downloads the model if missing, to avoid Docker crash loops.
+- `AVAILABLE_MODELS` is the closed list of every `ggml-*.bin` in huggingface.co/ggerganov/whisper.cpp (f16, `-q8_0`, `-q5_0`/`-q5_1`, `.en`), and `benchmark.MODEL_SIZES_MB` must list the same names in the same order (a test checks both). The name is the download URL and the container's `--model`, so a typo would create a crash-looping container: never accept free-form names. Quantized models mainly save disk/RAM; speed gains are CPU-side and must be benchmarked, not assumed.
 - `doctor` never pulls Docker images; compatibility tests run only for images already present locally.
 - Publishing: version has a single source of truth, `digue.__version__` (bump it before building). `make build` clears `dist/` first; before uploading, run `make build-check`, which also smoke-tests the installed wheel (see Commands).
 

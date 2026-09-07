@@ -71,12 +71,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="Show progress messages (ffmpeg conversion) on stderr",
     )
 
+    subparsers.add_parser("models", help="List available whisper.cpp models")
+
     sub_download = subparsers.add_parser("download", help="Download model(s)")
     sub_download.add_argument(
         "model",
         nargs="?",
         default=None,
         choices=AVAILABLE_MODELS,
+        metavar="MODEL",
         help=f"Model to download (default: auto-detect). Options: {', '.join(AVAILABLE_MODELS)}",
     )
 
@@ -314,6 +317,7 @@ def main() -> None:
         cmd_detect,
         cmd_doctor,
         cmd_download,
+        cmd_models,
         cmd_server_destroy,
         cmd_server_start,
         cmd_server_status,
@@ -360,6 +364,7 @@ def main() -> None:
 
     commands = {
         "download": cmd_download,
+        "models": cmd_models,
         "server-start": cmd_server_start,
         "server-stop": cmd_server_stop,
         "server-destroy": cmd_server_destroy,

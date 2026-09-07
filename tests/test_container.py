@@ -279,6 +279,27 @@ class TestCreateContainer:
         mock_download.assert_called_once_with("small", models_dir, with_notification=True)
 
 
+class TestCmdModels:
+    def test_lists_every_available_model_and_marks_downloaded(self, capsys, tmp_path):
+        from digue import AVAILABLE_MODELS
+
+        config = _default_config()
+        config["server"]["data_dir"] = str(tmp_path)
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "ggml-small.bin").write_bytes(b"x")
+
+        assert container_mod.cmd_models(MagicMock(), config) == 0
+
+        out = capsys.readouterr().out
+        by_name = {line.split()[0]: line for line in out.splitlines() if line.strip()}
+        assert list(by_name) == list(AVAILABLE_MODELS)
+        assert "downloaded" in by_name["small"]
+        assert "downloaded" not in by_name["tiny"]
+        assert "74 MB" in by_name["tiny"]
+        assert "547 MB" in by_name["large-v3-turbo-q5_0"]
+
+
 class TestImageExists:
     @patch("digue.container._docker_run")
     def test_true_when_image_present(self, mock_docker):

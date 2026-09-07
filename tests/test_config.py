@@ -442,6 +442,36 @@ class TestConfigValueValidation:
 # -- CLI parser ---------------------------------------------------------------
 
 
+class TestAvailableModels:
+    def test_every_model_has_a_size_for_the_benchmark_warning(self):
+        from digue import AVAILABLE_MODELS
+        from digue.benchmark import MODEL_SIZES_MB
+
+        assert list(MODEL_SIZES_MB) == list(AVAILABLE_MODELS)
+        assert all(size > 0 for size in MODEL_SIZES_MB.values())
+
+    def test_quantized_and_english_only_names_are_accepted(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\namd = "large-v3-turbo-q5_0"\ncpu = "small.en-q8_0"\n')
+        cfg = config.load_config(config_path)
+        assert cfg["models"]["amd"] == "large-v3-turbo-q5_0"
+        assert cfg["models"]["cpu"] == "small.en-q8_0"
+
+    def test_names_follow_the_hugging_face_file_pattern(self):
+        """ggml-<name>.bin is the download URL and the container's --model:
+        every entry must be a plain model name (family, optional .en,
+        optional -q8_0 / -q5_0 / -q5_1), nothing else."""
+        import re
+
+        from digue import AVAILABLE_MODELS
+
+        pattern = re.compile(r"^(tiny|base|small|medium|large-v[123]|large-v3-turbo)(\.en)?(-q8_0|-q5_0|-q5_1)?$")
+        assert all(pattern.match(name) for name in AVAILABLE_MODELS), [
+            name for name in AVAILABLE_MODELS if not pattern.match(name)
+        ]
+        assert len(set(AVAILABLE_MODELS)) == len(AVAILABLE_MODELS) == 33
+
+
 class TestConfigCommand:
     def test_show_toml_includes_sections(self, capsys):
         cfg = config._default_config()

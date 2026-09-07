@@ -17,8 +17,44 @@ BENCHMARK_MODELS = ("small", "large-v3-turbo")
 
 SAMPLE_URL = "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav"
 
-# Approximate GGML model sizes (MB), to warn before a benchmark triggers downloads.
-MODEL_SIZES_MB = {"tiny": 75, "base": 142, "small": 466, "medium": 1500, "large-v3-turbo": 1620, "large-v3": 3100}
+# GGML model sizes (MiB, rounded), to warn before a benchmark triggers downloads.
+# From the huggingface.co/ggerganov/whisper.cpp file list (same order as
+# AVAILABLE_MODELS).
+MODEL_SIZES_MB = {
+    "tiny": 74,
+    "tiny-q8_0": 42,
+    "tiny-q5_1": 31,
+    "tiny.en": 74,
+    "tiny.en-q8_0": 42,
+    "tiny.en-q5_1": 31,
+    "base": 141,
+    "base-q8_0": 78,
+    "base-q5_1": 57,
+    "base.en": 141,
+    "base.en-q8_0": 78,
+    "base.en-q5_1": 57,
+    "small": 465,
+    "small-q8_0": 252,
+    "small-q5_1": 181,
+    "small.en": 465,
+    "small.en-q8_0": 252,
+    "small.en-q5_1": 181,
+    "medium": 1463,
+    "medium-q8_0": 785,
+    "medium-q5_0": 514,
+    "medium.en": 1463,
+    "medium.en-q8_0": 785,
+    "medium.en-q5_0": 514,
+    "large-v1": 2951,
+    "large-v2": 2951,
+    "large-v2-q8_0": 1579,
+    "large-v2-q5_0": 1031,
+    "large-v3": 2952,
+    "large-v3-q5_0": 1031,
+    "large-v3-turbo": 1549,
+    "large-v3-turbo-q8_0": 834,
+    "large-v3-turbo-q5_0": 547,
+}
 
 # -- Benchmark ----------------------------------------------------------------
 

@@ -601,6 +601,21 @@ def cmd_detect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_models(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
+    """Lists every model `digue` accepts, with size and whether it is already downloaded."""
+    from digue import AVAILABLE_MODELS
+    from digue.benchmark import MODEL_SIZES_MB
+
+    models_dir = Path(config["server"]["data_dir"]) / "models"
+    width = max(len(name) for name in AVAILABLE_MODELS)
+    for name in AVAILABLE_MODELS:
+        size = MODEL_SIZES_MB.get(name)
+        size_text = f"{size} MB" if isinstance(size, int) else "?"
+        marker = "  downloaded" if (models_dir / f"ggml-{name}.bin").exists() else ""
+        print(f"{name:<{width}}  {size_text}{marker}")
+    return 0
+
+
 def cmd_download(args: argparse.Namespace, config: dict[str, dict[str, Any]]) -> int:
     models_dir = Path(config["server"]["data_dir"]) / "models"
 

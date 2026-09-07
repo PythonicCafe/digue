@@ -54,6 +54,27 @@ Times are wall-clock, three runs after a warm-up, `main-vulkan` image:
 
 One machine, not a ranking of AMD iGPUs. Re-run with `digue benchmark --sample -b amd cpu -m small medium large-v3-turbo`.
 
+### Quantized models
+
+whisper.cpp runs integer-quantized models, and `ggerganov/whisper.cpp` on Hugging Face (where `digue` downloads from) publishes them next to the f16 files: `-q8_0` (about 55% of the size, accuracy practically unchanged) and `-q5_0`/`-q5_1` (about 35%, a small but real accuracy loss, most visible on proper names). They cut disk, RAM and load time. Speed is not a given: on CPU they are usually faster (inference there is bound by memory bandwidth), on GPU it depends on the backend's kernels and can be a wash -- measure with `digue benchmark` before changing a default.
+
+`digue models` lists every name (and which files are already in `<data-dir>/models`). Any of them works wherever a model is named: `[models]`, `digue download <model>` and `digue benchmark -m`. The `.en` variants are English-only. Sizes (MiB): `large-v3-turbo` 1549, `-q8_0` 834, `-q5_0` 547; `medium` 1463, `-q8_0` 785, `-q5_0` 514; `small` 465, `-q8_0` 252, `-q5_1` 181; `large-v3` 2952, `-q5_0` 1031.
+
+```toml
+[models]
+amd = "large-v3-turbo-q5_0"     # 547 MB instead of 1549 MB
+
+[host.thinkpad.models]
+cpu = "medium-q5_0"             # medium quality where only small fit before
+```
+
+The model is a file in `<data-dir>/models` mounted into the container, but its name is fixed in the container's command line, so after changing `[models]` recreate the container: `digue server destroy && digue server start` (the missing file is downloaded first). To compare before committing to a change:
+
+```bash
+digue benchmark --sample -b amd -m large-v3-turbo large-v3-turbo-q8_0 large-v3-turbo-q5_0 -n 5
+digue benchmark --sample -b cpu -m small small-q5_1 medium-q5_0
+```
+
 
 ## System requirements
 
@@ -177,6 +198,7 @@ digue detect                         # print detected backend
 digue detect-language audio.mp3      # print detected language code
 digue detect-language audio.mp3 --json  # code, probability, and all probabilities
 digue detect-language audio.mp3 -v   # show conversion progress on stderr
+digue models                         # list available models (size, already downloaded)
 digue download                       # download model for detected backend
 digue download small                 # download a specific model
 digue server start                   # start (or create) server container
@@ -302,7 +324,13 @@ Create `~/.config/digue/config.toml` (or `$XDG_CONFIG_HOME/digue/config.toml`):
 # amd = "large-v3-turbo"
 # intel = "large-v3-turbo"
 # cpu = "small"
-# Available models: tiny, base, small, medium, large-v3-turbo, large-v3
+# Available models (multilingual): tiny, base, small, medium, large-v1,
+#   large-v2, large-v3, large-v3-turbo. Quantized copies (smaller, usually
+#   faster on CPU; q5 loses a little accuracy): tiny-q8_0, tiny-q5_1,
+#   base-q8_0, base-q5_1, small-q8_0, small-q5_1, medium-q8_0, medium-q5_0,
+#   large-v2-q8_0, large-v2-q5_0, large-v3-q5_0, large-v3-turbo-q8_0,
+#   large-v3-turbo-q5_0. English-only: tiny.en, base.en, small.en, medium.en
+#   and their -q8_0 / -q5_x copies. See README, Quantized models.
 
 # -- Per-host overrides (version this file in your dotfiles) -------------------
 # [host.<hostname>][section] tables override the global sections of the same

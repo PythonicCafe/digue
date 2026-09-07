@@ -15,7 +15,7 @@ from digue.config import load_config
 class TestCreateParser:
     def test_all_subcommands_parse(self):
         parser = cli_mod.create_parser()
-        for cmd in ("detect", "download", "dictate", "config", "benchmark"):
+        for cmd in ("detect", "download", "models", "dictate", "config", "benchmark"):
             args = parser.parse_args([cmd])
             assert args.command == cmd
         for action in ("start", "stop", "destroy", "status"):
@@ -54,6 +54,18 @@ class TestCreateParser:
         assert "remote" not in parser.parse_args(["benchmark", "-b", "cpu"]).backends
         with pytest.raises(SystemExit):
             parser.parse_args(["benchmark", "-b", "remote"])
+
+    def test_models_subcommand(self):
+        parser = cli_mod.create_parser()
+        assert parser.parse_args(["models"]).command == "models"
+
+    def test_download_and_benchmark_accept_quantized_models(self):
+        parser = cli_mod.create_parser()
+        assert parser.parse_args(["download", "large-v3-turbo-q5_0"]).model == "large-v3-turbo-q5_0"
+        assert parser.parse_args(["benchmark", "-m", "small-q5_1", "medium-q8_0"]).models == [
+            "small-q5_1",
+            "medium-q8_0",
+        ]
 
     def test_version_flag(self, capsys):
         parser = cli_mod.create_parser()
