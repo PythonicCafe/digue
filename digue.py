@@ -2583,9 +2583,14 @@ def _daemon_state() -> tuple[int, str, str] | None:
 
 
 def _daemon_alive(entry: tuple[int, str, str]) -> bool:
-    """True only if the pid is alive AND is still the process that wrote the file."""
+    """True only if the pid is alive AND is still the process that wrote the file.
+
+    A zombie (exited, not yet reaped by its parent) answers signal 0 and keeps
+    its starttime, but cannot stop anything: it counts as dead, like in
+    _group_alive.
+    """
     pid, _state, starttime = entry
-    return _pid_alive(pid) and _process_starttime(pid) == starttime
+    return _pid_alive(pid) and _process_starttime(pid) == starttime and not _process_is_zombie(pid)
 
 
 def _remove_daemon_state(daemon_pid: int) -> bool:

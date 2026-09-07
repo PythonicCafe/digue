@@ -3051,6 +3051,30 @@ class TestSendTextDeliveryLock:
         assert mock_detect.call_count == 1
 
 
+class TestDaemonAlive:
+    def test_zombie_daemon_is_not_alive(self, tmp_path):
+        """A daemon that exited but was not reaped still answers signal 0 and
+        keeps its /proc starttime: without the zombie check a toggle would
+        SIGTERM it and exit 0 believing it stopped a recording."""
+        stat = tmp_path / "stat"
+        fields = ["Z"] + [str(value) for value in range(4, 30)]
+        fields[19] = "555"
+        stat.write_text("4242 (digue) " + " ".join(fields))
+
+        with (
+            patch("digue._pid_alive", return_value=True),
+            patch("digue._process_starttime", return_value="555"),
+            patch("digue._process_is_zombie", return_value=True),
+        ):
+            assert digue._daemon_alive((4242, "recording", "555")) is False
+        with (
+            patch("digue._pid_alive", return_value=True),
+            patch("digue._process_starttime", return_value="555"),
+            patch("digue._process_is_zombie", return_value=False),
+        ):
+            assert digue._daemon_alive((4242, "recording", "555")) is True
+
+
 class TestRuntimeIsolation:
     def test_state_paths_use_isolated_runtime_dir(self):
         runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
