@@ -1467,6 +1467,35 @@ class TestRecoverClaimedTake:
         assert sorted(path.name for path in month_dir.iterdir()) == [f"{stem}.txt", f"{stem}.wav"]
         assert list(tmp_path.glob("digue-take-*.json")) == []
 
+    def test_delivered_take_without_live_audio_is_just_forgotten(self, tmp_path, capsys):
+        """The daemon pasted, saved the .txt, archived the audio, removed the
+        live file and died before dropping its state: the take is complete.
+        Reporting "Empty or missing audio file" (exit 1) here was wrong."""
+        rec_file = tmp_path / "digue-recording.wav"  # already unlinked by the archive
+        take = self.make_recovering_take(tmp_path, rec_file=rec_file)
+        config = self.make_config(tmp_path)
+        month_dir = Path(config["dictate"]["audio_dir"]) / "2026" / "09"
+        month_dir.mkdir(parents=True)
+        stem = f"20260905-101500-{take.take_id}"
+        (month_dir / f"{stem}.txt").write_text("already pasted\n")
+        (month_dir / f"{stem}.flac").write_bytes(b"fLaC")
+
+        with (
+            patch("digue.recording._runtime_dir", return_value=tmp_path),
+            patch("digue.delivery.send_text") as mock_send,
+            patch("digue.transcribe.transcribe") as mock_transcribe,
+            patch("digue.notify.send_notification") as mock_notify,
+        ):
+            exit_code = recording_mod._recover_claimed_take(config, take)
+
+        assert exit_code == 0
+        mock_send.assert_not_called()
+        mock_transcribe.assert_not_called()
+        mock_notify.assert_not_called()
+        assert sorted(path.name for path in month_dir.iterdir()) == [f"{stem}.flac", f"{stem}.txt"]
+        assert list(tmp_path.glob("digue-take-*.json")) == []
+        assert "already delivered" in capsys.readouterr().err
+
     def test_partial_archive_leftovers_do_not_touch_other_takes(self, tmp_path):
         """Only the products of this take's stem are dropped: a neighbouring
         take that shares the timestamp keeps its files."""

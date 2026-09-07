@@ -542,7 +542,7 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
     no recorder identity to trust or stop, gets the age-based expiry rules.
     """
     from digue.audio import _archive_recovered_take, _delivered_transcript
-    from digue.dictate import TERMINAL_OUTCOMES, finish_dictation
+    from digue.dictate import TERMINAL_OUTCOMES, DeliveryResult, finish_dictation
 
     if take.recorder_pid is None:
         # A rescued starting take keeps its audio and warns the user; not a
@@ -551,7 +551,14 @@ def _recover_claimed_take(config: dict[str, dict[str, Any]], take: TakeState) ->
         return 0
     rec_file = stop_recording_pid(take.recorder_pid, take.rec_file, expected_starttime=take.recorder_starttime)
     transcript = _delivered_transcript(Path(config["dictate"]["audio_dir"]), take.take_id)
-    if rec_file is not None and transcript is not None:
+    if transcript is not None and rec_file is None:
+        # Text delivered and the live file already gone: the daemon finished
+        # the archive and died before removing its state. Nothing to do but
+        # drop the state; reporting "Empty or missing audio file" here would
+        # turn a complete take into an error.
+        print(f"Take {take.take_id} was already delivered ({transcript})", file=sys.stderr)
+        result = DeliveryResult(outcome="delivered", exit_code=0)
+    elif transcript is not None and rec_file is not None:
         # the dead daemon had already pasted and saved the text (it died during
         # the archive): archive the audio, never paste twice
         result = _archive_recovered_take(config, rec_file, transcript)
