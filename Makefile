@@ -4,7 +4,10 @@ help:					# List all make commands
 	@awk -F ':.*#' '/^[a-zA-Z_-]+:.*?#/ { printf "\033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST) | sort
 
 dev-install:				# Install dev dependencies (pytest, mypy, ruff, build, twine)
-	$(PYTHON) -m pip install --user pytest mypy ruff build twine
+	$(PYTHON) -m pip install --user --group dev .
+
+docker-build:				# Build the docker container for local development
+	docker build --build-arg ENV_TYPE=development -t turicas/digue:latest -f Dockerfile .
 
 test:					# Execute pytest
 	$(PYTHON) -m pytest tests/ -v --tb=short
@@ -53,4 +56,4 @@ clean:					# Remove build artifacts and caches
 tags:					# Generate tags file for the entire project (requires universal-ctags)
 	@git ls-files | ctags -L - --tag-relative=yes --quiet --append -f ".tags"
 
-.PHONY: help dev-install test test-coverage test-fast mypy lint lint-check check build smoke-wheel build-check publish clean tags
+.PHONY: help dev-install docker-build test test-coverage test-fast mypy lint lint-check check build smoke-wheel build-check publish clean tags

@@ -48,7 +48,9 @@ version = { attr = "digue.__version__" }
 dev = [
     "build>=1",
     "coverage>=7",
+    "mypy>=1.15",
     "pytest>=8",
+    "pytest-cov>=6",
     "ruff>=0.11",
     "twine>=6",
 ]
