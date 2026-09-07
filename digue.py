@@ -2811,7 +2811,10 @@ def finish_dictation(
             print(text, file=sys.stderr)
         # Nothing reached the user: the outcome is only terminal if the audio
         # left the runtime dir (archived or rescued); otherwise the take state
-        # stays and the next toggle retries the whole delivery.
+        # stays. The retry only archives: the .txt above is what a recovery
+        # reads as "delivered" (_delivered_transcript), and the user was told
+        # where the text is -- pasting it later into whatever window has the
+        # focus would be worse than not pasting it.
         if archive_audio() or rescued_path is not None:
             return DeliveryResult(outcome="rescued", exit_code=1, rescued_path=rescued_path)
         return DeliveryResult(outcome="retryable_failure", exit_code=1)
