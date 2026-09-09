@@ -505,11 +505,12 @@ class TestWaitForServerOutput:
     TTY; a captured stderr (hotkey daemon, journal) gets plain lines."""
 
     def run_wait(self, tty, capsys):
-        answers = iter([False] * 12 + [True])
+        self.answers = iter([False] * 51 + [True])
         with (
-            patch("digue.container.is_server_running", side_effect=lambda _config: next(answers)),
+            patch("digue.container.is_server_running", side_effect=lambda _config: next(self.answers)),
             patch("digue.notify._stderr_is_tty", return_value=tty),
             patch("time.sleep"),
+            patch("time.perf_counter", side_effect=range(1000)),
         ):
             assert container_mod._wait_for_server(_default_config(), verbose=True) is True
         return capsys.readouterr().err
@@ -524,6 +525,18 @@ class TestWaitForServerOutput:
         err = self.run_wait(tty=True, capsys=capsys)
         assert "\r  Waiting for model to load" in err
         assert "\rServer ready" in err
+
+    def test_check_past_deadline_does_not_crash(self):
+        """A slow check (up to the HTTP timeout) can push the clock past the deadline: the final sleep must not
+        receive a negative duration (time.sleep raises ValueError on negative values)."""
+        with (
+            patch("digue.container.is_server_running", return_value=False),
+            patch("digue.notify._stderr_is_tty", return_value=False),
+            patch("time.sleep") as mock_sleep,
+            patch("time.perf_counter", side_effect=[0.0, 179.9, 180.1, 180.1, 180.1]),
+        ):
+            assert container_mod._wait_for_server(_default_config()) is False
+        mock_sleep.assert_not_called()
 
 
 class TestServerHost:

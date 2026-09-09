@@ -36,7 +36,7 @@ VAD_MODEL_FILENAME = "ggml-silero-v6.2.0.bin"
 
 HUGGINGFACE_VAD_URL = f"https://huggingface.co/ggml-org/whisper-vad/resolve/main/{VAD_MODEL_FILENAME}"
 
-SERVER_STARTUP_TIMEOUT = 180
+SERVER_STARTUP_TIMEOUT = 180.0
 
 DOWNLOAD_TIMEOUT = 60
 
@@ -353,25 +353,29 @@ def server_url(config: dict[str, dict[str, Any]]) -> str:
     return f"http://{server_host(config)}:{port}/inference"
 
 
-def is_server_running(config: dict[str, dict[str, Any]]) -> bool:
+def is_server_running(config: dict[str, dict[str, Any]], timeout: float = 1.0) -> bool:
     """Returns True if the server is responding to HTTP requests.
 
-    For local backends this probes the configured bind address. A wildcard
-    bind is reached through loopback because 0.0.0.0 is not a destination.
+    For local backends this probes the configured bind address. A wildcard bind is reached through loopback because
+    0.0.0.0 is not a destination.
     """
     import urllib.error
     import urllib.request
 
     try:
-        urllib.request.urlopen(f"http://{server_host(config)}:{config['server']['port']}/", timeout=1)
+        urllib.request.urlopen(f"http://{server_host(config)}:{config['server']['port']}/", timeout=timeout)
         return True
     except (urllib.error.URLError, OSError):
         return False
 
 
 def _wait_for_server(config: dict[str, dict[str, Any]], verbose: bool = False) -> bool:
-    """Waits for server to respond. Returns True if successful.
+    """Waits for the server to respond. Returns True if successful.
 
+    Polls every 200ms (the same cadence as the dictate daemon): a connection
+    refused check costs ~1ms, so the fixed short sleep keeps detection latency
+    low without spin. With 1s polls the server is ready on average ~400ms after
+    it actually started answering; at 200ms that drops to ~100ms.
     When verbose=True, prints elapsed time to stderr every 10 seconds: one
     redrawn line on a TTY, plain lines on a captured stderr (the same
     contract as the download progress and `send_notification`).
@@ -382,8 +386,10 @@ def _wait_for_server(config: dict[str, dict[str, Any]], verbose: bool = False) -
 
     tty = _stderr_is_tty()
     start = time.perf_counter()
-    for attempt in range(SERVER_STARTUP_TIMEOUT):
-        time.sleep(1)
+    deadline = start + SERVER_STARTUP_TIMEOUT
+    wait_between_checks = 0.2
+    attempt = 0
+    while time.perf_counter() < deadline:
         if is_server_running(config):
             if verbose:
                 elapsed = time.perf_counter() - start
@@ -391,13 +397,17 @@ def _wait_for_server(config: dict[str, dict[str, Any]], verbose: bool = False) -
                 padding = " " * 10 if tty else ""
                 print(f"{prefix}Server ready ({elapsed:.0f}s){padding}", file=sys.stderr)
             return True
-        if verbose and attempt > 0 and attempt % 10 == 0:
+        if verbose and attempt > 0 and attempt % 50 == 0:
             elapsed = time.perf_counter() - start
             message = f"  Waiting for model to load... {elapsed:.0f}s"
             if tty:
                 print(f"\r{message}", end="", file=sys.stderr, flush=True)
             else:
                 print(message, file=sys.stderr, flush=True)
+        attempt += 1
+        remaining = deadline - time.perf_counter()
+        if remaining > 0:
+            time.sleep(min(wait_between_checks, remaining))
 
     if verbose and tty:
         print(file=sys.stderr)
