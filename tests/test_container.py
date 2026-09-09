@@ -192,6 +192,19 @@ class TestCreateContainer:
     @patch("digue.container.download_model")
     @patch("digue.container.pull_image")
     @patch("digue.container._docker_run")
+    def test_vad_model_passed_without_vad_flag(self, mock_docker, mock_pull, mock_download):
+        """The server runs without --vad: VAD is toggled per request ([transcribe] vad), so switching it never
+        needs container recreation. --vad-model stays: the request-time VAD loader reads the path from there."""
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = _default_config()
+        container_mod.create_container(config, "cpu")
+        cmd = mock_docker.call_args[0][0]
+        assert "--vad" not in cmd
+        assert cmd[cmd.index("--vad-model") + 1] == "/models/ggml-silero-v6.2.0.bin"
+
+    @patch("digue.container.download_model")
+    @patch("digue.container.pull_image")
+    @patch("digue.container._docker_run")
     def test_raises_on_failure(self, mock_docker, mock_pull, mock_download):
         mock_docker.return_value = MagicMock(returncode=1, stderr="permission denied")
         config = _default_config()

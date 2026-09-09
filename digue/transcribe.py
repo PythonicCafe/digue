@@ -237,6 +237,9 @@ def _send_audio(
     timeout: int | float,
     audio_data: bytes | None = None,
     prompt: str | None = None,
+    vad: bool | None = None,
+    vad_threshold: float | None = None,
+    vad_speech_pad_ms: int | None = None,
 ) -> str:
     """Uploads a single audio file to the server and returns the stripped response.
 
@@ -244,6 +247,8 @@ def _send_audio(
     (mid-word, e.g. "trans|crevendo").  Verified against whisper-server: with it disabled, text output comes as one
     line per natural segment.
     prompt, when set, is sent as the whisper initial prompt (steers spelling of names/acronyms).
+    vad, when set, overrides the server default per request (the server runs without --vad); with vad=true the
+    threshold and padding tuning fields go along (the server ignores them with VAD off).
     """
     data = audio_data if audio_data is not None else audio_path.read_bytes()
     # The server's default language is "en" (server.cpp): omitting the field would transcribe everything as English.
@@ -251,6 +256,13 @@ def _send_audio(
     fields = {"response_format": response_format, "token_timestamps": "false", "language": language or "auto"}
     if prompt:
         fields["prompt"] = prompt
+    if vad is not None:
+        fields["vad"] = "true" if vad else "false"
+        if vad:
+            if vad_threshold is not None:
+                fields["vad_threshold"] = f"{vad_threshold:g}"
+            if vad_speech_pad_ms is not None:
+                fields["vad_speech_pad_ms"] = str(vad_speech_pad_ms)
     return _multipart_request(url, data, fields, timeout, filename=audio_path.name).strip()
 
 
@@ -430,6 +442,9 @@ def transcribe(
     max_line_length: int = 42,
     max_lines: int = 2,
     wrap_cues: bool = True,
+    vad: bool | None = None,
+    vad_threshold: float | None = None,
+    vad_speech_pad_ms: int | None = None,
 ) -> str:
     """Sends audio to the server and returns the response (text, VTT, or SRT).
 
@@ -439,7 +454,8 @@ def transcribe(
 
     The "text" format is normalized to a single line (whisper segments start with a space and the server joins them
     with newlines; the segment breaks carry no semantic value - use vtt/srt when timestamps are needed).  prompt, when
-    set, is sent as the whisper initial prompt (steers spelling of names/acronyms).
+    set, is sent as the whisper initial prompt (steers spelling of names/acronyms).  vad, when set, overrides the
+    server's VAD default for this request ([transcribe] vad plugs it in; None keeps the server default).
     VTT/SRT cues are space-stripped and wrapped word-aligned to max_line_length chars over max_lines lines.
     """
     import urllib.error
@@ -449,10 +465,31 @@ def transcribe(
         if verbose:
             print(f"Converting {audio_path.name} with ffmpeg...", file=sys.stderr, flush=True)
         wav_data = _convert_to_wav(audio_path)
-        result = _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data, prompt=prompt)
+        result = _send_audio(
+            url,
+            audio_path,
+            language,
+            response_format,
+            timeout,
+            audio_data=wav_data,
+            prompt=prompt,
+            vad=vad,
+            vad_threshold=vad_threshold,
+            vad_speech_pad_ms=vad_speech_pad_ms,
+        )
         return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
     try:
-        result = _send_audio(url, audio_path, language, response_format, timeout, prompt=prompt)
+        result = _send_audio(
+            url,
+            audio_path,
+            language,
+            response_format,
+            timeout,
+            prompt=prompt,
+            vad=vad,
+            vad_threshold=vad_threshold,
+            vad_speech_pad_ms=vad_speech_pad_ms,
+        )
         return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
     except urllib.error.HTTPError as exc:
         if exc.code != 400:
@@ -464,7 +501,18 @@ def transcribe(
                 flush=True,
             )
         wav_data = _convert_to_wav(audio_path)
-        result = _send_audio(url, audio_path, language, response_format, timeout, audio_data=wav_data, prompt=prompt)
+        result = _send_audio(
+            url,
+            audio_path,
+            language,
+            response_format,
+            timeout,
+            audio_data=wav_data,
+            prompt=prompt,
+            vad=vad,
+            vad_threshold=vad_threshold,
+            vad_speech_pad_ms=vad_speech_pad_ms,
+        )
         return _finalize_output(result, response_format, max_line_length, max_lines, wrap_cues)
 
 
@@ -613,6 +661,9 @@ def transcribe_file(
         max_lines=int(transcribe_cfg.get("max_lines", 2)),
         wrap_cues=wrap_subtitles,
         timeout=int(transcribe_cfg.get("timeout", TRANSCRIPTION_TIMEOUT)),
+        vad=bool(transcribe_cfg.get("vad", True)),
+        vad_threshold=transcribe_cfg.get("vad_threshold"),
+        vad_speech_pad_ms=transcribe_cfg.get("vad_speech_pad_ms"),
     )
     if fmt == "timestamps":
         return _convert_content(result, "vtt", "timestamps")

@@ -352,6 +352,42 @@ class TestSendAudioTokenTimestamps:
         assert audio_data == b"converted"
 
 
+class TestSendAudioVad:
+    @patch("digue.transcribe._multipart_request", return_value="text")
+    def test_vad_on_sends_field_and_tuning(self, mock_multipart, tmp_path):
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        transcribe_mod._send_audio(
+            "http://x", audio, "pt", "text", 10, vad=True, vad_threshold=0.4, vad_speech_pad_ms=400
+        )
+        fields = mock_multipart.call_args[0][2]
+        assert fields["vad"] == "true"
+        assert fields["vad_threshold"] == "0.4"
+        assert fields["vad_speech_pad_ms"] == "400"
+
+    @patch("digue.transcribe._multipart_request", return_value="text")
+    def test_vad_off_omits_tuning_fields(self, mock_multipart, tmp_path):
+        """The server ignores the tuning fields with VAD off; not sending them keeps the request minimal."""
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        transcribe_mod._send_audio(
+            "http://x", audio, "pt", "text", 10, vad=False, vad_threshold=0.4, vad_speech_pad_ms=400
+        )
+        fields = mock_multipart.call_args[0][2]
+        assert fields["vad"] == "false"
+        assert "vad_threshold" not in fields
+        assert "vad_speech_pad_ms" not in fields
+
+    @patch("digue.transcribe._multipart_request", return_value="text")
+    def test_unset_vad_sends_no_vad_field(self, mock_multipart, tmp_path):
+        """Callers that do not pass vad keep the server default (digue benchmark controls VAD per case)."""
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"data")
+        transcribe_mod._send_audio("http://x", audio, "pt", "text", 10)
+        fields = mock_multipart.call_args[0][2]
+        assert "vad" not in fields
+
+
 # VTT simplification
 
 

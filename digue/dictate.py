@@ -177,10 +177,22 @@ def finish_dictation(
     send_notification(message)
     try:
         url = server_url(config)
-        language = config["transcribe"]["language"]
-        prompt = config["transcribe"].get("prompt") or None
-        timeout = int(config["transcribe"].get("timeout", TRANSCRIPTION_TIMEOUT))
-        text = normalize_pasted_text(transcribe(url, rec_file, language, prompt=prompt, timeout=timeout))
+        transcribe_cfg = config["transcribe"]
+        language = transcribe_cfg["language"]
+        prompt = transcribe_cfg.get("prompt") or None
+        timeout = int(transcribe_cfg.get("timeout", TRANSCRIPTION_TIMEOUT))
+        text = normalize_pasted_text(
+            transcribe(
+                url,
+                rec_file,
+                language,
+                prompt=prompt,
+                timeout=timeout,
+                vad=bool(transcribe_cfg.get("vad", True)),
+                vad_threshold=transcribe_cfg.get("vad_threshold"),
+                vad_speech_pad_ms=transcribe_cfg.get("vad_speech_pad_ms"),
+            )
+        )
     except Exception as exc:
         archived = rescue_recording(rec_file, audio_dir, timestamp, take_id)
         send_notification(f"Transcription failed: {exc}", timeout_ms=10000)

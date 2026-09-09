@@ -47,6 +47,9 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "max_line_length": 42,
             "max_lines": 2,
             "timeout": DEFAULT_TRANSCRIPTION_TIMEOUT,
+            "vad": True,
+            "vad_threshold": 0.5,
+            "vad_speech_pad_ms": 400,
         },
         "dictate": {
             "audio_dir": "",
@@ -155,6 +158,14 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
         value = require_type("transcribe", key, int)
         if value < 1:
             raise ValueError(f"Invalid transcribe.{key}: {value}; expected an integer greater than zero")
+
+    require_type("transcribe", "vad", bool)
+    vad_threshold = config["transcribe"]["vad_threshold"]
+    if isinstance(vad_threshold, bool) or not isinstance(vad_threshold, (int, float)) or not 0 < vad_threshold <= 1:
+        raise ValueError("Invalid transcribe.vad_threshold: expected a number between 0 and 1")
+    vad_pad = require_type("transcribe", "vad_speech_pad_ms", int)
+    if vad_pad < 0:
+        raise ValueError("Invalid transcribe.vad_speech_pad_ms: expected a non-negative integer")
 
     require_type("dictate", "audio_dir", str)
     require_choice("dictate", "display_server", ("auto", "x11", "wayland"))
@@ -351,6 +362,12 @@ CONFIG_TEMPLATE = """\
 # max-lines = 2                         # Max lines per cue when wrapping
 # timeout = 600                         # Seconds to wait for the server's answer (the server only replies after
                                         #   transcribing the whole file: long files on CPU need more)
+# vad = true                            # Voice Activity Detection: transcribe only speech, skipping silence and
+                                        #   noise. Toggled per request (no container recreation needed)
+# vad-threshold = 0.5                   # Speech probability threshold (0-1): lower keeps more audio as speech
+# vad-speech-pad-ms = 400               # Silence padding around each speech segment. The whisper-server default
+                                        #   (30) measurably cuts the start of short utterances; 400 matches
+                                        #   faster-whisper's default
 
 [dictate]
 # audio-dir = ""                        # Where recordings are saved (default: <data-dir>/audio/YYYY/MM)

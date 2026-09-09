@@ -320,7 +320,9 @@ def create_container(
         "0.0.0.0",
         "--port",
         "8080",
-        "--vad",
+        # No --vad flag: the server default stays off and digue sends vad=true/false per request
+        # ([transcribe] vad), so toggling VAD never needs container recreation. The model path must be
+        # given up front: the request-time VAD loader reads it from here.
         "--vad-model",
         f"/models/{VAD_MODEL_FILENAME}",
         "--threads",

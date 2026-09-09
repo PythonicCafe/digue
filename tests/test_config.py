@@ -29,6 +29,13 @@ class TestDefaultConfig:
         cfg = config._default_config()
         assert cfg["server"]["container_name"] == "digue-whisper.cpp"
 
+    def test_default_vad_settings(self):
+        cfg = config._default_config()
+        assert cfg["transcribe"]["vad"] is True
+        assert cfg["transcribe"]["vad_threshold"] == 0.5
+        # the whisper-server default (30 ms) measurably cuts the start of short utterances
+        assert cfg["transcribe"]["vad_speech_pad_ms"] == 400
+
     def test_default_models_include_nvidia(self):
         cfg = config._default_config()
         assert "nvidia" in cfg["models"]
@@ -435,6 +442,12 @@ class TestConfigValueValidation:
             ('[server]\ncontainer-name = "-lab"\n', "server.container_name"),
             ('[server]\ncontainer-name = "lab/1"\n', "server.container_name"),
             ('[transcribe]\ntimeout = "120"\n', "transcribe.timeout"),
+            ('[transcribe]\nvad = "yes"\n', "transcribe.vad"),
+            ("[transcribe]\nvad-threshold = 0\n", "transcribe.vad_threshold"),
+            ("[transcribe]\nvad-threshold = 1.5\n", "transcribe.vad_threshold"),
+            ('[transcribe]\nvad-threshold = "0.5"\n', "transcribe.vad_threshold"),
+            ("[transcribe]\nvad-speech-pad-ms = -1\n", "transcribe.vad_speech_pad_ms"),
+            ('[transcribe]\nvad-speech-pad-ms = "200"\n', "transcribe.vad_speech_pad_ms"),
         ),
     )
     def test_load_config_validates_resolved_values(self, tmp_path, toml, message):
