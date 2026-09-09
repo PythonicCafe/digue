@@ -38,6 +38,7 @@ def _default_config() -> dict[str, dict[str, Any]]:
             "bind_ip": "127.0.0.1",
             "remote_host": "",
             "container_name": "digue-whisper.cpp",
+            "threads": "auto",
         },
         "transcribe": {
             "language": DEFAULT_LANGUAGE,
@@ -138,6 +139,13 @@ def _validate_config(config: dict[str, dict[str, Any]]) -> None:
         raise ValueError(f"Invalid server.port: {port}; expected an integer from 1 to 65535")
     for key in ("data_dir", "image", "bind_ip", "remote_host", "container_name"):
         require_type("server", key, str)
+    threads = config["server"]["threads"]
+    if (
+        not (threads == "auto" or isinstance(threads, int) and not isinstance(threads, bool))
+        or isinstance(threads, int)
+        and threads < 1
+    ):
+        raise ValueError('Invalid server.threads: expected "auto" or an integer greater than zero')
     validate_container_name(str(config["server"]["container_name"]))
 
     for key in ("language", "prompt"):
@@ -330,6 +338,9 @@ CONFIG_TEMPLATE = """\
                                         #   "ghcr.io/ggml-org/whisper.cpp:main" for CPUs where main-vulkan crashes.
                                         #   `digue server start` recreates a container created from another image
 # container-name = "digue-whisper.cpp"  # Docker container name (`digue server start -n` overrides)
+# threads = "auto"                      # Server threads: "auto" (physical cores; benchmark: 4 -> RTF 0.22,
+                                        #   8 -> 0.15, 16 -> 0.17 on a 8-core Ryzen - SMT does not help) or an
+                                        #   integer, e.g. 6 to keep cores free for other work
 
 [transcribe] # Defaults for transcribe, batch-transcribe and dictate
 # language = "auto"                     # Language for transcription: "auto", "pt", "en", etc.

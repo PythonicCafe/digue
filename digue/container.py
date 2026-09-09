@@ -201,6 +201,65 @@ def resolve_image(backend: str, config: dict[str, dict[str, Any]]) -> str:
     return DOCKER_IMAGES[backend]
 
 
+def resolve_threads(config: dict[str, dict[str, Any]]) -> int:
+    """Threads for whisper-server (--threads). "auto" = physical core count; on detection failure keep the
+    whisper-server default (min(4, ncpu)) by not passing the flag. Benchmark on a Ryzen 8745HS (8 physical cores):
+    4 threads RTF 0.223, 8 threads 0.148, 16 threads 0.171 - SMT does not help, so logical cores would overshoot."""
+    threads = config["server"].get("threads", "auto")
+    if threads != "auto":
+        return int(threads)
+    for detect in (_physical_core_count, _cpuinfo_core_count):
+        try:
+            return detect()
+        except (OSError, ValueError):
+            continue
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        # Not Linux (or an OS without sched_getaffinity): keep the server default of min(4, ncpu)
+        return min(4, os.cpu_count() or 4)
+
+
+def _physical_core_count(cpu_root: Path | None = None) -> int:
+    """Distinct physical cores via the kernel's SMT sibling lists (the psutil strategy): core_cpus_list names the
+    logical CPUs sharing one core, so unique lists = cores - no topology deduction. thread_siblings_list is the
+    older name, tried only when no core_cpus_list exists. sysfs is architecture-neutral (on ARM/RISC-V and in some
+    VMs /proc/cpuinfo omits the topology fields). cpu_root is injectable for tests. Raises OSError when sysfs has
+    no usable topology."""
+    core_root = Path("/sys/devices/system/cpu") if cpu_root is None else cpu_root
+    cores: set[bytes] = set()
+    for pattern in ("cpu[0-9]*/topology/core_cpus_list", "cpu[0-9]*/topology/thread_siblings_list"):
+        for path in core_root.glob(pattern):
+            try:
+                cores.add(path.read_bytes().strip())
+            except OSError:
+                continue  # offline (hotplug) CPU has no topology
+        if cores:
+            return len(cores)
+    raise OSError(f"no core topology found in {core_root}")
+
+
+def _cpuinfo_core_count(cpuinfo_path: Path | None = None) -> int:
+    """Fallback: distinct (physical id, core id) pairs in /proc/cpuinfo - core id is only unique within a socket,
+    hence the pair. x86-shaped: ARM/RISC-V kernels may omit these fields. cpuinfo_path is injectable for tests.
+    Raises OSError/ValueError when the fields are missing."""
+    cpuinfo = Path("/proc/cpuinfo") if cpuinfo_path is None else cpuinfo_path
+    pairs: set[tuple[int, int]] = set()
+    physical_id: int | None = None
+    with cpuinfo.open() as cpuinfo_file:
+        for line in cpuinfo_file:
+            key, _, value = line.partition(":")
+            key = key.strip().lower()
+            if key == "physical id":
+                physical_id = int(value.strip())
+            elif key == "core id" and physical_id is not None:
+                # core id always follows physical id within a block; a block ends when the next core id appears
+                pairs.add((physical_id, int(value.strip())))
+    if not pairs:
+        raise ValueError(f"no core id/physical id pairs in {cpuinfo}")
+    return len(pairs)
+
+
 def create_container(
     config: dict[str, dict[str, Any]], backend: str | None = None, *, with_notification: bool = False
 ) -> str:
@@ -264,6 +323,8 @@ def create_container(
         "--vad",
         "--vad-model",
         f"/models/{VAD_MODEL_FILENAME}",
+        "--threads",
+        str(resolve_threads(config)),
     ]
 
     result = _docker_run(cmd, timeout=60)

@@ -1,6 +1,7 @@
 """Tests for backend detection, Docker container lifecycle, model download, and remote server."""
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -277,6 +278,153 @@ class TestCreateContainer:
         container_mod.create_container(config, "cpu")
 
         mock_download.assert_called_once_with("small-q8_0", models_dir, with_notification=False)
+
+    @patch("digue.container.download_model")
+    @patch("digue.container.pull_image")
+    @patch("digue.container._docker_run")
+    def test_passes_resolved_thread_count(self, mock_docker, mock_pull, mock_download):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = _default_config()
+        config["server"]["threads"] = 6
+        container_mod.create_container(config, "cpu")
+        cmd = mock_docker.call_args[0][0]
+        assert cmd[cmd.index("--threads") + 1] == "6"
+
+    @patch("digue.container.download_model")
+    @patch("digue.container.pull_image")
+    @patch("digue.container._docker_run")
+    def test_auto_threads_use_physical_core_count(self, mock_docker, mock_pull, mock_download):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = _default_config()
+        with patch("digue.container._physical_core_count", return_value=8):
+            container_mod.create_container(config, "cpu")
+            cmd = mock_docker.call_args[0][0]
+            assert cmd[cmd.index("--threads") + 1] == "8"
+
+    @patch("digue.container.download_model")
+    @patch("digue.container.pull_image")
+    @patch("digue.container._docker_run")
+    def test_auto_threads_fall_back_to_server_default_when_detection_fails(self, mock_docker, mock_pull, mock_download):
+        mock_docker.return_value = MagicMock(returncode=0)
+        config = _default_config()
+        with (
+            patch("digue.container._physical_core_count", side_effect=OSError),
+            patch("digue.container._cpuinfo_core_count", side_effect=ValueError),
+            patch("os.sched_getaffinity", side_effect=AttributeError),
+            patch("os.cpu_count", return_value=12),
+        ):
+            container_mod.create_container(config, "cpu")
+            cmd = mock_docker.call_args[0][0]
+            assert cmd[cmd.index("--threads") + 1] == "4"
+
+
+class TestResolveThreads:
+    def test_explicit_config_value_wins(self):
+        config = _default_config()
+        config["server"]["threads"] = 2
+        assert container_mod.resolve_threads(config) == 2
+
+    def write_cpu(self, cpu_root, index, core_cpus=None, siblings=None):
+        topology = cpu_root / f"cpu{index}" / "topology"
+        topology.mkdir(parents=True)
+        if core_cpus is not None:
+            (topology / "core_cpus_list").write_text(core_cpus)
+        if siblings is not None:
+            (topology / "thread_siblings_list").write_text(siblings)
+
+    def test_counts_unique_core_cpus_lists(self):
+        """4 physical cores with SMT 2x: the kernel repeats each sibling list across the 2 logical CPUs, so
+        unique lists = cores. The Ryzen 8745HS looks like this (cpu0: "0,8" ... cpu15: "7,15")."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lists = ["0,8", "1,9", "2,10", "3,11", "4,12", "5,13", "6,14", "7,15"]
+            for index in range(16):
+                self.write_cpu(root, index, core_cpus=lists[index % 8])
+            assert container_mod._physical_core_count(cpu_root=root) == 8
+
+    def test_thread_siblings_list_is_the_fallback_in_sysfs(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(4):
+                self.write_cpu(root, index, siblings=f"{index % 2},{index % 2 + 2}")
+            assert container_mod._physical_core_count(cpu_root=root) == 2
+
+    def test_sysfs_without_topology_raises(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "cpu0").mkdir()
+            with pytest.raises(OSError):
+                container_mod._physical_core_count(cpu_root=root)
+
+    def test_cpuinfo_counts_pairs_not_core_ids(self):
+        """core_id repeats across sockets: 2 sockets x 2 cores = 4, not 2 (the psutil historical bug)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cpuinfo = Path(tmp) / "cpuinfo"
+            cpuinfo.write_text(
+                "processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n"
+                "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 1\n"
+                "processor\t: 2\nphysical id\t: 1\ncore id\t\t: 0\n"
+                "processor\t: 3\nphysical id\t: 1\ncore id\t\t: 1\n"
+            )
+            assert container_mod._cpuinfo_core_count(cpuinfo_path=cpuinfo) == 4
+
+    def test_cpuinfo_counts_smt_siblings_once(self):
+        """Ryzen 8745HS shape: 16 logical entries, core ids 0-11 repeated under SMT = 12 physical cores."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cpuinfo = Path(tmp) / "cpuinfo"
+            lines = []
+            for index in range(16):
+                lines.append(f"processor\t: {index}\nphysical id\t: 0\ncore id\t\t: {index % 12}\n")
+            cpuinfo.write_text("".join(lines))
+            assert container_mod._cpuinfo_core_count(cpuinfo_path=cpuinfo) == 12
+
+    def test_auto_prefers_sysfs_over_cpuinfo(self):
+        config = _default_config()
+        with (
+            patch("digue.container._physical_core_count", return_value=8) as mock_sysfs,
+            patch("digue.container._cpuinfo_core_count", side_effect=AssertionError("should not be called")),
+        ):
+            assert container_mod.resolve_threads(config) == 8
+            mock_sysfs.assert_called_once()
+
+    def test_auto_falls_back_to_cpuinfo_when_sysfs_empty(self):
+        config = _default_config()
+        with (
+            patch("digue.container._physical_core_count", side_effect=OSError),
+            patch("digue.container._cpuinfo_core_count", return_value=12) as mock_cpuinfo,
+        ):
+            assert container_mod.resolve_threads(config) == 12
+            mock_cpuinfo.assert_called_once()
+
+    def test_auto_falls_back_to_affinity_mask_without_topology(self):
+        config = _default_config()
+        with (
+            patch("digue.container._physical_core_count", side_effect=OSError),
+            patch("digue.container._cpuinfo_core_count", side_effect=ValueError),
+            patch("os.sched_getaffinity", return_value=set(range(16))),
+        ):
+            assert container_mod.resolve_threads(config) == 16
+
+    def test_auto_without_any_detection_caps_at_4(self):
+        """No sysfs, no cpuinfo, no sched_getaffinity (macOS, non-Linux): the server default of min(4, ncpu)."""
+        config = _default_config()
+        with (
+            patch("digue.container._physical_core_count", side_effect=OSError),
+            patch("digue.container._cpuinfo_core_count", side_effect=ValueError),
+            patch("os.sched_getaffinity", side_effect=AttributeError),
+            patch("os.cpu_count", return_value=32),
+        ):
+            assert container_mod.resolve_threads(config) == 4
 
 
 class TestCmdModels:
